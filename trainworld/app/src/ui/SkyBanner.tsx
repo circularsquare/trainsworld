@@ -1,0 +1,279 @@
+// The top bar's sky (T-861, T-882, T-896, T-902): a little scene of the day at the place in view, 12
+// hours back and 12 ahead, sliding left as game time passes: flat sky colours by the sun's height,
+// stars at night, a few clouds, a track along the bottom, and at now in the middle a small train on
+// the track, the sun at the middle of each day and the moon at the middle of each night peeking in
+// from the top (T-1800), and the demand level of each
+// hour in a 2 px band under it. Drawn into one canvas from the clock's own `now()`, never through
+// Preact: on animation frames while the clock runs (and only when it has moved a fraction of a
+// pixel, so it costs next to nothing between game minutes), and paused, only when the clock, the
+// view, the holidays or the theme change (T-1641). A holiday in a country with the player's stations (T-862, game/holidays.ts) is a
+// ribbon along the sky's top over its day, with a tick where it starts; a long holiday's going-out
+// and coming-back days a paler one with a small arrow (T-264).
+
+import { useEffect, useRef } from "preact/hooks";
+import { clock } from "../game/clock";
+import { holidaysNear, rushNear, type HolidaySpan, type RushSpan } from "../game/holidays";
+import { CLOCK_UTC_OFFSET, viewShift } from "../game/localTime";
+import { viewCentre } from "../game/listScope";
+import { PERIODS, periodAt } from "../game/periods";
+import { sunElevation } from "../game/sun";
+import { perfOff } from "../perfFlags";
+import type { Demand } from "../game/types";
+
+const HOURS = 24, NOW_AT = 0.5;
+/** css px: the scene (sky, grass, track), gap, band (the canvas is their sum high) */
+const SKY = 18, GAP = 1, BAND = 2;
+/** Where no view centre is known yet: New York. */
+const HOME: [number, number] = [-74.0, 40.7];
+
+/** the holiday ribbon's colour, both themes: apart from every sky and band colour */
+export const HOLIDAY_COLOUR = "#ff5fa2";
+/** T-264: a long holiday's going-out and coming-back days, paler */
+const RUSH_COLOUR = "#ffafd0";
+
+type RGB = [number, number, number];
+const hex = (s: string): RGB => {
+  const m = /#([0-9a-f]{6})/i.exec(s);
+  const n = m ? parseInt(m[1], 16) : 0x808080;
+  return [n >> 16, (n >> 8) & 255, n & 255];
+};
+const mix = (a: RGB, b: RGB, f: number): RGB => [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+
+/** T-882 (Anita): flat, cute colours by the sun's elevation (degrees): dark blue night, a short pink
+ * and warm sunrise or sunset, light blue day. One colour a column. */
+const STOPS: [number, RGB][] = ([
+  [-90, "#2c3d78"],
+  [-6, "#2c3d78"],
+  [-2.5, "#b986b6"],
+  [1, "#ffb37e"],
+  [5, "#9fd8f7"],
+  [90, "#9fd8f7"],
+] as const).map(([e, c]) => [e, hex(c)]);
+
+function skyAt(e: number): RGB {
+  let i = 1;
+  while (i < STOPS.length - 1 && e > STOPS[i][0]) i++;
+  const [e0, c0] = STOPS[i - 1], [e1, c1] = STOPS[i];
+  return mix(c0, c1, Math.min(1, Math.max(0, (e - e0) / (e1 - e0))));
+}
+/** 0 at night to 1 by day: how lit the ground is */
+const daylight = (e: number) => Math.min(1, Math.max(0, (e + 5) / 10));
+
+const RAIL: [RGB, RGB] = [hex("#1c2733"), hex("#6a5a50")];
+const CLOUD: [RGB, RGB] = [hex("#55639a"), hex("#ffffff")];
+const css = (c: RGB) => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+
+/** Scene rows, css px from the top: stars above STAR_LOW, the rail at RAIL_Y. Sleepers and stars
+ * repeat every so many css px of time, so they slide with the sky. */
+const STAR_LOW = 10, RAIL_Y = 15.5, SLEEPER_EVERY = 3, STAR_EVERY = 7;
+/** T-896: the train sits at now, nose to the right, the scene sliding under it: css px. */
+const TRAIN_LEN = 18, TRAIN_H = 5;
+
+/** T-1800: the times, in the clock's seconds, of the middle of each day (the sun above -3 degrees)
+ * and each night in the 24 hours around `now`. Found by 10-minute steps over 36 hours either side,
+ * so the segments at the strip's ends are whole; where the sun never sets or rises in that stretch
+ * (near the poles), the sun is placed at each clock day's highest point and the moon at its lowest. */
+const BODY_STEP = 600, BODY_SPAN = 36 * 3600;
+let bodiesKey = "", bodiesAt = NaN, bodiesOut: { sun: number[]; moon: number[] } = { sun: [], moon: [] };
+function sunMoon(now: number, lon: number, lat: number, off: number): { sun: number[]; moon: number[] } {
+  const key = `${lon} ${lat} ${off}`;
+  if (key === bodiesKey && Math.abs(now - bodiesAt) < 6 * 3600) return bodiesOut;
+  const sun: number[] = [], moon: number[] = [];
+  const t0 = Math.floor((now - BODY_SPAN) / BODY_STEP) * BODY_STEP;
+  let start = NaN, was = false, high: [number, number] = [-99, 0], low: [number, number] = [99, 0];
+  const days: { hi: [number, number]; lo: [number, number] }[] = [];
+  let day = Math.floor(t0 / 86400);
+  for (let t = t0; t <= now + BODY_SPAN; t += BODY_STEP) {
+    const e = sunElevation(t, lon, lat, off), up = e > -3;
+    if (Math.floor(t / 86400) !== day) { days.push({ hi: high, lo: low }); high = [-99, 0]; low = [99, 0]; day = Math.floor(t / 86400); }
+    if (e > high[0]) high = [e, t];
+    if (e < low[0]) low = [e, t];
+    if (t > t0 && up !== was) {
+      if (!Number.isNaN(start)) (was ? sun : moon).push((start + t - BODY_STEP) / 2);
+      start = t;
+    }
+    was = up;
+  }
+  days.push({ hi: high, lo: low });
+  if (!sun.length) for (const d of days) if (d.hi[0] > -3) sun.push(d.hi[1]);
+  if (!moon.length) for (const d of days) if (d.lo[0] <= -3) moon.push(d.lo[1]);
+  bodiesKey = key; bodiesAt = now; bodiesOut = { sun, moon };
+  return bodiesOut;
+}
+
+interface Colours { band: Record<Demand, RGB>; dark: boolean; bg: RGB }
+function readColours(): Colours {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    band: { high: hex(cs.getPropertyValue("--dl-high")), medium: hex(cs.getPropertyValue("--dl-medium")), low: hex(cs.getPropertyValue("--dl-low")) },
+    dark: document.documentElement.dataset.shade === "dark",
+    bg: hex(cs.getPropertyValue("--bg")),
+  };
+}
+
+function startSky(cv: HTMLCanvasElement): () => void {
+  const ctx = cv.getContext("2d")!;
+  let img: ImageData | null = null, colours = readColours(), last = NaN, lastKey = "", raf = 0;
+  let lastMarks: readonly HolidaySpan[] = holidaysNear.peek(), lastRush: readonly RushSpan[] = rushNear.peek();
+  const resize = (w: number, h: number) => {
+    if (w < 1 || h < 1 || (img && w === cv.width && h === cv.height)) return;
+    cv.width = w; cv.height = h;
+    img = ctx.createImageData(w, h);
+    lastKey = "";
+    draw();
+  };
+  const ro = new ResizeObserver(([e]) => {
+    const box = e.devicePixelContentBoxSize?.[0];
+    resize(box ? box.inlineSize : Math.round(e.contentRect.width * devicePixelRatio), box ? box.blockSize : Math.round(e.contentRect.height * devicePixelRatio));
+  });
+  try { ro.observe(cv, { box: "device-pixel-content-box" }); } catch { ro.observe(cv); }
+  const mo = new MutationObserver(() => { colours = readColours(); lastKey = ""; draw(); });
+  mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-shade", "data-theme"] });
+
+  function draw() {
+    if (!img) return;
+    const w = img.width, h = img.height, d = img.data;
+    const shift = viewShift.peek(), [lon, lat] = viewCentre.peek() ?? HOME, marks = holidaysNear.peek(), rush = rushNear.peek();
+    const now = clock.now() + shift, secPx = HOURS * 3600 / w, nowX = Math.round(NOW_AT * w);
+    const key = `${w} ${h} ${shift} ${lon} ${lat}`;
+    // a fifth of a device pixel's movement is below what shows
+    if (key === lastKey && Math.abs(now - last) < secPx * 0.2 && marks === lastMarks && rush === lastRush) return;
+    lastKey = key; last = now; lastMarks = marks; lastRush = rush;
+    const off = CLOCK_UTC_OFFSET + shift / 3600, scale = h / (SKY + GAP + BAND);
+    const skyRows = Math.round(SKY * scale), bandFrom = h - Math.max(1, Math.round(BAND * scale));
+    const railRow = Math.floor(RAIL_Y * scale), railRows = Math.max(1, Math.round(scale));
+    const dim = colours.dark ? 0.15 : 0;
+    const shade = (c: RGB) => (dim ? mix(c, colours.bg, dim) : c);
+    const lit = (pair: [RGB, RGB], l: number) => shade(mix(pair[0], pair[1], l));
+    const elevAt = (x: number) => sunElevation(now + (x - nowX) * secPx, lon, lat, off);
+    for (let x = 0; x < w; x++) {
+      const t = now + (x + 0.5 - nowX) * secPx, e = sunElevation(t, lon, lat, off), l = daylight(e);
+      const sky = shade(skyAt(e)), rail = lit(RAIL, l);
+      for (let y = 0; y < skyRows; y++) {
+        const c = y >= railRow && y < railRow + railRows ? rail : sky, i = (y * w + x) * 4;
+        d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
+      }
+      for (let y = skyRows; y < bandFrom; y++) d[(y * w + x) * 4 + 3] = 0;
+      // four samples across the pixel, so a change of level slides rather than steps
+      let r = 0, g = 0, b = 0;
+      for (let s = 0; s < 4; s++) {
+        const c = colours.band[PERIODS[periodAt(t + (s - 1.5) / 4 * secPx)].demand];
+        r += c[0]; g += c[1]; b += c[2];
+      }
+      for (let y = bandFrom; y < h; y++) {
+        const i = (y * w + x) * 4;
+        d[i] = r / 4; d[i + 1] = g / 4; d[i + 2] = b / 4; d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, w, skyRows); ctx.clip();
+    // scenery fixed to times, so it slides with the sky: k-th item at time k * every css px
+    const each = (everyCss: number, f: (x: number, k: number) => void) => {
+      const step = everyCss * scale * secPx, k0 = Math.floor((now - nowX * secPx) / step) - 1;
+      for (let k = k0; ; k++) {
+        const x = nowX + (k * step - now) / secPx;
+        if (x > w + 4 * scale) break;
+        f(x, k);
+      }
+    };
+    const hash = (k: number) => { const s = Math.sin(k * 12.9898) * 43758.5453; return s - Math.floor(s); };
+    // stars where it is night
+    each(STAR_EVERY, (x, k) => {
+      const l = daylight(elevAt(x));
+      if (l > 0.3) return;
+      ctx.fillStyle = `rgba(255,250,225,${(0.9 * (1 - l / 0.3)).toFixed(2)})`;
+      ctx.fillRect(x + hash(k) * 4 * scale, (1 + hash(k + 0.5) * (STAR_LOW - 2)) * scale, scale, scale);
+    });
+    // T-902: clouds at fixed times, none to two a day as the day's number falls, white by day and
+    // dim blue at night
+    const day0 = Math.floor((now - nowX * secPx) / 86400);
+    for (let dd = day0 - 1; dd <= day0 + 2; dd++) {
+      const r = hash(dd + 0.25), n = r < 0.35 ? 0 : r < 0.8 ? 1 : 2;
+      for (let i = 0; i < n; i++) {
+        const t = (dd + (i + hash(dd * 7 + i + 0.1)) / n) * 86400, x = nowX + (t - now) / secPx;
+        const s = (0.8 + 0.5 * hash(dd * 3 + i + 0.7)) * scale, y = (4 + 5 * hash(dd * 13 + i + 0.3)) * scale;
+        if (x < -16 * s || x > w + 4 * s) continue;
+        ctx.fillStyle = css(lit(CLOUD, daylight(elevAt(x + 6 * s))));
+        ctx.beginPath();
+        ctx.roundRect(x, y, 12 * s, 3 * s, 1.5 * s);
+        ctx.moveTo(x + 6.4 * s, y + 0.4 * s); ctx.arc(x + 4 * s, y + 0.4 * s, 2.4 * s, 0, 2 * Math.PI);
+        ctx.moveTo(x + 10.4 * s, y); ctx.arc(x + 7.4 * s, y, 3 * s, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+    // sleepers under the rail
+    each(SLEEPER_EVERY, (x) => {
+      ctx.fillStyle = css(lit(RAIL, daylight(elevAt(x))));
+      ctx.fillRect(x, railRow + railRows, scale * 0.8, scale);
+    });
+    // T-264: a long holiday's days: going out and coming back paler, with a small arrow at the start
+    // of each (out to the right, back to the left); its days away as a holiday's ribbon
+    for (const r of rush) {
+      const x0 = nowX + (r.t0 - now) / secPx, x1 = nowX + (r.t1 - now) / secPx;
+      if (x1 <= 0 || x0 >= w) continue;
+      ctx.fillStyle = r.part === 2 ? HOLIDAY_COLOUR : RUSH_COLOUR;
+      ctx.fillRect(x0, 0, x1 - x0, 2 * scale);
+      if (r.part === 2) continue;
+      const a = 3 * scale, ax = x0 + scale, ay = 2 * scale;
+      ctx.beginPath();
+      if (r.part === 1) { ctx.moveTo(ax, ay); ctx.lineTo(ax + a, ay + a / 2); ctx.lineTo(ax, ay + a); }
+      else { ctx.moveTo(ax + a, ay); ctx.lineTo(ax, ay + a / 2); ctx.lineTo(ax + a, ay + a); }
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = HOLIDAY_COLOUR;
+    for (const m of marks) {
+      const x0 = nowX + (m.t0 - now) / secPx, x1 = nowX + (m.t1 - now) / secPx;
+      if (x1 <= 0 || x0 >= w) continue;
+      ctx.fillRect(x0, 0, x1 - x0, 2 * scale);
+      ctx.fillRect(x0 - scale / 2, 0, scale, railRow);
+    }
+    // T-1800: the sun at the middle of each day and the moon at the middle of each night, peeking in
+    // from the top, fixed to their times so they slide with the sky and the train passes beneath
+    const bodies = sunMoon(now, lon, lat, off);
+    for (const t of bodies.sun) {
+      const x = nowX + (t - now) / secPx;
+      if (x < -6 * scale || x > w + 6 * scale) continue;
+      ctx.fillStyle = css(shade(hex("#ffd84d")));
+      ctx.beginPath(); ctx.arc(x, -0.5 * scale, 5 * scale, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = css(shade(hex("#fff1a8")));
+      ctx.beginPath(); ctx.arc(x, -0.5 * scale, 3 * scale, 0, 2 * Math.PI); ctx.fill();
+    }
+    for (const t of bodies.moon) {
+      const x = nowX + (t - now) / secPx;
+      if (x < -6 * scale || x > w + 6 * scale) continue;
+      ctx.fillStyle = css(shade(hex("#f6f0d4")));
+      ctx.beginPath(); ctx.arc(x, 0, 4.5 * scale, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = css(shade(skyAt(sunElevation(t, lon, lat, off))));
+      ctx.beginPath(); ctx.arc(x + 2.2 * scale, -1 * scale, 4 * scale, 0, 2 * Math.PI); ctx.fill();
+    }
+    // the train at now: the present-time marker
+    const e = sunElevation(now, lon, lat, off);
+    const len = TRAIN_LEN * scale, th = TRAIN_H * scale, tx = nowX - len / 2;
+    const top = railRow - th, l = daylight(e);
+    ctx.fillStyle = css(shade(mix(hex("#9c3a33"), hex("#e2574a"), l)));
+    ctx.beginPath(); ctx.roundRect(tx, top, len, th, [scale, 2.4 * scale, scale * 0.5, scale * 0.5]); ctx.fill();
+    ctx.fillStyle = l > 0.5 ? "#fff6e0" : "#ffd98a";
+    for (let i = 0; i < 4; i++) ctx.fillRect(tx + (1.6 + i * 3.6) * scale, top + 1.1 * scale, 2.4 * scale, 1.6 * scale);
+    ctx.restore();
+  }
+  // T-1641: frames only while the clock moves; paused, a change of the clock, the view or the
+  // holidays draws once
+  const live = !perfOff("clock"); // ?perfOff=clock (T-045, measurement only): drawn once, never moving
+  const frame = () => { raf = 0; draw(); if (live && clock.ticking) raf = requestAnimationFrame(frame); };
+  const wake = () => { draw(); if (live && !raf && clock.ticking) raf = requestAnimationFrame(frame); };
+  const offs = [clock.onChange(wake), viewShift.subscribe(wake), viewCentre.subscribe(wake), holidaysNear.subscribe(wake), rushNear.subscribe(wake)];
+  return () => { cancelAnimationFrame(raf); for (const f of offs) f(); ro.disconnect(); mo.disconnect(); };
+}
+
+export function SkyBanner({ skyTip, bandTip }: { skyTip?: string; bandTip: string }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => startSky(ref.current!), []);
+  return (
+    <div class="sky">
+      <canvas ref={ref} class="sky-canvas" />
+      <i class="sky-hit" data-tip={skyTip} />
+      <i class="band-hit" data-tip={bandTip} />
+    </div>
+  );
+}

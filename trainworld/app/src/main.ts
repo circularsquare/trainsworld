@@ -1,0 +1,848 @@
+// Entry point: wires game state, the map and its overlay, the UI and the workers together.
+//
+//   game/     state the UI reads: the world snapshot (save + worker results), UI state, the clock
+//   map/      MapLibre basemap, the overlay canvas and its WebGL renderer, picking, the tools
+//   ui/       Preact components (dock, top bar, toolbar, inspector, settings)
+//   workers/  the clock worker (owns the network, T-025) and the demand pool (T-026)
+//
+// URL parameters: docs/code-map.md, "URL switches".
+
+import "./ui/style.css";
+import "./ui/zenmaru.css";
+// each language's font faces (T-2636); here, not in i18n/index.ts, which the workers import and where CSS injection throws
+import "./i18n/huninn.css";
+import "./i18n/hanziround.css";
+import { computed, effect } from "@preact/signals";
+import { h, render } from "preact";
+import { clock, startClock } from "./game/clock";
+import { getWorldFrame, HOME_CITY } from "./game/cities";
+import { ZONE_LOAD_ZOOM } from "./game/zones";
+import { packToLngLat, lngLatToPack } from "./game/coords";
+import { ask, buildLevel, display, isBuildTool, mapShade, selection, shade, snapRoads, snapStreets, stopEditing, tab, tool, tramTrack, VIDEO } from "./game/ui";
+import { groupHover, lineGroups } from "./game/lineGroups";
+import { complexOf, dotGroups, inComplexView } from "./game/complexView";
+import { hot, onHot } from "./map/hovered";
+import { cancelLink, linkPicked, linking } from "./game/links";
+import { ACTION_KEYS, DEMAND_KEY, levelOfKeyCode, pickTool, TAB_KEYS, TOOL_KEYS, TRIP_KEY } from "./ui/toolKeys";
+import { addAllPassedSelected, constructBlueprints, newLineKey, toggleEditStopsSelected } from "./game/lineActions";
+import { hideUiKey } from "./ui/hideUi";
+import { followCapsLock, keyIsTheirs, releaseSelectsAfterMousePick } from "./ui/keys";
+import { stopsById, world } from "./game/world";
+import "./game/capLoad";
+import { removeThing, setTrackHider } from "./game/remove";
+import { redo, undo } from "./game/fareUndo";
+import { followTrack } from "./game/trackZones";
+import { baseTrips, incomeByDay, lastSaved, moneyState } from "./game/money";
+import { lineRunFactor } from "./game/regionMoney";
+import { stretchMoney } from "./game/stretchMoney";
+import { faresOf } from "./game/fareCurve";
+import { live } from "./map/live";
+import { setBasemapLabels, setBasemapShade, setSatellite, setBusRoadHint, setHillshade, setRailRoadHint, setTramRoadHint } from "./map/basemap";
+import { createMap } from "./map/mapView";
+import { startLite } from "./map/lite";
+import { startRealNetwork } from "./map/realNetwork";
+import { startCityBoundaries } from "./map/cityBoundaries";
+import { startZoneLoading } from "./map/zoneLoading";
+import { startRealmOverlay } from "./map/realmOverlay";
+import { openedZones } from "./game/openedZones";
+import { startZoneFocus } from "./map/zoneFocus";
+import { StationLabels } from "./map/stationLabels";
+import { stationIndexOf, tripAt } from "./map/network";
+import { cityOverview } from "./map/intercityView";
+import { Overlay } from "./map/overlay";
+import { carryGrids, pick } from "./map/pick";
+import { carryEdgeGrid } from "./map/snapIndex";
+import { NetworkRenderer } from "./map/renderer";
+import { followTrain } from "./map/trainFollow";
+import { makeSynth } from "./map/synth";
+import { Tools } from "./map/tools";
+import { busDraft } from "./map/busDraw";
+import { ferryDraft } from "./map/ferryDraw";
+import { touchInput, watchInput } from "./map/touch";
+import { TouchBar } from "./ui/TouchBar";
+import { StopMarkers } from "./map/stopMarkers";
+import { BusStopMarkers } from "./map/busStops";
+import { EdgeEditor } from "./map/edgeEdit";
+import { BlueprintBox } from "./map/blueprintBox";
+import { bpPicked, clearBpPicked, levelPicked, pickedState } from "./game/blueprintPick";
+import { NodeDrag } from "./map/nodeDrag";
+import { EndMarkers } from "./map/endMarkers";
+import { hoverAbove } from "./map/demandHover";
+import { CapacityMarkers } from "./map/capacityMarkers";
+import { ReversalMarks } from "./map/reversalMarks";
+import { lineSizeAt, startTrackHover } from "./map/trackHover";
+import { startTerrainTint } from "./map/terrainTint";
+import { startRestList } from "./map/hoverRest";
+import { startStationLife } from "./map/stationLife";
+import { soundLog, startBuildSounds } from "./map/buildSound";
+import { openings, startOpeningDay } from "./game/openingDay";
+import { startLineFigures } from "./game/lineFigures";
+import { startEditNote } from "./game/editNote";
+import { perfOff } from "./perfFlags";
+import { DEMAND_INDEX, type Selection } from "./game/types";
+import { anchor, kAtY, toLngLat, toLocal } from "./map/geo";
+import { Debug, perfText } from "./ui/Debug";
+import { Dock } from "./ui/Dock";
+import { ToolNotes } from "./ui/ToolNotes";
+import { DemandStopped } from "./ui/DemandStopped";
+import { NewVersion } from "./ui/NewVersion";
+import { FiguresStopped } from "./ui/FiguresStopped";
+import { figuresPeaks, figuresStopped, watchFigures } from "./game/figuresStopped";
+import { DeviceNote, deviceNoteApplies } from "./ui/DeviceNote";
+import { MapSky, TopBar } from "./ui/TopBar";
+import { cycleDemandEnd, MapTopLeft } from "./ui/DemandSelector";
+import { diagramShown, startDiagramView } from "./diagram/view";
+import { BlueprintBar } from "./ui/Blueprint";
+import { MapToolBar } from "./ui/ToolBar";
+import { startTroubleList } from "./ui/TroubleList";
+import { startZoomButtons } from "./ui/ZoomButtons";
+import { mountGuide } from "./ui/Guide";
+import { guideNewGame } from "./game/guide";
+import { mountKeepDot } from "./ui/KeepDot";
+import { startTips } from "./ui/tip";
+import { setupDone, startLoadingGate } from "./ui/LoadingScreen";
+import { choosing, lastLoadDied, loadCannotFinish, loadNoSimd, loadNoWebgl2, startGameWait, waitKey } from "./game/loading";
+import { hasWebgl2 } from "./map/webgl2";
+import { hasWasmSimd } from "./map/wasmSimd";
+import { outOfMemoryText } from "./game/loadText";
+import { startSaveSafety } from "./game/saveSafety";
+import { choiceFromUrl, showStartMenu, START_LOGO, worldCover } from "./ui/StartMenu";
+import { viewStart } from "./ui/locate";
+import { enterGame, fitAhead, startOpenFit } from "./ui/locate";
+import { realmsAhead } from "./game/realms";
+import { ClockClient, clockWorkerStatus, manageSaveSlot, onNetAhead, onNetworkSnapshot, onStationsAhead } from "./workers/clockClient";
+import { demandStuckSince, netAhead, startDemand, stationsAhead, submitNetwork } from "./workers/demandClient";
+import { startDemandViews, viewStats } from "./map/demandViews";
+import { startTripView } from "./map/tripView";
+import { modeColours } from "./game/palette";
+import { setClockDiagnosis } from "./game/diagnostics";
+
+// The mode colours are the network's, not the theme's (T-084): the top bar's split uses them. They
+// follow the bubble scheme (T-833).
+effect(() => { for (const [k, v] of Object.entries(modeColours())) document.documentElement.style.setProperty(`--mode-${k}`, v); });
+
+/** Other lines' strength while a line's stops are edited (T-233). */
+const STOP_EDIT_DIM = 0.3;
+/** Other lines' strength while a line or a group is selected (T-1812). */
+const SELECT_DIM = 0.55;
+
+const params = new URLSearchParams(location.search);
+const num = (k: string, d: number) => {
+  const v = Number(params.get(k));
+  return Number.isFinite(v) && v > 0 ? v : d;
+};
+const DEBUG = params.get("debug") === "1";
+const SYNTH = params.get("synth") === "1";
+
+// T-210: the game's own hover tag for every panel and control, never the browser's
+startTips();
+
+// ---- the clock: a new game starts on day 1 at 07:00 (morning peak) ----
+startClock(86400 + 7 * 3600);
+effect(() => clock.setBackground(display.value.runInBackground));
+if (params.get("paused") === "1") clock.setRunning(false);
+// T-149, T-172: the clock is held until the viewed city's demand has its first estimate
+startLoadingGate();
+// T-3307: MapLibre cannot start without WebGL2; say what to do, start nothing (the throw ends this module)
+if (!hasWebgl2()) {
+  loadNoWebgl2();
+  throw new Error("WebGL2 is not available"); // i18n-ignore: stops the page's setup; the player reads the failure screen
+}
+// T-3315: the simulation needs WASM SIMD (Safari 16.4); an older browser gets its own sentence, not a compile error
+if (!hasWasmSimd()) {
+  loadNoSimd();
+  throw new Error("WebAssembly SIMD is not available"); // i18n-ignore: stops the page's setup; the player reads the failure screen
+}
+// T-677: which game opens. A URL switch may say (ui/StartMenu.tsx); otherwise the start menu goes up
+// once the page is set up, and the workers start with the pick (`startWorkers` below), the map
+// already drawn under it.
+// T-2545: the last load in this tab never ended (iOS reloads a page that ran out of memory): say so and
+// start no game, or a game too big for the device would load and die again
+const lastDied = lastLoadDied();
+const urlChoice = lastDied ? null : choiceFromUrl();
+if (lastDied) loadCannotFinish(outOfMemoryText(), true);
+// Demand pool (T-026) first: its downloads and pack opening are the longest part of startup, so
+// they start before the map is set up (T-172). The clock worker's network snapshots go to
+// `submitNetwork` below (workers/demandClient.ts); `?demandTest=1` solves T-005's hand-made
+// network instead.
+const startDemandPool = (newGame: boolean) => {
+  startDemand(HOME_CITY, newGame);
+};
+if (urlChoice) {
+  startGameWait(waitKey(urlChoice));
+  startDemandPool(!!urlChoice.newGame);
+}
+
+// ---- map and overlay ----
+// T-927: the menu's class goes on before the map is made, so the map is sized without the dock
+if (!urlChoice) document.documentElement.classList.add("choosing");
+const map = createMap(document.getElementById("map")!);
+if (!urlChoice) map.jumpTo(worldCover(map.getContainer()));
+// T-2774: the launch video's view (`?video=1`, video.tsx) has no boundaries and nothing darkened
+if (!VIDEO) {
+  startCityBoundaries(map);
+  startZoneLoading(map); // T-343: zones whose demand has not arrived, grey with a loading bar
+  startRealmOverlay(map); // T-975: the realms not shown, dark with a button each
+} else void import("./video").then((m) => m.startVideo(map));
+const demandSelectorRoot = document.createElement("div");
+map.getContainer().appendChild(demandSelectorRoot);
+render(h(MapTopLeft, null), demandSelectorRoot); // the demand buttons and the stations full alert (T-231)
+// T-2657: demand stopped for good: the notice at the top centre; Reload writes the autosave first
+const demandStoppedRoot = document.createElement("div");
+map.getContainer().appendChild(demandStoppedRoot);
+render(h(DemandStopped, { save: () => client.saveBeforeReload() }), demandStoppedRoot);
+// T-2962: a file of this tab gone from the server after a publish: a notice with Reload, which saves first
+const newVersionRoot = document.createElement("div");
+map.getContainer().appendChild(newVersionRoot);
+render(h(NewVersion, { save: () => client.saveBeforeReload() }), newVersionRoot);
+// T-3314: the clock worker or the demand pool has gone quiet for minutes: a notice with Reload
+const figuresStoppedRoot = document.createElement("div");
+map.getContainer().appendChild(figuresStoppedRoot);
+render(h(FiguresStopped, { save: () => client.saveBeforeReload() }), figuresStoppedRoot);
+// T-2802, T-2839: a phone has no trips between cities, and a device reporting 4 GB or less may not run well; said once per game load
+if (deviceNoteApplies()) {
+  const noMarketRoot = document.createElement("div");
+  map.getContainer().appendChild(noMarketRoot);
+  render(h(DeviceNote, null), noMarketRoot);
+}
+const blueprintBarRoot = document.createElement("div");
+map.getContainer().appendChild(blueprintBarRoot);
+render(h(BlueprintBar, null), blueprintBarRoot); // T-353: the Select tool's Disable and Enable at the top centre
+const toolBarRoot = document.createElement("div");
+map.getContainer().appendChild(toolBarRoot);
+render(h(MapToolBar, null), toolBarRoot); // T-2282, T-2284: the track and station bars in its place, and the mode's aura
+const skyRoot = document.createElement("div");
+map.getContainer().appendChild(skyRoot);
+render(h(MapSky, null), skyRoot); // T-1868: the day and night picture at the map's top right
+startTroubleList(map.getContainer()); // T-1433: what is wrong on the network, at the lower right
+startZoomButtons(map); // T-3268: plus and minus at the right edge, Settings > Map hides them
+mountGuide(map.getContainer()); // T-1822: the Getting started card under the day and night picture
+mountKeepDot(); // T-1832: counts the hour of play before the yellow dot by the search glass shows
+const renderer = new NetworkRenderer();
+renderer.checkPatch = params.get("patch") === "check"; // T-1029
+// T-2763: blueprint track the player removes leaves the screen at the click
+setTrackHider({
+  hide: (edge) => renderer.hideEdge(edge),
+  show: () => renderer.unhideEdges(),
+  onLine: (edge) => {
+    const l = renderer.net?.lines;
+    if (!l) return true;
+    for (let i = 0; i < l.count; i++) if (l.edge[i] === edge) return true;
+    return false;
+  },
+});
+/** A click on the commuter bubbles (T-097; set below once the demand views start). */
+let demandClick: ((x: number, y: number, add: boolean, under?: boolean) => Selection | undefined) | null = null;
+let demandHover: ((x: number, y: number) => string[] | null) | null = null;
+const overlay = new Overlay(map, renderer, () => {
+  let sel = selection.peek();
+  // a selected train that has turned at its terminal is followed onto its next trip (T-245)
+  const followed = followTrain(renderer, sel, clock.now());
+  if (followed !== sel) selection.value = sel = followed;
+  const d = display.peek();
+  const n = renderer.net;
+  const hovered = groupHover.peek();
+  // T-1812: a selected group draws all its lines selected, until the pointer is on one of its columns
+  const groupLines = sel?.kind === "group" && hovered === null ? (lineGroups(world.peek()?.save.lines ?? []).get(sel.group) ?? []).map((l) => l.num) : undefined;
+  return {
+    showTrains: d.trains,
+    byLevel: d.trackColour === "height",
+    bySpeed: d.trackColour === "speed",
+    byProfit: d.trackColour === "profit",
+    selLine: hovered ?? (sel?.kind === "line" || sel?.kind === "train" ? Number(sel.line) : -1),
+    selLines: groupLines,
+    selTrain: sel?.kind === "train" ? sel : null, // T-242: drawn over the others with a halo
+    // T-233: the other lines recede while stops are edited, and past the group view's hovered line (T-1791);
+    // T-1812: a little for a selected line or group
+    dimOthers: stopEditing.peek() || hovered !== null ? STOP_EDIT_DIM : sel?.kind === "line" || groupLines?.length ? SELECT_DIM : 1,
+    selEdge: sel?.kind === "track" ? sel.edge : -1,
+    selStation: sel?.kind === "station" && n ? stationIndexOf(n, sel.station) : -1,
+    // complex view: every member's box drawn selected (T-163)
+    selStations: [
+      ...(sel?.kind === "station" && n && inComplexView(sel.station) ? complexOf(sel.station).map((id) => stationIndexOf(n, id)) : []),
+      // the blueprint stations picked with the blueprint tool's box (T-333)
+      ...(n ? bpPicked.value.stations.map((id) => stationIndexOf(n, String(id))) : []),
+    ],
+    crowds: d.platformCrowds !== "off", // T-164, T-219
+    flatMarks: d.flatMarks,
+    rampMarks: d.rampMarks,
+    groups: dotGroups.peek(), // zoomed out, the stations the distance rule groups are one dot (T-217, T-225)
+    hotLine: hot().line,
+    hotEdge: hot().edge,
+    hotStations: n ? hot().stations.map((id) => stationIndexOf(n, id)) : [],
+    hotBuses: hot().buses,
+    lineScale: d.lineWidth, // T-1248
+  };
+});
+onHot(() => overlay.invalidate()); // T-730: what the pointer is on lightens
+groupHover.subscribe(() => overlay.invalidate());
+live.map = map;
+live.overlay = overlay;
+effect(() => {
+  renderer.lineBands = display.value.lineBands && !perfOff("bands"); // T-1886
+  overlay.invalidate();
+});
+// T-2420: the Profit view's colours, worked out only while it is shown
+effect(() => {
+  const sm = display.value.trackColour === "profit" ? stretchMoney.value : null;
+  renderer.setProfit(sm?.ratio ?? null);
+  renderer.buses.setProfit(sm?.buses ?? null); // T-2452
+  overlay.invalidate();
+});
+if (params.has("city") && urlChoice?.game) viewStart(urlChoice.game.start, urlChoice.game.mode); // T-728: `?new=1&city=tyo`
+// Panning follows the zone under the view, except while a bubble, station or trip selection holds
+// the focus; the zones beside it on screen show their bubbles too (T-276, map/zoneFocus.ts).
+startZoneFocus(map);
+startOpenFit(); // T-895
+
+// ---- the clock worker: owns the network; its states and trips go to the renderer ----
+const client = new ClockClient();
+setClockDiagnosis(() => client.diagnosis()); // T-3313: for feedback reports
+watchFigures(() => client.unansweredSince(), demandStuckSince); // T-3314
+// T-895, T-1196: a game opened from the saves panel (the page reloaded into it) fits its network
+if (urlChoice?.slot || (urlChoice?.pending && !urlChoice.game)) client.fitNextGame();
+// T-2142: a new game starts paused, a sandbox too (the tutorial's last step is the play button); a
+// `?new=1` check page keeps running as before
+const pauseNewGame = (newGame: boolean | undefined) => { if (newGame && params.get("new") !== "1") clock.setRunning(false); };
+if (urlChoice) {
+  pauseNewGame(urlChoice.newGame || params.get("load") === "new"); // a real network's new game too
+  guideNewGame(!!urlChoice.newGame);
+  client.start(urlChoice);
+}
+startSaveSafety();
+startDiagramView(client, document.getElementById("map")!); // T-2160
+if (SYNTH) {
+  const s = makeSynth(Math.round(num("lines", 500)), Math.round(num("trains", 10000)));
+  renderer.setNetwork(s);
+  renderer.onEpoch = (e) => renderer.setTrips(e, 0, s.trips);
+} else {
+  // Demand views (T-084): network layers, the commuter dot map, a station's riders.
+  const views = startDemandViews(overlay, map);
+  demandClick = views.click;
+  demandHover = views.hover;
+  let trackSoon = false;
+  client.onState = (s) => {
+    const put = () => {
+      // a train count: the same buffers with the new run profiles (T-229)
+      if (s.service && renderer.net) renderer.setService(s.render.phases, s.render.meta);
+      else if (s.net) {
+        const was = renderer.net;
+        renderer.setNetwork(s.net); // built in the worker (T-063)
+        carryGrids(was, s.net, renderer.checkPatch); // T-1030
+        carryEdgeGrid(was, s.net, renderer.checkPatch);
+        // T-1047; T-1021: a task of its own right after, so a big network's first state is two tasks
+        if (!trackSoon) { trackSoon = true; setTimeout(() => { trackSoon = false; followTrack(renderer.net, world.peek()); }, 0); }
+        // the placers that follow the network (the select tool's squares) run on map frames, which a paused game has none of (T-1537)
+        map.triggerRepaint();
+      }
+      views.networkChanged();
+      blueprintBox.refreshHighlight();
+      overlay.invalidate();
+    };
+    // T-1071: a train count is drawn from the moment it takes effect, with its own trips
+    if (s.effectiveAt !== undefined) {
+      renderer.stage(s.version, s.effectiveAt, put);
+      overlay.invalidate();
+    } else {
+      renderer.flushStaged();
+      put();
+    }
+  };
+  if (DEBUG) (window as any).twViews = { stats: viewStats, overlay: views.overlay, hover: views.hover, click: views.click };
+  client.onTrips = (epoch, version, trips, board, ends, nexts, bays) => {
+    renderer.setTrips(epoch, version, trips, board, ends, nexts, bays);
+    overlay.invalidate();
+  };
+  renderer.onEpoch = (e) => client.setEpoch(e);
+  // The draw anchor follows the view (T-307, map/geo.ts): asked for when a move ends far from it;
+  // once the network drawn at the new one is in, a MapLibre frame moves everything placed on it
+  // (names, tags, the trip view) with the same camera.
+  const bounds = () => { const b = map.getBounds(); client.followBounds(b.getWest(), b.getSouth(), b.getEast(), b.getNorth()); };
+  map.on("moveend", () => {
+    const c = map.getCenter();
+    client.followView(c.lng, c.lat, map.getZoom());
+    // T-871: zoomed out, water masks are left to the edits that need them
+    if (map.getZoom() > ZONE_LOAD_ZOOM) bounds();
+  });
+  bounds();
+  client.onAnchor = () => {
+    map.triggerRepaint();
+    overlay.invalidate();
+  };
+}
+const tools = new Tools(map, overlay, client);
+// T-1260: on a touch screen a build tool's tap previews, and a control bar by it confirms
+watchInput();
+render(h(TouchBar, null), tools.touchHost);
+// The blueprint tool: a drag box picks blueprint track and stations to switch off or on (T-333).
+const blueprintBox = new BlueprintBox(map, overlay, client);
+live.tools = tools;
+// Stop editing (T-233): a toggle marker on every station; the page class hides the demand views
+tools.stops = new StopMarkers(map, overlay, (station) => tools.toggleStop(station), (station, tier) => tools.loopStop(station, tier));
+tools.busStops = new BusStopMarkers(map, overlay);
+// T-797: a large icon over every station where a line reverses partway
+if (!SYNTH) new ReversalMarks(map, overlay);
+// The trip explorer (T-195): its clicks, its query and its drawing over the demand views.
+const tripTool = startTripView(map, overlay);
+// Reshaping a selected stretch of blueprint track (T-064).
+const edgeEditor = new EdgeEditor(map, overlay, client);
+live.edgeEditor = edgeEditor;
+effect(() => {
+  selection.value;
+  tool.value;
+  world.value;
+  void edgeEditor.refresh();
+});
+// Dragging blueprint nodes: track ends, junctions, stations (T-093).
+const nodeDrag = new NodeDrag(map, overlay, client);
+live.nodeDrag = nodeDrag;
+// Markers on loose ends (track and station tools) and on draggable blueprint points (T-416).
+const endMarks = new EndMarkers(map, overlay);
+// T-486: clicks reach only what is drawn on top. The points' squares are drawn over the demand
+// bubbles, so there neither the bubbles' clicks nor their hover tags answer, and the trains drawn
+// under the squares are passed over too.
+const onMark = (x: number, y: number) => endMarks.at(x, y);
+const prevAbove = hoverAbove.at;
+// T-526: with a build tool on, the demand views are drawn beneath the network, so the network and
+// the tool's own tag come before a bubble's tag
+const buildAbove = (x: number, y: number) => isBuildTool(tool.peek()) && (tools.tagShown || !!pick(overlay, x, y, display.peek().trains));
+// T-1515 (Anita): with the select tool a line, bus line, station or train within its own reach is
+// picked over a demand bubble drawn above it, for clicks and hovers alike; a bubble keeps its wider
+// reach (MIN_PICK_PX, bubblePad) only where none of those is near
+const NET_FIRST = new Set(["line", "station", "train"]);
+let netFirstAt = { x: NaN, y: NaN, t: 0, hit: false };
+const netFirst = (x: number, y: number) => {
+  if (tool.peek() !== "select" || linking.peek() !== null) return false;
+  // T-1550: with the zone bubbles drawn (zoom 8.5 and below, `OVERVIEW_ZOOM`) the lines are a few pixels across them and a bubble is the target
+  if (cityOverview.peek()) return false;
+  // a pointer move asks this several times (the tag, the cursor, the track tag): one pick serves them
+  const t = performance.now();
+  if (netFirstAt.x === x && netFirstAt.y === y && t - netFirstAt.t < 8) return netFirstAt.hit;
+  const hit = NET_FIRST.has(pick(overlay, x, y, display.peek().trains && !onMark(x, y))?.kind ?? "");
+  netFirstAt = { x, y, t, hit };
+  return hit;
+};
+hoverAbove.at = (x, y) => onMark(x, y) || buildAbove(x, y) || netFirst(x, y) || !!prevAbove?.(x, y);
+effect(() => {
+  document.documentElement.classList.toggle("building", isBuildTool(tool.value));
+});
+const demandOnTop = (x: number, y: number, add: boolean) => (onMark(x, y) || netFirst(x, y) ? undefined : demandClick?.(x, y, add));
+
+// Bus lines are drawn from the world's routes (T-1464, map/busLayer.ts)
+effect(() => {
+  if (renderer.buses.set(world.value)) overlay.invalidate();
+});
+// T-3084: while a bus line's route is redrawn, its current route is drawn muted under the draft
+effect(() => {
+  if (renderer.buses.setMuted(busDraft.value?.line ?? ferryDraft.value?.line ?? -1)) overlay.invalidate();
+});
+
+// Selection and display settings change what the overlay draws.
+effect(() => {
+  selection.value;
+  display.value;
+  overlay.invalidate();
+});
+
+const labels = new StationLabels(map.getContainer(), overlay, map);
+effect(() => {
+  const w = world.value;
+  if (w && !SYNTH) labels.set(w);
+});
+effect(() => labels.setVisible(display.value.stationNames && !SYNTH));
+startOpeningDay(); // T-1434
+startLineFigures(); // T-1665
+startEditNote(); // T-2125
+effect(() => {
+  openings.value;
+  const w = world.peek();
+  if (w && !SYNTH) labels.set(w);
+});
+const capacity = new CapacityMarkers(map.getContainer(), overlay, map);
+capacity.demandClick = demandOnTop;
+effect(() => {
+  const w = world.value;
+  const level = DEMAND_INDEX[clock.demand.value];
+  if (w && !SYNTH) capacity.set(w, level);
+});
+effect(() => capacity.setVisible(display.value.capacity && !SYNTH));
+// T-819, T-1125: in the traffic view, lines on track at capacity at the level in force, and those whose trains usually run full, get a red outline
+effect(() => {
+  const w = world.value, traffic = display.value.trackColour === "traffic" && display.value.fullMarks; // T-1152's switch
+  const full = w?.fullTrack[DEMAND_INDEX[clock.demand.value]];
+  renderer.setFull(traffic && full ? new Set(full.keys()) : null, traffic);
+  overlay.invalidate();
+});
+// Resting the pointer on track says what the track display shows there (T-157).
+startTrackHover(map, overlay);
+// T-732: resting the pointer lists what else is under it
+if (!SYNTH) startRestList(map, overlay, (x, y) => demandClick?.(x, y, false, true));
+// T-686: from the platforms' zoom, chimes, pops and faces as trains let riders off and on
+const stationLife = SYNTH ? null : startStationLife(map, overlay, (notes) => client.post({ kind: "lineNotes", notes }));
+if (DEBUG && stationLife) (window as any).twLife = stationLife;
+if (!SYNTH) startBuildSounds(); // T-1282: placing and constructing blueprint
+map.on("load", () => {
+  // T-974: no city names behind the start menu; T-1567: no names at all behind its logo
+  effect(() => setBasemapLabels(map, display.value.basemapLabels && !(choosing.value && START_LOGO), choosing.value));
+  const contrast = computed(() => display.value.basemapContrast);
+  effect(() => { shade.value; setBasemapShade(map, mapShade.value, contrast.value); });
+  effect(() => setSatellite(map, display.value.satellite)); // T-3249
+  effect(() => setHillshade(map, display.value.hillshade)); // T-1270
+  effect(() => setBusRoadHint(map, tool.value === "bus")); // T-2883
+  effect(() => setTramRoadHint(map, tool.value === "track" && tramTrack.value && snapStreets.value)); // T-2998
+  effect(() => setRailRoadHint(map, tool.value === "track" && !tramTrack.value && snapRoads.value)); // T-3129
+  startTerrainTint(map); // T-1270 stage 3
+  startLite(map); // T-1207
+  startRealNetwork(map); // T-682
+});
+effect(() => client.setShade(shade.value)); // save thumbnails are drawn in it (T-543)
+// T-039: the network's casing and inks come from game/shades.ts at each draw
+effect(() => {
+  mapShade.value;
+  overlay.invalidate();
+  map.triggerRepaint();
+});
+
+// A double click never zooms with a mouse: with the select tool it adds a point to track (T-2951,
+// map/edgeEdit.ts), with the track tool it ends a run. A finger's double tap zooms with the select tool.
+effect(() => {
+  if (tool.value === "select" && touchInput.value) map.doubleClickZoom.enable();
+  else map.doubleClickZoom.disable();
+  // a shift-click places a refused track point (T-410), which MapLibre's shift-drag zoom would eat
+  if (tool.value === "select") map.boxZoom.enable();
+  else map.boxZoom.disable();
+  map.getCanvas().style.cursor = tool.value === "select" ? "" : "crosshair";
+  if (tool.value !== "track") tools.reset();
+});
+
+// ---- picking and tools ----
+map.on("click", (e) => {
+  if (tool.peek() === "trip") tripTool.click(e); // T-195
+  else if (tool.peek() === "blueprint") return; // its pointer handlers pick (map/blueprintBox.ts)
+  else if (tool.peek() !== "select") touchInput.peek() ? tools.tap(e) : tools.click(e);
+  else selectAt(e.point.x, e.point.y, e.originalEvent.shiftKey);
+});
+/** The select tool's click at a map point (px): from the map, or from a capacity tag over it (T-256). */
+function selectAt(x: number, y: number, add: boolean) {
+  // linking a station into a complex (T-197): the station clicked is the other end
+  if (linking.peek() !== null) void linkPicked(pick(overlay, x, y, false, selection.peek()));
+  // lines, stations and trains, then commuter bubbles while they are shown, then the rest (T-1515)
+  else selection.value = demandOnTop(x, y, add) ?? pick(overlay, x, y, display.peek().trains && !onMark(x, y), selection.peek(), true, (num, seg) => lineSizeAt(overlay, num, seg));
+}
+capacity.selectClick = selectAt;
+// Linking stops when its station is no longer the selection or a tool is picked.
+effect(() => {
+  const s = selection.value, from = linking.value;
+  if (from !== null && (tool.value !== "select" || s?.kind !== "station" || s.station !== from)) linking.value = null;
+});
+if (!SYNTH && !perfOff("hover")) // ?perfOff=hover: T-045 measurement only
+  map.on("mousemove", (e) => {
+    if (e.originalEvent.buttons) return; // dragging the map: no hover
+    if (touchInput.peek()) return; // the mouse events a browser makes of a tap (T-1260)
+    if (tool.peek() === "trip") {
+      // a station under the pointer is picked as the trip's end (T-221)
+      const c = tripTool.stationAt(e.point.x, e.point.y) ? "pointer" : "crosshair";
+      if (map.getCanvas().style.cursor !== c) map.getCanvas().style.cursor = c;
+      return;
+    }
+    if (tool.peek() === "blueprint") return;
+    if (tool.peek() !== "select") return tools.move(e);
+    // a blueprint point drags even over a demand bubble (T-474), so its grab cursor comes first
+    const cur = linking.peek() !== null ? (pick(overlay, e.point.x, e.point.y, false)?.kind === "station" ? "pointer" : "crosshair") : nodeDrag.hit(e.point.x, e.point.y)?.movable ? "grab" : demandHover?.(e.point.x, e.point.y) ? "pointer" : pick(overlay, e.point.x, e.point.y, display.peek().trains) ? "pointer" : "";
+    // (written only when it changes: a style write each mouse move costs a restyle)
+    if (map.getCanvas().style.cursor !== cur) map.getCanvas().style.cursor = cur;
+  });
+// The focused control's own keys stay with it: all of them in a text field, the arrows, Enter and
+// Space in a select (ui/keys.ts, T-183, the same rule as the search box's "/").
+releaseSelectsAfterMousePick();
+followCapsLock();
+hideUiKey(); // F2 hides the interface for screenshots (T-1491)
+// Ctrl+S saves the game now (T-1251), in any panel or field, instead of the browser saving the page
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    if (!e.repeat) manageSaveSlot("save");
+  }
+}, true);
+window.addEventListener("keydown", (e) => {
+  if (keyIsTheirs(e)) return;
+  // Esc, one thing at a time (T-096): a question waiting above the bottom bar is answered no; a
+  // node or corner being dragged goes back (T-093, T-064); a half-drawn route is dropped, and the
+  // next Esc leaves the tool (tools.key); with no tool on, the selection clears, then the diagram closes (below).
+  if (e.key === "Escape" && ask.peek()) {
+    ask.value = null;
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "Escape" && (nodeDrag.cancel() || edgeEditor.cancel() || cancelLink() || blueprintBox.cancel())) {
+    e.preventDefault();
+    return;
+  }
+  // 1, 2, 3, 4: draw track, place stations, delete, select (TOOL_KEYS), from any tab (T-096); the Build tab opens. The
+  // key of the tool already on does nothing (Esc is the way out), so a half-drawn route survives.
+  // T: the trip explorer (T-195, T-444), from any tab; the tab stays (the inspector shows the trip)
+  if (e.key.toLowerCase() === TRIP_KEY &&!e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+    e.preventDefault();
+    nodeDrag.cancel();
+    edgeEditor.cancel();
+    if (tool.peek() !== "trip") pickTool("trip");
+    return;
+  }
+  // N new line, S edit stops of the selected line, C construct blueprints (T-670); not under a question
+  const act = ACTION_KEYS[e.key.toLowerCase()];
+  if (act && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat && !ask.peek()) {
+    e.preventDefault();
+    nodeDrag.cancel();
+    edgeEditor.cancel();
+    if (act === "newLine") void newLineKey();
+    else if (act === "editStops") toggleEditStopsSelected();
+    else if (act === "addPassed") void addAllPassedSelected();
+    else void constructBlueprints();
+    return;
+  }
+  // Shift+1 to Shift+7: the drawing elevation (T-1701), from any tab
+  const lvKey = e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey ? levelOfKeyCode(e.code) : null;
+  if (lvKey !== null) {
+    e.preventDefault();
+    if (e.repeat) return;
+    // T-2285: while the selection bar shows a blueprint pick with its level buttons, the keys re-level the pick
+    const ps = pickedState.peek(), t = tool.peek();
+    if ((t === "blueprint" || t === "select") && !ps.built && ps.edges > 0) void levelPicked(lvKey);
+    else buildLevel.value = lvKey;
+    return;
+  }
+  // B, L, A, F, Y: the dock's tabs (T-1819), from any tab; a half-drawn route stays
+  const tabKey = TAB_KEYS[e.key.toLowerCase()];
+  if (tabKey && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+    e.preventDefault();
+    tab.value = tabKey;
+    return;
+  }
+  // D: the demand bubbles, None, Homes, Destinations, Total (T-2338), from any tab
+  if (e.key.toLowerCase() === DEMAND_KEY && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+    e.preventDefault();
+    cycleDemandEnd();
+    return;
+  }
+  const k = TOOL_KEYS[e.key.toLowerCase()];
+  if (k &&!e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+    e.preventDefault();
+    nodeDrag.cancel();
+    edgeEditor.cancel();
+    if (tool.peek() !== k) pickTool(k);
+    tab.value = "build";
+    return;
+  }
+  // the blueprint tool: Esc clears the pick, then leaves the tool; E switches the pick on or off
+  if (tool.peek() === "blueprint" && e.key === "Escape" && (bpPicked.peek().edges.length || bpPicked.peek().stations.length)) {
+    e.preventDefault();
+    clearBpPicked();
+    return;
+  }
+  if (blueprintBox.key(e)) {
+    e.preventDefault();
+    return;
+  }
+  if (tools.key(e)) {
+    e.preventDefault();
+    return;
+  }
+  // T-2797: the key a player guesses (a Mac's delete is Backspace): what is selected goes as by its
+  // Remove button; with nothing selected, Delete picks the delete tool
+  if ((e.key === "Delete" || e.key === "Backspace") && tool.peek() === "select" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !ask.peek()) {
+    const s = selection.peek();
+    if (s?.kind === "track" || (s?.kind === "station" && !inComplexView(s.station))) {
+      e.preventDefault();
+      void removeThing(s.kind === "track" ? { kind: "track", edge: s.edge } : { kind: "station", node: Number(s.station) });
+      return;
+    }
+    if (!s && e.key === "Delete") {
+      e.preventDefault();
+      pickTool("delete");
+      tab.value = "build";
+      return;
+    }
+  }
+  // Undo and redo (blueprint edits, and fare changes while they are the last, T-1130; constructing is final, SPEC 6.4).
+  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z" && !e.shiftKey) {
+      e.preventDefault();
+      void undo();
+      return;
+    }
+    if (k === "y" || (k === "z" && e.shiftKey)) {
+      e.preventDefault();
+      void redo();
+      return;
+    }
+  }
+  if (e.key === "Escape") {
+    if (selection.peek() === null && diagramShown.peek()) diagramShown.value = false;
+    else selection.value = null;
+  }
+  // Space: pause, or carry on at the speed that was running (the clock keeps it while paused).
+  if (e.key === " " && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault();
+    clock.setRunning(!clock.running.peek());
+  }
+});
+// A focused button would also "click" on the space bar's keyup; the key is ours.
+window.addEventListener("keyup", (e) => {
+  if (e.key === " " && !keyIsTheirs(e)) e.preventDefault();
+});
+
+// ---- UI ----
+render(h(Dock, null), document.getElementById("dock-root")!);
+render(h(TopBar, null), document.getElementById("topbar-root")!);
+render(h(ToolNotes, null), document.getElementById("tools-root")!);
+
+// ---- demand (the pool started at the top, or with the pick) ----
+onNetworkSnapshot(submitNetwork);
+onStationsAhead((frame, xy, fine, built, home) => {
+  stationsAhead(frame, xy, fine, built);
+  // T-1539: the camera on the loading save's network now, so its cached figures can show before it is worked out
+  if (perfOff("cacheAhead")) return;
+  if (client.fitPending) fitAhead(frame, xy, home);
+  realmsAhead(frame, xy);
+});
+onNetAhead(netAhead);
+
+// ---- T-677: the start menu; the pick starts demand, then the clock worker, in startup's order ----
+if (!urlChoice) showStartMenu((choice) => {
+  // T-728: a new game opens on its start city, or the world map; a real network (T-731) has stations, so it does not open bare
+  enterGame(); // T-2477: a pan before the pick does not count
+  if (choice.game) viewStart(choice.game.start, choice.game.mode);
+  else if (!choice.newGame) client.fitNextGame(); // T-895: a saved game opens on its network
+  startGameWait(waitKey(choice));
+  startDemandPool(!!choice.newGame && !choice.game?.real);
+  pauseNewGame(choice.newGame);
+  guideNewGame(!!choice.newGame);
+  client.start(choice);
+});
+
+// ---- ?debug=1: readout and probes ----
+if (DEBUG) {
+  render(h(Debug, null), document.getElementById("debug-root")!);
+  let mapMs = 0, mapN = 0, lastMapFrames = 0, lastAt = performance.now();
+  // MapLibre has no public frame-start hook; this wraps the internal `_render`, and the readout
+  // says "idle" if a release renames it.
+  const internal = map as unknown as { _render?: (ts: number) => unknown };
+  if (typeof internal._render === "function") {
+    const orig = internal._render.bind(map);
+    internal._render = (ts: number) => {
+      const a = performance.now();
+      const r = orig(ts);
+      mapMs += performance.now() - a;
+      mapN++;
+      return r;
+    };
+  }
+  setInterval(() => {
+    const now = performance.now();
+    const gap = overlay.frameGap.avg();
+    const mapPerS = ((overlay.mapFrames - lastMapFrames) * 1000) / (now - lastAt);
+    lastMapFrames = overlay.mapFrames;
+    lastAt = now;
+    perfText.value = [
+      `${renderer.tripCount.toLocaleString()} trips this hour${SYNTH ? " (synthetic)" : ""}`, // i18n-ignore
+      `Draw   ${overlay.drawMs.avg().toFixed(3)} ms avg, ${overlay.drawMs.max().toFixed(2)} max`, // i18n-ignore
+      `Map    ${mapN ? (mapMs / mapN).toFixed(2) + " ms, " + mapPerS.toFixed(0) + " frames/s" : "idle"}`, // i18n-ignore
+      `GPU    ${renderer.gpuMs === null ? "no timer" : renderer.gpuMs.toFixed(2) + " ms"}`, // i18n-ignore
+      `Frame  ${gap ? gap.toFixed(1) + " ms, worst " + overlay.frameGap.max().toFixed(0) + " ms" : "idle"}`, // i18n-ignore
+      `Clock  ${clock.ticking ? clock.rate() + "x" : "stopped"}, epoch ${renderer.epoch}, ${renderer.rebases} re-bases`, // i18n-ignore
+      `Worker ${clockWorkerStatus.value}`, // i18n-ignore
+    ].join("\n");
+    mapMs = mapN = 0;
+  }, 250);
+
+  // T-015 lag probe: after each frame, the offset between the basemap's camera and the overlay's.
+  const lag = { on: false, samples: [] as number[] };
+  const lagFrame = () => {
+    if (!lag.on) return;
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      const a = overlay.camMatrix, b = overlay.lastDrawnMatrix;
+      if (a && b) {
+        const c = map.getCenter();
+        const px = (m: ArrayLike<number>) => {
+          const x = (c.lng + 180) / 360, s = Math.sin((c.lat * Math.PI) / 180);
+          const y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+          const w = m[3] * x + m[7] * y + m[15];
+          return [(m[0] * x + m[4] * y + m[12]) / w, (m[1] * x + m[5] * y + m[13]) / w];
+        };
+        const [ax, ay] = px(a), [bx, by] = px(b);
+        lag.samples.push(Math.hypot(((ax - bx) / 2) * overlay.canvas.clientWidth, ((ay - by) / 2) * overlay.canvas.clientHeight));
+      }
+    };
+    ch.port2.postMessage(0);
+    requestAnimationFrame(lagFrame);
+  };
+
+  // GPU train positions against the CPU's float64 evaluation of the same keyframes (T-016, T-025),
+  // on a context of its own.
+  const checkPrecision = (opts: { t: number; frames?: number; dt?: number }) => {
+    const n = renderer.net!;
+    const gl = document.createElement("canvas").getContext("webgl2")!;
+    const r = new NetworkRenderer();
+    r.init(gl);
+    r.setNetwork(n);
+    const errs: number[] = [];
+    for (let f = 0; f < (opts.frames ?? 60); f++) {
+      const t = opts.t + f * (opts.dt ?? 1);
+      const e = Math.floor(t / 3600) * 3600;
+      const src = (renderer as any).tripsBy.get(e);
+      if (!src) continue;
+      r.setTrips(e, src.version, src.data, undefined, src.ends);
+      const gpu = r.probe(t);
+      for (let i = 0; i < r.tripCount; i++) {
+        const at = tripAt(n, src.data[i * 2], src.data[i * 2 + 1] + e, t, src.ends ? src.ends[i] + e : -Infinity);
+        if (!at) continue;
+        errs.push(Math.hypot(gpu[i * 2] - at.x, gpu[i * 2 + 1] - at.y) / kAtY(at.y, n.anchor));
+      }
+    }
+    // browsers keep a dozen or so contexts and drop the oldest past that, the game's own among them
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    errs.sort((a, b) => a - b);
+    return { n: errs.length, p50M: errs[errs.length >> 1], maxM: errs[errs.length - 1] };
+  };
+
+  (window as any).tw = {
+    failDemand: (why = "forced by ?debug=1") => loadCannotFinish(why), // T-2657: stop demand as if a worker died
+    figures: { peaks: figuresPeaks, stopped: figuresStopped }, // T-3314: the longest quiet seen, and the notice's signal
+    soundLog, map, overlay, renderer, labels, capacity, clock, world, selection, display, shade, tools, client, checkPrecision, moneyState, incomeByDay, lastSaved, pick, tripAt, lineRunFactor,
+    // the current draw anchor (T-307), mercator 0..1, and conversions with it
+    get originMerc() { return anchor().merc; },
+    anchor, toLocal, toLngLat,
+    // T-2104: each line's base fare income a day, US$, under a share by boardings of `byBoardings` (1 the even share)
+    baseFares: (dv: Parameters<typeof baseTrips>[1], byBoardings?: number) => {
+      const w = world.peek(), m = moneyState.peek();
+      if (!w || !m) return null;
+      const base = faresOf(m.fares, m.fares).base * m.economy;
+      return Object.fromEntries([...baseTrips(w, dv, m.fares, stopsById(w), byBoardings)].map(([id, t]) => [id, t * base]));
+    },
+    frame: () => { const f = getWorldFrame(); return { kind: f.kind, lon: f.lon, lat: f.lat }; }, packToLngLat, lngLatToPack,
+    select: (s: unknown) => (selection.value = s as any),
+    // T-729: the save's list of zones started in or reached
+    opened: () => { const o = openedZones.peek(); return o === null ? o : [...o]; },
+    lagStart: () => {
+      lag.samples = [];
+      if (!lag.on) {
+        lag.on = true;
+        requestAnimationFrame(lagFrame);
+      }
+    },
+    lagStop: () => {
+      lag.on = false;
+      const off = lag.samples.filter((v) => v > 0.01);
+      return { frames: lag.samples.length, framesOff: off.length, maxPx: Math.max(0, ...lag.samples) };
+    },
+    stats: () => ({ draws: overlay.frames, mapFrames: overlay.mapFrames, drawMs: overlay.drawMs.avg(), gap: overlay.frameGap.avg() }),
+    reset: () => {
+      overlay.frames = overlay.mapFrames = 0;
+      overlay.drawMs.clear();
+      overlay.frameGap.clear();
+    },
+  };
+}
+setupDone(); // T-950: an uncaught error before this line ends the loading card

@@ -1,0 +1,2378 @@
+//! The demand workers' API (T-026, T-021): one city's local demand on the player's network, solved
+//! period by period. Each demand worker owns one `DemandApi` (its own copy of the city) and
+//! solves the periods it was given; periods are independent, so a pool runs them side by side
+//! (SPEC 4.4, 7; notes/T-026.md).
+//!
+//! Per worker: `new` (parse the pack, rebuild the zone gravity), then for every network snapshot
+//! `set_network` (station access and subzones, shared by all periods), then per period `solve`
+//! (the free-flow first estimate) and `crowd` (one crowding round, method of successive
+//! averages). Results per period are read with `summary`, `seg`, `board`, `alight` and
+//! `load_of_crush`, all per route node: line by line, the stops in order (run 0) and then in
+//! reverse (run 1), the same order `kernel::build_graph` makes.
+//!
+//! Commutes only; the everyday outings are `everyday.rs`, the regional market `intercity.rs`. A
+//! period carries its share of the day's trips to work and trips home. Mode choice runs home -> work; the trips home are the same
+//! station pairs reversed (riders go back the way they came, which is exact for park-and-ride),
+//! so a period's rail matrix is `to_work x OD + to_home x OD^T`, scaled from one solve.
+
+use super::clock::now_ms;
+use super::network::Catch;
+use super::days::{day_rate, load_factor, share_out, share_ret, WEEKDAY, WORK};
+use super::kernel::*;
+use super::lengths::{len_kernel, len_zero, scale_to, LenOut, LenSums, N_LEN};
+use super::lod::{self, Lod};
+use super::network::{Network, PERIODS, TRAM_CARS};
+use super::pack::{self, City};
+use crate::track::params::{LEVELS, PERIOD_HOURS, PERIOD_LEVEL};
+use std::sync::Arc;
+use wasm_bindgen::prelude::*;
+
+/// Share of the day's trips to work that start in each period (order of `PERIOD_HOURS`: 6-10,
+/// 10-16, 16-20, 20-24, 0-6). Judgement after US travel-survey commute start times; notes/T-026.md.
+pub const TO_WORK: [f32; PERIODS] = [0.70, 0.12, 0.06, 0.04, 0.08];
+/// Same for trips home.
+pub const TO_HOME: [f32; PERIODS] = [0.02, 0.18, 0.58, 0.16, 0.06];
+/// Busiest hour of a period against its mean hour (crowding is judged at the busiest hour).
+pub const PEAK_HOUR_FACTOR: [f32; PERIODS] = crate::track::params::PEAK_HOUR_FACTOR;
+/// A 20 m car (T-2186, notes/T-2147.md): its seats; its rated load, 100%, which crowding is
+/// counted against (a New York car at its planning guideline, Japan's 定員); and its crush load,
+/// 150% of rated, the most it takes (the queue, the wait for room, the boarding account). A bus
+/// is a third of a car in all three (`network::BUS_CARS`, T-2919).
+pub const SEATS_PER_CAR: f32 = 44.0;
+pub const RATED_PER_CAR: f32 = 160.0;
+pub const CRUSH_PER_CAR: f32 = 240.0;
+/// The rail propensity (docs/demand.md 4.3), one worldwide value fitted on six cities' real
+/// networks (T-509), 0 since T-636 (the rail share comes from time and money alone); the everyday
+/// layer adds `Params::everyday_asc_rail`, 0 as well.
+pub const ASC_RAIL: f32 = 0.0;
+/// What a country adds to `ASC_RAIL` (ISO 3166-1 alpha-2, the pack's `country`), for its
+/// commutes, everyday trips and the regional layer's commutes from its zones; any other country
+/// adds 0. Empty since T-636 (Japan's +0.5 went); the hook stays for a later country fit.
+pub const COUNTRY_ASC_RAIL: &[(&str, f32)] = &[];
+pub fn country_asc_rail(country: &str) -> f32 {
+    COUNTRY_ASC_RAIL.iter().find(|(c, _)| *c == country).map_or(0.0, |&(_, v)| v)
+}
+/// US value of time: $20/hour, or 3 perceived minutes per dollar (T-067).
+pub const FARE_MIN_PER_USD: f32 = 3.0;
+
+/// GDP per head at market rates, US$, of a country (ISO alpha-2): the app's own table
+/// (game/countryIncome.json `usd`, T-1521), for paid parking by income (T-2278).
+pub fn country_gdp_usd(country: &str) -> Option<f32> {
+    static TABLE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| serde_json::from_str(include_str!("../../../app/src/game/countryIncome.json")).unwrap_or(serde_json::Value::Null));
+    t["usd"][country].as_f64().map(|v| v as f32)
+}
+
+/// Checks a fare curve's knots (T-883): pairs of trip km and US$, km rising, fares never falling;
+/// fewer than two pairs is the straight line of `set_fares`.
+pub(crate) fn check_fare_curve(knots: &[f32]) -> Result<(), String> {
+    let ok = knots.len() % 2 == 0
+        && knots.iter().all(|v| v.is_finite() && *v >= 0.0)
+        && knots.chunks(2).zip(knots.chunks(2).skip(1)).all(|(a, b)| b[0] > a[0] && b[1] >= a[1]);
+    if ok { Ok(()) } else { Err("invalid fare curve".into()) }
+}
+
+/// Gives `g` the fare curve `knots` (US$, `check_fare_curve`) over the straight line the ride
+/// edges and base fare already charge (perceived minutes, `fare_w` a dollar), with each route
+/// node's fare km.
+pub(crate) fn put_fare_curve(g: &mut Graph, knots: &[f32], hop_km: &[f32], fare_min: f32, per_km: f32, fare_w: f32) {
+    if knots.len() < 4 {
+        return;
+    }
+    g.fare_curve = FareCurve {
+        km: knots.iter().step_by(2).copied().collect(),
+        min: knots.iter().skip(1).step_by(2).map(|v| v * fare_w).collect(),
+        base: fare_min,
+        rate: per_km,
+    };
+    g.rn_km = (0..g.rn_fare.len()).map(|r| hop_km.get(r).copied().unwrap_or(0.0)).collect();
+}
+
+/// Each ride edge's distance fare (`per_km` a fare km, perceived minutes) times its route node's
+/// multiplier in `mul` (T-1626; empty: all 1), and the fare curve (`put_fare_curve`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn put_fares(g: &mut Graph, knots: &[f32], hop_km: &[f32], mul: &[f32], fare_min: f32, per_km: f32, fare_w: f32) {
+    let km = |r: usize| hop_km.get(r).copied().unwrap_or(0.0);
+    let m = |r: usize| mul.get(r).copied().unwrap_or(1.0);
+    for (r, fare) in g.rn_fare.iter_mut().enumerate() {
+        *fare = km(r) * per_km * m(r);
+    }
+    put_fare_curve(g, knots, hop_km, fare_min, per_km, fare_w);
+    if mul.iter().any(|&v| v != 1.0) {
+        let n = g.rn_fare.len();
+        g.rn_fare_mul = (0..n).map(m).collect();
+        g.rn_kmw = (0..n).map(|r| km(r) * m(r)).collect();
+    }
+}
+
+/// T-1626: checks a fare multiplier per route node (`count` of them, or none).
+pub(crate) fn check_fare_mul(mul: &[f32], count: usize) -> Result<(), String> {
+    if (mul.is_empty() || mul.len() == count) && mul.iter().all(|v| v.is_finite() && *v >= 0.0) {
+        Ok(())
+    } else {
+        Err("invalid fare multipliers".into())
+    }
+}
+
+/// `Loads::rn_fare_x` in US$, at `fare_w` perceived minutes a dollar.
+pub(crate) fn fare_x_usd(v: &[f32], fare_w: f32) -> Vec<f32> {
+    v.iter().map(|x| x / fare_w).collect()
+}
+
+/// `fare_x_usd` plus the transfer fare (T-1801) on each rider boarding a route node after a change
+/// (`transfers_in`), all at `p`'s weight.
+pub(crate) fn fare_extra_usd(v: &[f32], p: &Params, g: &Graph, xi: &XferIndex, xfer: &[f32]) -> Vec<f32> {
+    let mut out = fare_x_usd(v, p.fare_w);
+    if p.xfer_fare > 0.0 {
+        let usd = p.xfer_fare / p.fare_w;
+        for (o, x) in out.iter_mut().zip(transfers_in(g, xi, xfer)) {
+            *o += x * usd;
+        }
+    }
+    out
+}
+
+/// `flows` leaves out the far cells holding this share of the selection's commuters, the
+/// smallest first (they go to the cut totals), to keep the answer small (T-098).
+pub const FLOW_CUT: f64 = 0.01;
+/// Upper edges of `DemandApi::commute_walk_bands`'s distance bands, km (the everyday table's).
+pub const WALK_BANDS_KM: [f32; 8] = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0];
+
+/// One demand station for snapshot stations within `merge_m` of each other (single linkage), so
+/// two lines' platforms built side by side or on top of each other (a station node takes one
+/// route's track, so crossing lines need a node each) are one station for access and change
+/// trains there without a walk. Two stations next to each other on one line are never merged.
+/// Returns the merged positions (means) and the map snapshot station -> demand station.
+pub(crate) fn merge_stations(st_xy: &[f32], line_off: &[u32], stops: &[u32], merge_m: f32) -> (Vec<f32>, Vec<f32>, Vec<u32>) {
+    let n = st_xy.len() / 2;
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    if merge_m > 0.0 && n > 1 {
+        let mut adjacent = std::collections::HashSet::new();
+        for l in 0..line_off.len() - 1 {
+            for k in line_off[l] as usize + 1..line_off[l + 1] as usize {
+                let (a, b) = (stops[k - 1], stops[k]);
+                adjacent.insert((a.min(b), a.max(b)));
+            }
+        }
+        // a grid of merge_m cells: candidates are in the 3 x 3 block around a station
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+        let key = |i: usize| ((st_xy[2 * i] / merge_m).floor() as i32, (st_xy[2 * i + 1] / merge_m).floor() as i32);
+        for i in 0..n {
+            cells.entry(key(i)).or_default().push(i);
+        }
+        let m2 = merge_m * merge_m;
+        for i in 0..n {
+            let (cx, cy) = key(i);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let Some(js) = cells.get(&(cx + dx, cy + dy)) else { continue };
+                    for &j in js {
+                        if j <= i || adjacent.contains(&(i as u32, j as u32)) {
+                            continue;
+                        }
+                        let d2 = (st_xy[2 * i] - st_xy[2 * j]).powi(2) + (st_xy[2 * i + 1] - st_xy[2 * j + 1]).powi(2);
+                        if d2 <= m2 {
+                            let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                            if a != b {
+                                parent[a.max(b)] = a.min(b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut id = vec![u32::MAX; n];
+    let mut map = vec![0u32; n];
+    let (mut sx, mut sy, mut cnt) = (vec![], vec![], vec![]);
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        if id[r] == u32::MAX {
+            id[r] = sx.len() as u32;
+            sx.push(0.0f32);
+            sy.push(0.0f32);
+            cnt.push(0.0f32);
+        }
+        let k = id[r] as usize;
+        map[i] = k as u32;
+        sx[k] += st_xy[2 * i];
+        sy[k] += st_xy[2 * i + 1];
+        cnt[k] += 1.0;
+    }
+    for k in 0..sx.len() {
+        sx[k] /= cnt[k];
+        sy[k] /= cnt[k];
+    }
+    (sx, sy, map)
+}
+
+/// Each demand station's complex (T-161): the snapshot stations' complexes (`complex`, one
+/// number per snapshot station, game/complexes.ts with the player's links) carried over to the
+/// demand stations they were merged into (`st_map`); two complexes sharing a demand station become
+/// one. Numbered by the complex's first demand station. Empty when `complex` does not match.
+pub(crate) fn demand_groups(st_map: &[u32], n: usize, complex: &[u32]) -> Vec<u32> {
+    if complex.len() != st_map.len() || n == 0 {
+        return vec![];
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    let mut first: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for (i, &c) in complex.iter().enumerate() {
+        let d = st_map[i] as usize;
+        let f = *first.entry(c).or_insert(d);
+        let (a, b) = (find(&mut parent, f), find(&mut parent, d));
+        if a != b {
+            parent[a.max(b)] = a.min(b);
+        }
+    }
+    (0..n).map(|d| find(&mut parent, d) as u32).collect()
+}
+
+/// Each demand station's upgrades (T-1281): those of the snapshot stations merged into it
+/// (`ups`, one per snapshot station), together. Empty when `ups` does not match or has none.
+pub(crate) fn demand_ups(st_map: &[u32], n: usize, ups: &[u8]) -> Vec<u8> {
+    if ups.len() != st_map.len() || ups.iter().all(|&u| u == 0) {
+        return vec![];
+    }
+    let mut out = vec![0u8; n];
+    for (i, &u) in ups.iter().enumerate() {
+        out[st_map[i] as usize] |= u;
+    }
+    out
+}
+
+/// The passages between demand stations (T-1281): `pairs` of snapshot stations, flat, carried
+/// over to the demand stations they were merged into; a pair merged into one station is dropped.
+pub(crate) fn demand_passages(st_map: &[u32], pairs: &[u32]) -> Vec<[u32; 2]> {
+    let mut out: Vec<[u32; 2]> = pairs
+        .chunks_exact(2)
+        .filter(|p| (p[0] as usize) < st_map.len() && (p[1] as usize) < st_map.len())
+        .map(|p| (st_map[p[0] as usize], st_map[p[1] as usize]))
+        .filter(|(a, b)| a != b)
+        .map(|(a, b)| [a.min(b), a.max(b)])
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The bus corridors (T-1464): `catch_n` points per stop (parallel to `stops`, 0 for a stop with no
+/// stretch of route), `catch_xy` their x, y after one another, the stretches carried over to the
+/// demand stations the stops were merged into; and per demand station whether every stop there has
+/// a stretch (a bus stop only). Both empty when `catch_n` does not match or has none.
+pub(crate) fn demand_catches(st_map: &[u32], n: usize, stops: &[u32], catch_n: &[u32], catch_xy: &[f32]) -> (Vec<Catch>, Vec<bool>) {
+    let total: usize = catch_n.iter().map(|&c| c as usize).sum();
+    if catch_n.len() != stops.len() || total == 0 || catch_xy.len() != 2 * total {
+        return (vec![], vec![]);
+    }
+    let mut out = vec![];
+    let (mut bus, mut rail) = (vec![false; n], vec![false; n]);
+    let mut at = 0;
+    for (k, &c) in catch_n.iter().enumerate() {
+        let s = st_map[stops[k] as usize];
+        let c = c as usize;
+        if c >= 2 {
+            out.push(Catch { st: s, pts: catch_xy[2 * at..2 * (at + c)].chunks_exact(2).map(|p| [p[0], p[1]]).collect() });
+            bus[s as usize] = true;
+        } else {
+            rail[s as usize] = true;
+        }
+        at += c;
+    }
+    let only: Vec<bool> = (0..n).map(|s| bus[s] && !rail[s]).collect();
+    (out, only)
+}
+
+/// The network as the snapshot packs it (`set_network`).
+pub(crate) struct Service {
+    /// Demand stations: the snapshot's stations, those within `Params::station_merge_m` of each
+    /// other merged into one (`st_map`: snapshot station -> demand station).
+    pub(crate) st_x: Vec<f32>,
+    pub(crate) st_y: Vec<f32>,
+    pub(crate) st_map: Vec<u32>,
+    pub(crate) line_off: Vec<u32>,
+    pub(crate) stops: Vec<u32>,
+    /// Each stop's platform, x and y: its snapshot station's position (`Network::stop_x`).
+    pub(crate) stop_xy: Vec<f32>,
+    /// Seconds, 6 per stop: per run and level, `(run * 3 + level) * n + k` from the line's
+    /// offset x 6. Run 0: stop k to k + 1 (0 at the last); run 1: stop k to k - 1 (0 at the first).
+    /// On a circle (T-798) the last of run 0 and the first of run 1 are the stand at the first stop,
+    /// riding on round.
+    pub(crate) times: Vec<f32>,
+    pub(crate) tph: Vec<[f32; LEVELS]>,
+    pub(crate) cars: Vec<f32>,
+    /// Each demand station's complex (`demand_groups`), empty if none were given.
+    pub(crate) group: Vec<u32>,
+    /// `Network::span` (T-842), empty for 1 everywhere.
+    pub(crate) span: Vec<f32>,
+    /// `Network::st_ups` (`demand_ups`, T-1281).
+    pub(crate) ups: Vec<u8>,
+    /// `Network::st_passage` (`demand_passages`, T-1281).
+    pub(crate) passages: Vec<[u32; 2]>,
+    /// `Network::catches` and `Network::st_bus` (`demand_catches`, T-1464).
+    pub(crate) catches: Vec<Catch>,
+    pub(crate) st_bus: Vec<bool>,
+    /// `Network::st_tram` (`set_tram_lines`, T-2926).
+    pub(crate) st_tram: Vec<bool>,
+}
+
+/// `span` if it is one per period and route node of `stops` stops, else empty (T-842).
+pub(crate) fn span_for(span: &[f32], stops: usize) -> Vec<f32> {
+    if span.len() == PERIODS * 2 * stops && span.iter().any(|&v| v != 1.0) { span.iter().map(|v| v.clamp(0.0, 1.0)).collect() } else { vec![] }
+}
+
+/// Equal to the bit (T-124: a kept period must be exactly what a fresh solve would give).
+pub(crate) fn same_bits(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+impl Service {
+    /// Stations, lines, stops, cars and complexes equal: station access, subzones and the
+    /// served pairs come out the same, since they never read run times or trains an hour.
+    pub(crate) fn same_layout(&self, o: &Service) -> bool {
+        same_bits(&self.st_x, &o.st_x)
+            && same_bits(&self.st_y, &o.st_y)
+            && self.st_map == o.st_map
+            && self.line_off == o.line_off
+            && self.stops == o.stops
+            && same_bits(&self.stop_xy, &o.stop_xy)
+            && same_bits(&self.cars, &o.cars)
+            && self.group == o.group
+            && self.ups == o.ups
+            && self.passages == o.passages
+            && self.catches == o.catches
+            && self.st_bus == o.st_bus
+            && self.st_tram == o.st_tram
+    }
+    /// T-124: the periods (bit q) whose inputs are the same in `o`: the same layout, and the run
+    /// times and trains an hour of the period's level. A period reads no other level's.
+    pub(crate) fn same_periods(&self, o: &Service) -> u32 {
+        if !self.same_layout(o) {
+            return 0;
+        }
+        let level_same = |lev: usize| {
+            self.tph.iter().zip(&o.tph).all(|(a, b)| a[lev].to_bits() == b[lev].to_bits())
+                && self.line_off.windows(2).all(|w| {
+                    let (a, n) = (w[0] as usize, (w[1] - w[0]) as usize);
+                    [lev, 3 + lev].iter().all(|&r| same_bits(&self.times[6 * a + r * n..6 * a + (r + 1) * n], &o.times[6 * a + r * n..6 * a + (r + 1) * n]))
+                })
+        };
+        let same: [bool; LEVELS] = std::array::from_fn(level_same);
+        let nr = 2 * self.stops.len();
+        let span_same = |q: usize| {
+            fn at(s: &Service, q: usize, nr: usize) -> Option<&[f32]> {
+                if s.span.is_empty() { None } else { Some(&s.span[q * nr..(q + 1) * nr]) }
+            }
+            match (at(self, q, nr), at(o, q, nr)) {
+                (None, None) => true,
+                (Some(a), Some(b)) => same_bits(a, b),
+                (Some(a), None) | (None, Some(a)) => a.iter().all(|&v| v == 1.0),
+            }
+        };
+        (0..PERIODS).filter(|&q| same[PERIOD_LEVEL[q]] && span_same(q)).fold(0, |m, q| m | 1 << q)
+    }
+}
+
+pub(crate) struct Period {
+    pub(crate) net: Network,
+    pub(crate) p: Params,
+    pub(crate) g: Graph,
+    /// Loads averaged over the rounds so far.
+    avg: Loads,
+    rail: f64,
+    /// T-1300: `ModeOut::sense`, averaged like `rail`
+    rail_d: FareSense,
+    /// T-2365: `ModeOut::len`, averaged like `rail`
+    len: LenOut,
+    walk: f64,
+    /// T-2214: trips no way serves (between two land parts, not by rail), as `walk`.
+    unr: f64,
+    trips: f64,
+    pub(crate) round: usize,
+    ms: f64,
+    pairs: u64,
+    /// Where the rail trips come from and go to, averaged like the loads (T-078's demand views).
+    pub(crate) sub: SubOut,
+    /// The crowding factors the last pass was solved with, and whether every pass so far used
+    /// these same ones (free flow is all ones). Then another pass with them would give exactly
+    /// the loads already averaged in, so the round is skipped (T-119).
+    fac: Vec<f32>,
+    uniform: bool,
+    /// The segment loads the last crowding round was priced on (`kernel::settled`, T-434).
+    seen: Vec<f32>,
+    /// Transfers platform to platform (T-176): the slots of `g`, averaged like the loads.
+    xi: XferIndex,
+    xfer: Vec<f32>,
+    /// T-1543: the part of the origins solved (`DemandApi::part`). A part's figures add up with
+    /// the other parts' to the whole's: the trips and the walking with no rail are the first
+    /// part's alone, and each part's walking is less the walkers its own rail trips take.
+    part: (u32, u32),
+}
+
+/// A pass's rail trips by place (`kernel::ModeOut`), both directions of the period's commutes
+/// counted at their home and work ends.
+pub(crate) struct SubOut {
+    /// Rail trips by home/work subzone, and the walkers rail takes by home/work subzone (`ModeOut`).
+    pub(crate) rail_home: Vec<f32>,
+    rail_work: Vec<f32>,
+    walk_lost_home: Vec<f32>,
+    walk_lost_work: Vec<f32>,
+    /// T-2214: rail trips between two land parts by home/work subzone (`ModeOut::unr_lost_by_sub`;
+    /// empty with no parts).
+    unr_lost_home: Vec<f32>,
+    unr_lost_work: Vec<f32>,
+    /// Per access entry (`Subzones::acc_st`): rail trips using that station from that subzone
+    /// at the home end, and at the work end.
+    acc_home: Vec<f32>,
+    acc_work: Vec<f32>,
+    /// Rail trips by (home station, work station) before the trips home are reversed, over the
+    /// stations in the subzones' access lists only (`DemandApi::od_st`; every other station's row
+    /// and column are zero, and a city a few stations reach would hold a whole network's S x S
+    /// otherwise, T-398).
+    pub(crate) od: Vec<f32>,
+}
+
+impl SubOut {
+    fn empty() -> SubOut {
+        SubOut { rail_home: vec![], rail_work: vec![], walk_lost_home: vec![], walk_lost_work: vec![], unr_lost_home: vec![], unr_lost_work: vec![], acc_home: vec![], acc_work: vec![], od: vec![] }
+    }
+    /// Every figure times `k` (T-1538's estimate of one period from another).
+    fn scaled(&self, k: f32) -> SubOut {
+        let s = |v: &[f32]| v.iter().map(|x| x * k).collect::<Vec<f32>>();
+        SubOut { rail_home: s(&self.rail_home), rail_work: s(&self.rail_work), walk_lost_home: s(&self.walk_lost_home), walk_lost_work: s(&self.walk_lost_work), unr_lost_home: s(&self.unr_lost_home), unr_lost_work: s(&self.unr_lost_work), acc_home: s(&self.acc_home), acc_work: s(&self.acc_work), od: s(&self.od) }
+    }
+    /// T-2214: the rail trips between two land parts in all.
+    fn unr_rail(&self) -> f64 {
+        self.unr_lost_home.iter().map(|&x| x as f64).sum()
+    }
+    /// Subzone `u`'s `unr_lost_home` or `unr_lost_work` (0 with no parts).
+    #[inline]
+    fn unr_lost(&self, home: bool, u: usize) -> f32 {
+        (if home { &self.unr_lost_home } else { &self.unr_lost_work }).get(u).copied().unwrap_or(0.0)
+    }
+    fn msa(&mut self, new: &SubOut, round: usize) {
+        msa(&mut self.rail_home, &new.rail_home, round);
+        msa(&mut self.rail_work, &new.rail_work, round);
+        msa(&mut self.walk_lost_home, &new.walk_lost_home, round);
+        msa(&mut self.walk_lost_work, &new.walk_lost_work, round);
+        msa(&mut self.unr_lost_home, &new.unr_lost_home, round);
+        msa(&mut self.unr_lost_work, &new.unr_lost_work, round);
+        msa(&mut self.acc_home, &new.acc_home, round);
+        msa(&mut self.acc_work, &new.acc_work, round);
+        msa(&mut self.od, &new.od, round);
+    }
+}
+
+/// T-558: all-day trips with no rail that walk, by home and by work slot, and (T-2214) those no
+/// way serves (`Gravity::no_rail_by_slot`).
+fn no_rail_trips(z: &Zones, gr: &Gravity, p: &Params, nr: &NoRail) -> NoRailSlots {
+    gr.no_rail_by_slot(z, p, nr)
+}
+
+/// T-276: `DemandApi::home_k` and `work_k`. With a joint gravity shipped for these zones, each
+/// zone's trips kept in the pack over its weight; otherwise the pack's trips over its total weight
+/// (every commute stays in the pack).
+fn zone_trip_factors(city: &City, z: &Zones, gr: &Gravity, from_pack: bool) -> (Vec<f32>, Vec<f32>) {
+    let (tp, tj) = city.totals();
+    match city.gravity.as_ref().filter(|g| from_pack && g.home.len() == z.n && g.work.len() == z.n) {
+        Some(g) => (
+            (0..z.n).map(|i| if z.pop[i] > 0.0 { (g.home[i] / z.pop[i]) as f32 } else { 0.0 }).collect(),
+            (0..z.n).map(|i| if z.jobs[i] > 0.0 { (g.work[i] / z.jobs[i]) as f32 } else { 0.0 }).collect(),
+        ),
+        None => (vec![(gr.total / tp.max(1e-9)) as f32; z.n], vec![(gr.total / tj.max(1e-9)) as f32; z.n]),
+    }
+}
+
+#[wasm_bindgen]
+pub struct DemandApi {
+    /// Shared with the city's everyday layer (`with_weights`, T-399).
+    pub(crate) city: Arc<City>,
+    pub(crate) z: Arc<Zones>,
+    pub(crate) gr: Arc<Gravity>,
+    /// The home and work weights station access and subzones are built on in place of
+    /// `city.pop` and `city.jobs` (`with_weights`); None for the commutes.
+    weights: Option<(Vec<f32>, Vec<f32>)>,
+    pub(crate) base: Params,
+    /// What the zone pairs' choice with no rail reads (T-558): the commutes' walking with no
+    /// rail, by zone pair, for the totals and the pair loop alike.
+    pub(crate) nr: Arc<NoRail>,
+    /// All-day home -> work trips that would walk with no rail (`Gravity::no_rail_by_zone`), and
+    /// the same by home zone and by work zone.
+    /// T-2214: by slot of the pack's land parts (`kernel::Parts`, `DemandApi::slot`; by zone with
+    /// none).
+    walk_all: f64,
+    walk_home_zone: Vec<f64>,
+    walk_work_zone: Vec<f64>,
+    /// T-2214: all-day home -> work trips between two land parts, which no way but rail serves, in
+    /// all and by slot at the home end and at the work end (empty with no parts).
+    unr_all: f64,
+    unr_home: Vec<f64>,
+    unr_work: Vec<f64>,
+    /// T-276: per zone, the pack's trips a day per unit of home weight (`city.pop`) and of work
+    /// weight (`city.jobs`). One number everywhere for a pack's own gravity; with a joint gravity
+    /// each zone's share kept in the pack (`PackGravity::home`, `work`): the rest commute to
+    /// another pack, in the regional layer.
+    home_k: Vec<f32>,
+    work_k: Vec<f32>,
+    pub(crate) svc: Option<Service>,
+    pub(crate) sz: Option<Subzones>,
+    /// The stations a trip can end at (`egress_stations`): the only ones strategies are searched to.
+    want: Vec<bool>,
+    /// The stations in the subzones' access lists, ascending, and each station's place among them
+    /// (`u32::MAX` if absent): the rows and columns of `SubOut::od`.
+    od_st: Vec<u32>,
+    od_at: Vec<u32>,
+    pub(crate) per: Vec<Option<Period>>,
+    pub(crate) fare_per_km: f32,
+    pub(crate) fare_km: Vec<f32>,
+    /// T-1626: each route node's fare multiplier (`set_fare_mul`); empty: all 1.
+    pub(crate) fare_mul: Vec<f32>,
+    /// The fare curve's knots, km and US$ in pairs (T-883, `set_fare_curve`); empty for the straight line.
+    pub(crate) fare_curve: Vec<f32>,
+    open_ms: f64,
+    /// The complex of each station of the next `set_network` (`set_complexes`, T-161).
+    complex_in: Vec<u32>,
+    /// The upgrades of each station of the next `set_network` (`set_upgrades`, T-1281).
+    ups_in: Vec<u8>,
+    /// The passages of the next `set_network` (`set_passages`, T-1281).
+    passages_in: Vec<u32>,
+    /// The service span of the next `set_network` (`set_span`, T-842).
+    span_in: Vec<f32>,
+    /// set_bus (T-1464)
+    bus_in: (Vec<u32>, Vec<f32>),
+    /// Per line of the network `set_network` is given, 1 if it runs on tram track (`set_tram_lines`).
+    tram_in: Vec<u8>,
+    /// T-124: the periods (bit q) whose inputs the last `set_network` and `set_fares` left as they
+    /// were, so their results were kept; and whether the layout was, so access was kept.
+    pub(crate) same: u32,
+    pub(crate) layout_same: bool,
+    /// Whether `svc` and the periods were built with the parameters as they stand.
+    reusable: bool,
+    /// The level the zone was opened at (`at_level`), which its everyday layer samples by.
+    pub(crate) lod: Lod,
+    /// T-1543 (`set_part`): the part of the origins `solve` covers, part k of n; (0, 1) all.
+    pub(crate) part: (u32, u32),
+    /// T-2365: the day's commutes by length (`len_base`), worked out on first use.
+    len_base: std::cell::OnceCell<LenBase>,
+}
+
+/// T-2365: a pack's commutes a day by length with no network: all, walking, and between two land
+/// parts (`LenSums` each; `DemandApi::len_base`).
+struct LenBase {
+    trips: LenSums,
+    walk: LenSums,
+    unr: LenSums,
+}
+
+/// Per period: start hour, end hour, demand level (0 high, 1 medium, 2 low), share of trips to
+/// work, share of trips home, peak-hour factor. Six numbers each, from the one definition in
+/// `track::params` plus this module's shares.
+#[wasm_bindgen]
+pub fn demand_periods() -> Vec<f64> {
+    (0..PERIODS)
+        .flat_map(|q| {
+            let (h0, h1) = PERIOD_HOURS[q];
+            [h0, h1, PERIOD_LEVEL[q] as f64, TO_WORK[q] as f64, TO_HOME[q] as f64, PEAK_HOUR_FACTOR[q] as f64]
+        })
+        .collect()
+}
+
+/// Multiply the riders of `transfer_pairs` triples (route node in, out, riders) by `f` (T-260).
+pub(crate) fn scale_triples(v: &mut [f32], f: f32) {
+    if f == 1.0 {
+        return;
+    }
+    for t in v.chunks_exact_mut(3) {
+        t[2] *= f;
+    }
+}
+
+/// Free the strategy tables the populations on this thread share (`kernel::with_skims`); a worker
+/// calls it when it has finished a period's stage (T-119).
+#[wasm_bindgen]
+pub fn release_skims() {
+    clear_skim_cache();
+}
+
+impl DemandApi {
+    fn params(&self, q: usize) -> Params {
+        let (h0, h1) = PERIOD_HOURS[q];
+        Params {
+            period: q,
+            period_share: TO_WORK[q] + TO_HOME[q],
+            period_hours: (h1 - h0) as f32,
+            peak_hour_factor: PEAK_HOUR_FACTOR[q],
+            ..self.base.clone()
+        }
+    }
+
+    /// The kernel's network for period `q`: that period's demand level's run times, and every
+    /// period's headway (a line with no trains in a period has an infinite headway, so nobody
+    /// boards it, and keeps its route nodes so results line up across periods).
+    pub(crate) fn period_net(svc: &Service, q: usize) -> Network {
+        let lev = PERIOD_LEVEL[q];
+        let nl = svc.cars.len();
+        let mut net = Network {
+            st_x: svc.st_x.clone(),
+            st_y: svc.st_y.clone(),
+            line_name: vec![String::new(); nl],
+            line_off: svc.line_off.clone(),
+            line_stops: svc.stops.clone(),
+            hop_min: vec![0.0; svc.stops.len()],
+            hop_back: vec![0.0; svc.stops.len()],
+            line_speed_kmh: vec![0.0; nl],
+            line_headway_min: vec![],
+            line_seats: svc.cars.iter().map(|&c| c * SEATS_PER_CAR).collect(),
+            line_rated: svc.cars.iter().map(|&c| c * RATED_PER_CAR).collect(),
+            line_crush: svc.cars.iter().map(|&c| c * CRUSH_PER_CAR).collect(),
+            st_group: svc.group.clone(),
+            stop_x: svc.stop_xy.iter().step_by(2).copied().collect(),
+            stop_y: svc.stop_xy.iter().skip(1).step_by(2).copied().collect(),
+            line_wrap: vec![false; nl],
+            span: svc.span.clone(),
+            st_ups: svc.ups.clone(),
+            st_passage: svc.passages.clone(),
+            catches: svc.catches.clone(),
+            st_bus: svc.st_bus.clone(),
+            st_tram: svc.st_tram.clone(),
+        };
+        for l in 0..nl {
+            let (a, b) = (svc.line_off[l] as usize, svc.line_off[l + 1] as usize);
+            let n = b - a;
+            for k in 0..n {
+                net.hop_min[a + k] = svc.times[6 * a + lev * n + k] / 60.0;
+                net.hop_back[a + k] = svc.times[6 * a + (3 + lev) * n + k] / 60.0;
+            }
+            // T-798: a circle is a line whose last stop is its first, with a time to ride on
+            // round from it (`Service::times`)
+            net.line_wrap[l] = n >= 3 && svc.stops[a] == svc.stops[b - 1] && svc.times[6 * a + lev * n + n - 1] > 0.0;
+            let hw: [f32; PERIODS] = std::array::from_fn(|p| {
+                let t = svc.tph[l][PERIOD_LEVEL[p]];
+                if t > 0.0 { 60.0 / t } else { f32::INFINITY }
+            });
+            net.line_headway_min.push(hw);
+        }
+        net
+    }
+
+    /// Mode choice and assignment for one period on the graph as it stands (free flow, or with
+    /// the crowding factors already set). Returns the rail trips (both directions), the walk
+    /// trips rail took, the loads, the pairs, the rail trips by place and (T-1300) the rail trips'
+    /// fare sensitivity (`ModeOut::sense`). Adds the transfers into `xfer` when given (T-176).
+    fn pass(&self, g: &Graph, p: &Params, q: usize, xfer: Option<(&XferIndex, &mut [f32])>) -> (f64, f64, Loads, u64, SubOut, FareSense, LenOut) {
+        let sz = self.sz.as_ref().unwrap();
+        // the strategies are shared with the other populations on the same service (T-119)
+        let (mo, l, od_sub) = with_skims(g, p, &self.want, |sk| {
+            let er = station_exp(sk, p);
+            let mut mo = mode_choice_part(&self.z, &self.gr, sz, &er, &sk.walk, &sk.walk_max, g.n_st, p, &self.nr, self.part);
+            drop(er);
+            // the trips home: the same station pairs reversed
+            let s = g.n_st;
+            let (w, h) = (TO_WORK[q], TO_HOME[q]);
+            let fw = w / (w + h);
+            let fh = h / (w + h);
+            let od_sub = self.compact_od(&mo.od, s);
+            let mut od = std::mem::take(&mut mo.od);
+            for a in 0..s {
+                for t in a + 1..s {
+                    let (x, y) = (od[a * s + t], od[t * s + a]);
+                    od[a * s + t] = fw * x + fh * y;
+                    od[t * s + a] = fw * y + fh * x;
+                }
+            }
+            let l = match xfer {
+                Some((ix, x)) => assign_with_transfers(g, sk, &od, ix, x),
+                None => assign(g, sk, &od),
+            };
+            (mo, l, od_sub)
+        });
+        let sub = SubOut {
+            rail_home: mo.rail_by_sub,
+            rail_work: mo.rail_to_sub,
+            walk_lost_home: mo.walk_lost_by_sub,
+            walk_lost_work: mo.walk_lost_to_sub,
+            unr_lost_home: mo.unr_lost_by_sub,
+            unr_lost_work: mo.unr_lost_to_sub,
+            acc_home: mo.acc_home,
+            acc_work: mo.acc_work,
+            od: od_sub,
+        };
+        (mo.rail, mo.rail_walk, l, mo.pairs, sub, mo.sense, mo.len)
+    }
+
+    /// An S x S station-pair table over `od_st` only (`SubOut::od`).
+    pub(crate) fn compact_od(&self, od: &[f32], s: usize) -> Vec<f32> {
+        let k = self.od_st.len();
+        let mut out = Vec::with_capacity(k * k);
+        for &a in &self.od_st {
+            let row = &od[a as usize * s..(a as usize + 1) * s];
+            out.extend(self.od_st.iter().map(|&t| row[t as usize]));
+        }
+        out
+    }
+
+    /// `sub.od` at stations (a, t): 0 where either is in no access list.
+    #[inline]
+    fn sub_od(&self, sub: &SubOut, a: usize, t: usize) -> f32 {
+        let (i, j) = (self.od_at[a], self.od_at[t]);
+        if i == u32::MAX || j == u32::MAX { 0.0 } else { sub.od[i as usize * self.od_st.len() + j as usize] }
+    }
+}
+
+/// Readers of a solved period for tests and the bins; not exported to the app.
+impl DemandApi {
+    pub(crate) fn period(&self, q: usize) -> Option<&Period> {
+        self.per.get(q).and_then(|p| p.as_ref())
+    }
+
+    /// T-2365: the day's commutes by length with no network, each block scaled to its total
+    /// (`gr.total`, `walk_all`, `unr_all`): the zone pairs' sums differ from those by rounding only.
+    fn len_base(&self) -> &LenBase {
+        self.len_base.get_or_init(|| {
+            let mut b = self.len_base_raw();
+            scale_to(&mut b.trips, self.gr.total);
+            scale_to(&mut b.walk, self.walk_all);
+            scale_to(&mut b.unr, self.unr_all);
+            b
+        })
+    }
+
+    /// `len_base` before scaling: every zone pair's trips (`Gravity::t`) spread by length, those
+    /// walking with no rail as `Gravity::no_rail_by_slot` has them, and (T-2214) those between two
+    /// land parts by the pair's slots.
+    fn len_base_raw(&self) -> LenBase {
+        let (z, gr, p) = (&*self.z, &*self.gr, &self.base);
+        let lk = len_kernel(z.zone_m);
+        let (mut trips, mut walk, mut unr) = (len_zero(), len_zero(), len_zero());
+        let pp = p.parts.as_deref();
+        // the share of a pair's trips with both ends on one part
+        let same = |i: usize, j: usize| -> f64 {
+            let Some(pp) = pp else { return 1.0 };
+            if z.pop[i] <= 0.0 || z.jobs[j] <= 0.0 {
+                return 1.0;
+            }
+            let mut s = 0.0;
+            for a in pp.slots(i) {
+                for b in pp.slots(j) {
+                    if pp.s_part[a] == pp.s_part[b] {
+                        s += pp.s_pop[a] / z.pop[i] * pp.s_jobs[b] / z.jobs[j];
+                    }
+                }
+            }
+            s
+        };
+        // the trips by decay table index (one zone offset and pair of sides each), spread once
+        // each after; the walking and the trips between parts pair by pair
+        let mut by_k = vec![0f64; gr.ftab.len()];
+        let cols: Vec<(u32, i32, i32, f64, u8)> = (0..z.n).filter(|&j| gr.col[j] > 0.0).map(|j| (j as u32, gr.key(z, j), z.gx[j], gr.col[j], z.region[j])).collect();
+        let r = (WALK_REACH_KM * 1000.0 / z.zone_m).ceil() as i32 + 2;
+        for i in 0..z.n {
+            if gr.row[i] == 0.0 {
+                continue;
+            }
+            let (base, ri, gxi) = (gr.base(z, i), z.region[i], z.gx[i]);
+            let rb = gr.row[i] * gr.border as f64;
+            for &(j, key, gxj, col, rj) in &cols {
+                let k = (base + key) as usize;
+                let t = (if rj == ri { gr.row[i] } else { rb }) * col * gr.ftab[k] as f64;
+                by_k[k] += t;
+                if (gxj - gxi).abs() > r || !(t > 0.0) {
+                    continue;
+                }
+                let j = j as usize;
+                let near = gr.walk_set && (z.gy[j] - z.gy[i]).abs() <= r && gr.walk_c(k) < NO_WALK;
+                if !near && pp.is_none() {
+                    continue;
+                }
+                let (hdx, hdy, si, sj) = (z.hx(j) - z.hx(i), z.hy(j) - z.hy(i), z.side(i), z.side(j));
+                let one = same(i, j);
+                if one < 1.0 {
+                    lk.add(hdx, hdy, si, sj, t * (1.0 - one), &mut unr);
+                }
+                if near {
+                    let w = self.nr.split(gr, p, i, j, k);
+                    if w > 0.0 {
+                        lk.add(hdx, hdy, si, sj, t * w as f64 * one, &mut walk);
+                    }
+                }
+            }
+        }
+        for (k, &t) in by_k.iter().enumerate() {
+            if t > 0.0 {
+                let (hdx, hdy, si, sj) = gr.half_offset(k);
+                lk.add(hdx, hdy, si, sj, t, &mut trips);
+            }
+        }
+        LenBase { trips, walk, unr }
+    }
+    /// Rail trips starting at each station (first boarding) in period `q`.
+    pub fn entries(&self, q: usize) -> Vec<f32> {
+        self.period(q).map_or(vec![], |st| st.avg.entry.clone())
+    }
+    /// Rail trips ending at each station (last alighting) in period `q`.
+    pub fn exits(&self, q: usize) -> Vec<f32> {
+        self.period(q).map_or(vec![], |st| st.avg.exit.clone())
+    }
+    /// Rail trips in period `q` by home cell (each subzone's spread over its cells by commuters).
+    pub fn rail_by_cell(&self, q: usize) -> Vec<f32> {
+        let (Some(st), Some(sz)) = (self.period(q), self.sz.as_ref()) else { return vec![] };
+        sz.cell
+            .iter()
+            .enumerate()
+            .map(|(c, &u)| if u == u32::MAX || sz.pop[u as usize] <= 0.0 || st.sub.rail_home.is_empty() { 0.0 } else { st.sub.rail_home[u as usize] * self.city.pop[c] / sz.pop[u as usize] })
+            .collect()
+    }
+    /// All trips (both directions) in period `q` by home cell.
+    pub fn trips_by_cell(&self, q: usize) -> Vec<f32> {
+        let share = self.params(q).period_share;
+        self.city.pop.iter().zip(&self.z.cell_zone).map(|(&v, &z)| v * self.home_k[z as usize] * share).collect()
+    }
+    /// Trips walking the whole way in period `q` by home cell: the home zone's walking with no
+    /// rail spread by people, less what rail takes from each subzone (T-621's calibration).
+    pub fn walk_by_cell(&self, q: usize) -> Vec<f32> {
+        let Some(st) = self.period(q) else { return vec![] };
+        let share = self.params(q).period_share;
+        (0..self.city.len())
+            .map(|c| {
+                let z = self.slot(c);
+                let walk = (self.walk_home_zone[z] / self.slot_w(z, true).max(1e-9)) as f32 * self.city.pop[c] * share;
+                let lost = match self.sz.as_ref().map(|sz| (sz, sz.cell[c])) {
+                    Some((sz, u)) if u != u32::MAX && sz.pop[u as usize] > 0.0 && !st.sub.walk_lost_home.is_empty() => st.sub.walk_lost_home[u as usize] * self.city.pop[c] / sz.pop[u as usize],
+                    _ => 0.0,
+                };
+                (walk - lost).max(0.0)
+            })
+            .collect()
+    }
+    /// T-2214: cell c's slot (`kernel::Parts`: its zone's cells on its land part), its zone with
+    /// no parts: what `walk_home_zone` and the like are indexed by.
+    #[inline]
+    pub(crate) fn slot(&self, c: usize) -> usize {
+        self.base.parts.as_ref().map_or(self.z.cell_zone[c] as usize, |pp| pp.cell_slot[c] as usize)
+    }
+    /// Slot s's home (or work) weight.
+    #[inline]
+    pub(crate) fn slot_w(&self, s: usize, home: bool) -> f64 {
+        match self.base.parts.as_deref() {
+            Some(pp) => if home { pp.s_pop[s] } else { pp.s_jobs[s] },
+            None => if home { self.z.pop[s] } else { self.z.jobs[s] },
+        }
+    }
+    /// T-2214: the day's trips between two land parts at cell c's end (home or work) per unit of
+    /// its weight; 0 with no parts.
+    #[inline]
+    fn unr_per(&self, c: usize, home: bool) -> f32 {
+        let v = if home { &self.unr_home } else { &self.unr_work };
+        if v.is_empty() {
+            return 0.0;
+        }
+        let s = self.slot(c);
+        let w = self.slot_w(s, home);
+        if w > 0.0 { (v[s] / w) as f32 } else { 0.0 }
+    }
+    /// The route-node layout: per route node, its station and line (kernel order).
+    pub fn route_nodes(&self, q: usize) -> (Vec<u32>, Vec<u32>) {
+        self.period(q).map_or((vec![], vec![]), |st| (st.g.rn_station.clone(), st.g.rn_line.clone()))
+    }
+    /// Snapshot station -> demand station (stations within `station_merge_m` are one).
+    pub fn station_map(&self) -> Vec<u32> {
+        self.svc.as_ref().map_or(vec![], |s| s.st_map.clone())
+    }
+    /// The parameters every period starts from (to change before `set_network`, which then
+    /// keeps nothing).
+    pub fn params_mut(&mut self) -> &mut Params {
+        self.reusable = false;
+        &mut self.base
+    }
+    /// Rebuild the walk's costs and the trips walking with no rail after changing
+    /// their parameters through `params_mut` (the gravity holds them from `new`); before
+    /// `EverydayApi::beside`.
+    pub fn refresh_walk(&mut self) {
+        let mut gr = (*self.gr).clone();
+        gr.set_walk(&self.z, &self.base);
+        self.nr = Arc::new(NoRail::new(&self.z, &self.base));
+        gr.set_walk_fine(&self.city, &self.z, &self.base, &self.nr);
+        let ns = no_rail_trips(&self.z, &gr, &self.base, &self.nr);
+        self.walk_all = ns.walk_home.iter().sum();
+        self.walk_home_zone = ns.walk_home;
+        self.walk_work_zone = ns.walk_work;
+        self.unr_all = ns.unr_home.iter().sum();
+        self.unr_home = ns.unr_home;
+        self.unr_work = ns.unr_work;
+        self.gr = Arc::new(gr);
+        self.reusable = false;
+        self.len_base = std::cell::OnceCell::new();
+    }
+    /// Commutes with no rail between zones within `WALK_FINE_R` squares, by the straight-line
+    /// distance of six cell pairs a zone pair (`walk_points`; bands `WALK_BANDS_KM`, then beyond):
+    /// trips, then those walking: each cell pair's own share when the pair walks between cells
+    /// (`Params::walk_samples`), the pair's when between centres (T-587's check).
+    pub fn commute_walk_bands(&self) -> Vec<f64> {
+        let (z, gr, p) = (&*self.z, &*self.gr, &self.base);
+        let nb = WALK_BANDS_KM.len() + 1;
+        let mut out = vec![0f64; 2 * nb];
+        let ns = 6;
+        let (home, work) = walk_points(&self.city, z, ns);
+        let fine = !gr.wf_off.is_empty();
+        let sq = z.by_square();
+        let (mut d, mut e) = (vec![0f32; ns * ns], vec![0f32; ns * ns]);
+        for i in 0..z.n {
+            if gr.row[i] == 0.0 || home[i * ns] == u32::MAX {
+                continue;
+            }
+            z.near(&sq, i, WALK_FINE_R, |j| {
+                if work[j * ns] == u32::MAX {
+                    return;
+                }
+                let k = (gr.base(z, i) + gr.key(z, j)) as usize;
+                let t = gr.t(z, i, j) / (ns * ns) as f64;
+                let w = self.nr.split(gr, p, i, j, k);
+                let (road, paid, free) = self.nr.road(gr, p, i, j, k);
+                for (n, (&a, &b)) in home[i * ns..(i + 1) * ns].iter().flat_map(|a| work[j * ns..(j + 1) * ns].iter().map(move |b| (a, b))).enumerate() {
+                    d[n] = cell_walk_m(&self.city, a, b) / 1000.0;
+                    let f = gr.walk_factor_cells(z, a as usize, b as usize);
+                    e[n] = if fine { p.walk_no_rail(road, paid, free, gr.wcost.at(d[n] * f)) } else { w };
+                }
+                for n in 0..ns * ns {
+                    let band = WALK_BANDS_KM.partition_point(|&b| b <= d[n]);
+                    out[band] += t;
+                    out[nb + band] += t * e[n] as f64;
+                }
+            });
+        }
+        out
+    }
+    /// The same city on other home and work weights (the everyday layer's residents and jobs,
+    /// T-399): the cells, zone grid, gravity and routes are shared, the zones' sums are its own,
+    /// and station access and subzones are built on these weights. Its network starts unset.
+    pub(crate) fn with_weights(&self, pop: Vec<f32>, jobs: Vec<f32>) -> DemandApi {
+        let mut z = (*self.z).clone();
+        z.pop.fill(0.0);
+        z.jobs.fill(0.0);
+        for c in 0..self.city.len() {
+            let zi = z.cell_zone[c] as usize;
+            z.pop[zi] += pop[c] as f64;
+            z.jobs[zi] += jobs[c] as f64;
+        }
+        DemandApi {
+            city: self.city.clone(),
+            z: Arc::new(z),
+            gr: self.gr.clone(),
+            weights: Some((pop, jobs)),
+            base: self.base.clone(),
+            nr: self.nr.clone(),
+            walk_all: self.walk_all,
+            walk_home_zone: self.walk_home_zone.clone(),
+            walk_work_zone: self.walk_work_zone.clone(),
+            unr_all: self.unr_all,
+            unr_home: self.unr_home.clone(),
+            unr_work: self.unr_work.clone(),
+            home_k: self.home_k.clone(),
+            work_k: self.work_k.clone(),
+            svc: None,
+            sz: None,
+            want: vec![],
+            od_st: vec![],
+            od_at: vec![],
+            per: (0..PERIODS).map(|_| None).collect(),
+            fare_per_km: 0.0,
+            fare_km: vec![],
+            fare_mul: vec![],
+            fare_curve: vec![],
+            open_ms: 0.0,
+            complex_in: vec![],
+            ups_in: vec![],
+            passages_in: vec![],
+            span_in: vec![],
+            bus_in: (vec![], vec![]),
+            tram_in: vec![],
+            same: 0,
+            layout_same: false,
+            reusable: false,
+            lod: self.lod,
+            part: (0, 1),
+            len_base: std::cell::OnceCell::new(),
+        }
+    }
+    /// The home weights access and subzones are built on (`with_weights`).
+    pub(crate) fn pop(&self) -> &[f32] {
+        self.weights.as_ref().map_or(&self.city.pop, |w| &w.0)
+    }
+    pub(crate) fn jobs(&self) -> &[f32] {
+        self.weights.as_ref().map_or(&self.city.jobs, |w| &w.1)
+    }
+    /// Subzones of the current network (0 with none).
+    pub fn n_subzones(&self) -> u32 {
+        self.sz.as_ref().map_or(0, |sz| sz.n as u32)
+    }
+    /// Transfers over this worker's periods (T-176) with either end at a route node marked in
+    /// `sel` (one byte per route node): triples (route node in, route node out, riders), each
+    /// period's in turn, not added up (the caller sums them by pair). Riders arriving at the
+    /// first and boarding the second, walking between stations included; averaged over the
+    /// crowding rounds like the loads.
+    pub fn transfers(&self, sel: &[u8]) -> Vec<f32> {
+        let mut out = vec![];
+        for st in self.per.iter().flatten() {
+            transfer_pairs(&st.g, &st.xi, &st.xfer, sel, &mut out);
+        }
+        out
+    }
+    /// Step 1, every worker: the selected cells' rail trips over this worker's solved periods,
+    /// three blocks of `n_subzones`: by subzone at the far end; and for the selected subzones at
+    /// their own end, rail trips and the walkers rail takes (whole subzones, not
+    /// scaled to the selection; `flows` does that per cell, as `cell_modes` does). Trips, both
+    /// directions: add every worker's blocks and pass the sum to `flows`. Riders boarding at a
+    /// station are assumed to spread over the stations they ride to like all its riders, and
+    /// riders leaving at a station over the places they walk to like all of them (as
+    /// `station_riders`): exact at the near end, a little blurred at the far end. Empty with no
+    /// network.
+    pub fn flow_rail(&self, end: u32, cells: &[u32]) -> Vec<f32> {
+        self.flow_rail_day(end, cells, WEEKDAY as u32)
+    }
+    /// One station's riders over this worker's solved periods, commuters a day, packed (`station`
+    /// is an index into `set_network`'s station list; stations merged for demand answer as one):
+    /// `[n_home, n_work, walked, rode, home cells.., their riders.., work cells.., their riders..,
+    /// work zones of the home riders (one per zone).., home zones of the work riders (one per
+    /// zone)..]`. Home riders live in those cells and use this station at the home end of their
+    /// commute, `walked` of them on foot and `rode` by a ride (T-371, T-374; commutes only, the
+    /// same unit as the riders); work riders work there and use it at the work end. Cell and zone indices are exact in f32
+    /// (under 2^24). Empty if there is no network or no such station.
+    pub fn station_riders(&self, station: u32) -> Vec<f32> {
+        self.station_riders_day(station, WEEKDAY as u32)
+    }
+}
+
+#[wasm_bindgen]
+impl DemandApi {
+    /// Parse a city pack (header text and .bin bytes) and rebuild its zone gravity.
+    #[wasm_bindgen(constructor)]
+    pub fn new(header: &str, bin: &[u8]) -> Result<DemandApi, String> {
+        let t0 = now_ms();
+        let mut city = pack::parse(header, bin)?;
+        let mut base = Params { asc_rail: ASC_RAIL, ..Params::default() };
+        // T-277: a pack fitted on its own country's commuting (Toronto) ships its own distance
+        // curve; the default is the US one, so take the pack's rather than re-solve with that
+        if let Some(pg) = &city.gravity {
+            if (pg.zone_m - base.zone_m).abs() < 0.5 {
+                base.decay_km = pg.decay_km;
+                base.decay_pow = pg.decay_pow;
+                base.decay_flat_km = pg.flat_km;
+            }
+        }
+        let (z, mut gr, gravity_from_pack) = city_gravity(&city, &base);
+        let h: serde_json::Value = serde_json::from_str(header).map_err(|e| e.to_string())?;
+        if let (Some(lon), Some(lat)) = (h["origin"]["lon"].as_f64(), h["origin"]["lat"].as_f64()) {
+            base.cordon = cordon_by_zone(&city, &z, (lon, lat)).map(Arc::new);
+        }
+        // T-275: the pack's routed walks and drives, if it has them for these zones
+        if let Some(r) = super::routes::Routes::from_pack(header, bin, &z)? {
+            base.routes = Some(Arc::new(r));
+            gr.set_walk(&z, &base);
+        }
+        // T-854: residents per km² by zone, for parking at the home end (the pack's `nocar` is
+        // not read)
+        if let Some(pop) = pack::cell_weights(header, bin, "pop", city.len())? {
+            base.home_dens = Some(Arc::new(z.home_density(&pop)));
+        }
+        // T-509 stage 4: the everyday rates of the pack's country; an older block's `decay_m` is
+        // ignored, the decay lengths being one worldwide set (T-637)
+        for (kind, v) in h["everyday"]["rate"].as_object().into_iter().flatten() {
+            if let Some(x) = v.as_f64() {
+                base.set_extra(&format!("rate_{kind}"), x as f32)?;
+            }
+        }
+        // the pack's country: the header's own, else the one its everyday block was written for
+        let country = h["country"].as_str().or_else(|| h["everyday"]["country"].as_str()).unwrap_or("");
+        base.set_extra("country_asc_rail", country_asc_rail(country))?;
+        base.park_income = super::kernel::park_income_of(country_gdp_usd(country));
+        // T-2214: the pack's land parts (T-2213), if it has two or more
+        if let Some(part) = pack::cell_weights(header, bin, "part", city.len())? {
+            base.parts = Parts::of(part.iter().map(|&v| v as u16).collect(), &city, &z).map(Arc::new);
+        }
+        let nr = Arc::new(NoRail::new(&z, &base));
+        gr.set_walk_fine(&city, &z, &base, &nr);
+        let ns = no_rail_trips(&z, &gr, &base, &nr);
+        let walk_all = ns.walk_home.iter().sum();
+        let unr_all = ns.unr_home.iter().sum();
+        let (home_k, work_k) = zone_trip_factors(&city, &z, &gr, gravity_from_pack);
+        // read only above; z and gr hold what the solves need of it (T-1611)
+        city.gravity = None;
+        Ok(DemandApi { city: Arc::new(city), z: Arc::new(z), gr: Arc::new(gr), weights: None, base, nr, walk_all, walk_home_zone: ns.walk_home, walk_work_zone: ns.walk_work, unr_all, unr_home: ns.unr_home, unr_work: ns.unr_work, home_k, work_k, svc: None, sz: None, want: vec![], od_st: vec![], od_at: vec![], per: (0..PERIODS).map(|_| None).collect(), fare_per_km: 0.0, fare_km: vec![], fare_mul: vec![], fare_curve: vec![], open_ms: now_ms() - t0, complex_in: vec![], ups_in: vec![], passages_in: vec![], span_in: vec![], bus_in: (vec![], vec![]), tram_in: vec![], same: 0, layout_same: false, reusable: false, lod: Lod::of(lod::FINE)?, part: (0, 1), len_base: std::cell::OnceCell::new() })
+    }
+
+    /// `new` at a level of detail (T-1222, `lod::FINE` or `lod::COARSE`): the commute chunks
+    /// here, the everyday samples of the layer opened beside it (`EverydayApi::beside_with`).
+    /// A level is kept for good; another level is a new opening.
+    pub fn at_level(header: &str, bin: &[u8], level: u32) -> Result<DemandApi, String> {
+        let mut a = DemandApi::new(header, bin)?;
+        a.lod = Lod::of(level)?;
+        a.base.commute_chunk = a.lod.chunk;
+        Ok(a)
+    }
+
+    pub fn level(&self) -> u32 {
+        self.lod.level
+    }
+
+    /// The station complex of each station of the networks `set_network` is given from now on
+    /// (T-161): one number per station, equal numbers one complex (game/complexes.ts, with the
+    /// player's links). Riders change between any two stations of a complex on foot, the walk
+    /// costed by distance like any walking transfer. Empty (the default) or a list of another
+    /// length: no complexes, only the walks within `xfer_walk_m`.
+    pub fn set_complexes(&mut self, complex: &[u32]) {
+        self.complex_in = complex.to_vec();
+    }
+
+    /// The station upgrades of the networks `set_network` is given from now on (T-1281): one
+    /// `track::upgrades` bit set per station. Empty (the default) or another length: none.
+    pub fn set_upgrades(&mut self, ups: &[u8]) {
+        self.ups_in = ups.to_vec();
+    }
+
+    /// The passages of the networks `set_network` is given from now on (T-1281): station pairs,
+    /// flat. A change between the two stations of a pair walks the straight line at
+    /// `PASSAGE_MPS`. Empty (the default): none.
+    pub fn set_passages(&mut self, pairs: &[u32]) {
+        self.passages_in = pairs.to_vec();
+    }
+
+    /// The service span of the networks `set_network` is given from now on (T-842): per period
+    /// and route node (`q * 2 x stops + r`, each line's stops in order then reversed, as `hopKm`),
+    /// the share of the period's riders there with a train due within their tolerance
+    /// (`track::span`). Empty or another length: 1 everywhere.
+    pub fn set_span(&mut self, span: &[f32]) {
+        self.span_in = span.to_vec();
+    }
+
+    /// The bus corridors of the networks `set_network` is given from now on (T-1464): per stop
+    /// (parallel to `stops`) the points of its stretch of route, 0 for a stop with none, and the
+    /// points' x, y in the pack's frame after one another (`demand_catches`). Empty: no buses.
+    pub fn set_bus(&mut self, catch_n: &[u32], catch_xy: &[f32]) {
+        self.bus_in = (catch_n.to_vec(), catch_xy.to_vec());
+    }
+
+    /// The tram lines of the networks `set_network` is given from now on (T-2926): one flag per line,
+    /// 1 for a line on tram track. A tram line has `TRAM_CARS` of a car per tram section (so it
+    /// holds three quarters of the riders), boards with no penalty, and a station only tram lines
+    /// serve is a tram stop (`access::TRAM_SLOTS`). Empty or another length: none.
+    pub fn set_tram_lines(&mut self, flags: &[u8]) {
+        self.tram_in = flags.to_vec();
+    }
+
+    /// T-874: commute zone pairs under the level's chunk (`Lod::chunk`) trips a period dealt in
+    /// chunks (`Params::commute_chunk`), or every pair solved (`?perfOff=chunks`).
+    pub fn set_chunked(&mut self, on: bool) {
+        let c = if on { self.lod.chunk } else { 0.0 };
+        if c != self.base.commute_chunk {
+            self.params_mut().commute_chunk = c;
+        }
+    }
+
+    /// Cells, zones, home -> work trips a day, the walk share of all trips with no rail at all,
+    /// the ms the constructor took, and (T-2214) the home -> work trips a day between two land
+    /// parts, which no way but rail serves.
+    pub fn info(&self) -> Vec<f64> {
+        vec![self.city.len() as f64, self.z.n as f64, self.gr.total, self.walk_all / self.gr.total, self.open_ms, self.unr_all]
+    }
+
+    /// The network to solve on, packed: station x, y pairs (metres in the pack's frame); stops
+    /// per line; the stops (station indices) line after line; 6 times per stop (seconds, see
+    /// `Service::times`); trains an hour, 3 per line (high, medium, low); cars per line.
+    /// Rebuilds station access and subzones (shared by every period) unless stations, lines,
+    /// stops, cars and complexes are unchanged, and forgets the results of every period whose
+    /// level's run times or trains an hour changed (T-124; all of them with a new layout).
+    /// Returns the ms it took.
+    pub fn set_network(&mut self, st_xy: &[f32], line_n: &[u32], stops: &[u32], times: &[f32], tph: &[f32], cars: &[f32]) -> Result<f64, String> {
+        let t0 = now_ms();
+        let ns = st_xy.len() / 2;
+        let nl = line_n.len();
+        let mut line_off = vec![0u32];
+        for &n in line_n {
+            line_off.push(line_off.last().unwrap() + n);
+        }
+        let nstops = *line_off.last().unwrap() as usize;
+        if stops.len() != nstops || times.len() != 6 * nstops || tph.len() != 3 * nl || cars.len() != nl {
+            return Err(format!("network arrays disagree: {nl} lines, {nstops} stops, {} stop entries, {} times, {} tph, {} cars", stops.len(), times.len(), tph.len(), cars.len()));
+        }
+        if stops.iter().any(|&s| s as usize >= ns) {
+            return Err("a stop names a station that is not in the list".into());
+        }
+        let (st_x, st_y, st_map) = merge_stations(st_xy, &line_off, stops, self.base.station_merge_m);
+        let group = demand_groups(&st_map, st_x.len(), &self.complex_in);
+        let ups = demand_ups(&st_map, st_x.len(), &self.ups_in);
+        let (catches, st_bus) = demand_catches(&st_map, st_x.len(), stops, &self.bus_in.0, &self.bus_in.1);
+        let tram_line: Vec<bool> = if self.tram_in.len() == nl { self.tram_in.iter().map(|&f| f != 0).collect() } else { vec![] };
+        let st_tram = tram_stops(&st_map, st_x.len(), stops, &line_off, &tram_line);
+        let svc = Service {
+            catches,
+            st_bus,
+            st_tram,
+            st_x,
+            st_y,
+            st_map: st_map.clone(),
+            line_off,
+            stops: stops.iter().map(|&s| st_map[s as usize]).collect(),
+            stop_xy: stops.iter().flat_map(|&s| [st_xy[2 * s as usize], st_xy[2 * s as usize + 1]]).collect(),
+            times: times.to_vec(),
+            tph: tph.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect(),
+            cars: cars.iter().enumerate().map(|(l, &c)| if tram_line.get(l).copied().unwrap_or(false) { c * TRAM_CARS } else { c }).collect(),
+            group,
+            span: span_for(&self.span_in, nstops),
+            ups,
+            passages: demand_passages(&st_map, &self.passages_in),
+        };
+        let old = self.svc.as_ref().filter(|_| self.reusable);
+        self.reusable = true;
+        self.layout_same = old.is_some_and(|o| svc.same_layout(o));
+        self.same = old.map_or(0, |o| svc.same_periods(o));
+        for (q, p) in self.per.iter_mut().enumerate() {
+            match p {
+                Some(st) if self.same >> q & 1 == 1 => st.net = Self::period_net(&svc, q),
+                _ => *p = None,
+            }
+        }
+        if !self.layout_same {
+            self.fare_km.clear();
+            self.fare_mul.clear();
+            self.sz = None;
+            self.want.clear();
+            self.od_st.clear();
+            self.od_at.clear();
+            if ns > 0 && nl > 0 {
+                let net = Self::period_net(&svc, 0);
+                let acc = build_access(&self.city, &net, &self.base);
+                let sz = build_subzones_on(&self.city, self.pop(), self.jobs(), &self.z, &acc, &net, &self.base);
+                self.want = egress_stations(&sz, svc.st_x.len());
+                self.od_at = vec![u32::MAX; svc.st_x.len()];
+                for &a in &sz.acc_st {
+                    self.od_at[a as usize] = 0;
+                }
+                for (a, at) in self.od_at.iter_mut().enumerate() {
+                    if *at == 0 {
+                        *at = self.od_st.len() as u32;
+                        self.od_st.push(a as u32);
+                    }
+                }
+                self.sz = Some(sz);
+            }
+        }
+        self.svc = Some(svc);
+        Ok(now_ms() - t0)
+    }
+
+    /// Set the player's price. Base is paid once per trip, including transfers; distance is
+    /// charged on ride edges, so route choice and mode choice both see the actual route's fare.
+    /// `hop_km` follows route nodes: each line's forward stops then reverse stops, 0 at ends.
+    pub fn set_fares(&mut self, base_usd: f32, per_km_usd: f32, hop_km: &[f32]) -> Result<(), String> {
+        let count = self.svc.as_ref().map_or(0, |s| 2 * s.stops.len());
+        if !base_usd.is_finite() || base_usd < 0.0 || !per_km_usd.is_finite() || per_km_usd < 0.0
+            || hop_km.len() != count || hop_km.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return Err("invalid fare or segment distances".into());
+        }
+        let w = self.base.fare_w;
+        let (fare_min, per_km) = (base_usd * w, per_km_usd * w);
+        if fare_min.to_bits() != self.base.fare_min.to_bits() || per_km.to_bits() != self.fare_per_km.to_bits() || !same_bits(hop_km, &self.fare_km) {
+            self.base.fare_min = fare_min;
+            self.fare_per_km = per_km;
+            self.fare_km = hop_km.to_vec();
+            self.per.iter_mut().for_each(|p| *p = None);
+            self.same = 0;
+        }
+        Ok(())
+    }
+
+    /// T-1626: each route node's fare multiplier, in `set_fares`' layout (a high-speed line's
+    /// nodes its multiplier, the rest 1); empty when every one is 1.
+    pub fn set_fare_mul(&mut self, mul: &[f32]) -> Result<(), String> {
+        check_fare_mul(mul, self.svc.as_ref().map_or(0, |s| 2 * s.stops.len()))?;
+        let mul = if mul.iter().all(|&v| v == 1.0) { &[][..] } else { mul };
+        if !same_bits(mul, &self.fare_mul) {
+            self.fare_mul = mul.to_vec();
+            self.per.iter_mut().for_each(|p| *p = None);
+            self.same = 0;
+        }
+        Ok(())
+    }
+
+    /// T-1277: perceived minutes a fare dollar costs this population's riders (their country's,
+    /// `Params::fare_w`); before `set_fares`, which reads it.
+    pub fn set_fare_weight(&mut self, w: f32) -> Result<(), String> {
+        if !(w.is_finite() && w > 0.0) {
+            return Err("invalid fare weight".into());
+        }
+        if w.to_bits() != self.base.fare_w.to_bits() {
+            self.base.fare_w = w;
+            self.per.iter_mut().for_each(|p| *p = None);
+            self.same = 0;
+        }
+        Ok(())
+    }
+
+    /// The player's fare curve (T-883, T-1143) over `set_fares`' straight line: trip km and US$ in
+    /// pairs, km rising and fares never falling; empty when the curve is that line.
+    pub fn set_fare_curve(&mut self, knots: &[f32]) -> Result<(), String> {
+        check_fare_curve(knots)?;
+        if !same_bits(knots, &self.fare_curve) {
+            self.fare_curve = knots.to_vec();
+            self.per.iter_mut().for_each(|p| *p = None);
+            self.same = 0;
+        }
+        Ok(())
+    }
+
+    /// T-1801: the transfer fare, US$, paid on each boarding after a trip's first; after
+    /// `set_fare_weight`, which it is weighed at.
+    pub fn set_transfer_fare(&mut self, usd: f32) -> Result<(), String> {
+        if !(usd.is_finite() && usd >= 0.0) {
+            return Err("invalid transfer fare".into());
+        }
+        let v = usd * self.base.fare_w;
+        if v.to_bits() != self.base.xfer_fare.to_bits() {
+            self.base.xfer_fare = v;
+            self.per.iter_mut().for_each(|p| *p = None);
+            self.same = 0;
+        }
+        Ok(())
+    }
+
+    /// Run one solve and one crowding round on a small cross of two lines at the pack origin,
+    /// then forget it. V8 runs a wasm function's first calls in its baseline compiler and swaps
+    /// in optimised code only for later calls, so the first real solve took 3x as long as the
+    /// next ones (notes/T-026.md); a worker calls this once after opening the city. Returns ms.
+    pub fn warm_up(&mut self) -> f64 {
+        let t0 = now_ms();
+        let mut xy = vec![];
+        for i in -6..=6 {
+            xy.extend([i as f32 * 1000.0, 0.0]);
+        }
+        let mut b = vec![];
+        for i in -6..=6i32 {
+            if i == 0 {
+                b.push(6u32);
+            } else {
+                b.push((xy.len() / 2) as u32);
+                xy.extend([0.0, i as f32 * 1000.0]);
+            }
+        }
+        let stops: Vec<u32> = (0..13).chain(b).collect();
+        let times: Vec<f32> = (0..2).flat_map(|_| (0..6).flat_map(|r| (0..13).map(move |k| if (r < 3 && k == 12) || (r >= 3 && k == 0) { 0.0 } else { 90.0 }))).collect();
+        if self.set_network(&xy, &[13, 13], &stops, &times, &[12.0, 6.0, 3.0, 12.0, 6.0, 3.0], &[8.0, 8.0]).is_ok() {
+            self.solve(0);
+            self.crowd(0);
+        }
+        self.per.iter_mut().for_each(|p| *p = None);
+        self.svc = None;
+        self.sz = None;
+        self.want.clear();
+        self.od_st.clear();
+        self.od_at.clear();
+        clear_skim_cache();
+        now_ms() - t0
+    }
+
+    /// The free-flow first estimate for period `q` (SPEC 4.4). False if there is no network.
+    pub fn solve(&mut self, q: usize) -> bool {
+        let t0 = now_ms();
+        let Some(svc) = &self.svc else { return false };
+        if q >= PERIODS {
+            return false;
+        }
+        let p = self.params(q);
+        let trips = self.gr.total * p.period_share as f64;
+        let walk0 = self.walk_all * p.period_share as f64;
+        let net = Self::period_net(svc, q);
+        let mut g = build_graph(&net, &p);
+        put_fares(&mut g, &self.fare_curve, &self.fare_km, &self.fare_mul, self.base.fare_min, self.fare_per_km, self.base.fare_w);
+        let no_crowding = vec![1.0; g.rn_ride.len()];
+        set_crowding(&mut g, &no_crowding);
+        let xi = xfer_index(&g);
+        let mut xfer = vec![0.0; xi.len];
+        let (rail, rail_walk, avg, pairs, sub, rail_d, len) = if self.sz.is_some() {
+            self.pass(&g, &p, q, Some((&xi, &mut xfer)))
+        } else {
+            (0.0, 0.0, Loads::zero(g.n_st, g.n - g.n_st), 0, SubOut::empty(), FareSense::default(), LenOut::zero())
+        };
+        let walk0 = if self.part.0 == 0 { walk0 } else { 0.0 };
+        let unr0 = if self.part.0 == 0 { self.unr_all * p.period_share as f64 } else { 0.0 };
+        let unr = unr0 - sub.unr_rail();
+        self.per[q] = Some(Period { net, p, g, avg, rail, rail_d, len, walk: walk0 - rail_walk, unr, trips, round: 0, ms: now_ms() - t0, pairs, sub, fac: no_crowding, uniform: true, seen: vec![], xi, xfer, part: self.part });
+        true
+    }
+
+    /// T-1538: a first estimate of period `to` from period `from`'s free-flow solve, in a few ms:
+    /// `to`'s own network and graph, `from`'s mode choice, loads and places scaled by the two
+    /// periods' trips (each a share of the day's). Only for figures shown before `to` is solved;
+    /// `solve(to)` replaces it whole. False unless `from` is solved at free flow.
+    pub fn estimate(&mut self, from: usize, to: usize) -> bool {
+        let Some(svc) = &self.svc else { return false };
+        let Some(Some(src)) = self.per.get(from) else { return false };
+        if to >= PERIODS || to == from || src.round != 0 {
+            return false;
+        }
+        let p = self.params(to);
+        let trips = self.gr.total * p.period_share as f64;
+        let k = if src.trips > 0.0 { trips / src.trips } else { 0.0 };
+        let net = Self::period_net(svc, to);
+        let mut g = build_graph(&net, &p);
+        if g.rn_ride.len() != src.g.rn_ride.len() || g.n != src.g.n {
+            return false;
+        }
+        put_fares(&mut g, &self.fare_curve, &self.fare_km, &self.fare_mul, self.base.fare_min, self.fare_per_km, self.base.fare_w);
+        let no_crowding = vec![1.0; g.rn_ride.len()];
+        set_crowding(&mut g, &no_crowding);
+        let xi = xfer_index(&g);
+        let xfer = if xi.len == src.xi.len { src.xfer.iter().map(|x| x * k as f32).collect() } else { vec![0.0; xi.len] };
+        let mut rail_d = src.rail_d.clone();
+        rail_d.scale(k);
+        let mut len = src.len.clone();
+        len.scale(k, k, k);
+        let est = Period { avg: src.avg.scaled(k as f32), rail: src.rail * k, rail_d, len, walk: src.walk * k, unr: src.unr * k, trips, round: 0, ms: 0.0, pairs: src.pairs, sub: src.sub.scaled(k as f32), fac: no_crowding, uniform: true, seen: vec![], net, p, g, xi, xfer, part: src.part };
+        self.per[to] = Some(est);
+        true
+    }
+
+    /// T-1543: the next `solve`s cover part `k` of `n` of the origins (`kernel::mode_choice_part`),
+    /// so that copies in `n` workers solve one period together, the page adding their figures up;
+    /// `set_part(0, 1)` all of them again. Such a period is for figures shown before the period is
+    /// solved whole (it is never crowded on), as `estimate`'s.
+    pub fn set_part(&mut self, k: u32, n: u32) {
+        self.part = if n > 1 && k < n { (k, n) } else { (0, 1) };
+    }
+
+    /// T-1543: drop period `q`'s result (a part's, held for a period this worker does not solve).
+    pub fn forget_period(&mut self, q: usize) {
+        if let Some(p) = self.per.get_mut(q) {
+            *p = None;
+        }
+    }
+
+    /// One crowding round for period `q` (a penalty per segment from the averaged loads, then
+    /// search, mode choice and assignment again, averaged in). False if `q` has no solve yet.
+    pub fn crowd(&mut self, q: usize) -> bool {
+        let Some(Some(st)) = self.per.get(q) else { return false };
+        let total = [&st.avg.seg[..], &st.avg.rn_board[..], &st.avg.rn_alight[..]].concat();
+        self.crowd_with_external(q, &total)
+    }
+
+    /// One population's assignment under the complete shared-world loads. `total` includes this
+    /// population; it is frozen before ANY population advances its round. It is the segment loads
+    /// per route node, then the boardings and then the alightings per route node (riders left
+    /// behind, T-188, `kernel::round_costs`); the segment loads alone price crowding only.
+    pub fn crowd_with_external(&mut self, q: usize, total: &[f32]) -> bool {
+        let Some(Some(st)) = self.per.get(q) else { return false };
+        let Some((fac, left)) = round_costs(&st.g, &st.net, &st.p, total) else { return false };
+        let t0 = now_ms();
+        let Some(mut st) = self.per.get_mut(q).and_then(|p| p.take()) else { return false };
+        if self.sz.is_some() {
+            if settled(&mut st.seen, &total[..st.g.rn_line.len()]) || (st.uniform && fac == st.fac && left == st.g.rn_left) {
+                // The period's loads have settled (T-434), or nothing is crowded enough to change a
+                // cost, so this round would solve what the round before did (T-119).
+                st.round += 1;
+                st.ms = now_ms() - t0;
+                self.per[q] = Some(st);
+                return true;
+            }
+            set_crowding(&mut st.g, &fac);
+            st.g.rn_left = left;
+            st.uniform = false;
+            st.fac = fac;
+            let mut xfer = vec![0.0; st.xi.len];
+            let (rail, rail_walk, l, _, sub, rail_d, len) = self.pass(&st.g, &st.p, q, Some((&st.xi, &mut xfer)));
+            st.round += 1;
+            let r = st.round;
+            msa(&mut st.xfer, &xfer, r);
+            msa(&mut st.avg.seg, &l.seg, r);
+            msa(&mut st.avg.board, &l.board, r);
+            msa(&mut st.avg.alight, &l.alight, r);
+            msa(&mut st.avg.rn_board, &l.rn_board, r);
+            msa(&mut st.avg.rn_alight, &l.rn_alight, r);
+            msa(&mut st.avg.entry, &l.entry, r);
+            msa(&mut st.avg.exit, &l.exit, r);
+            msa(&mut st.avg.rn_fare_x, &l.rn_fare_x, r);
+            st.sub.msa(&sub, r);
+            let w = 1.0 / (r as f64 + 1.0);
+            st.rail += (rail - st.rail) * w;
+            st.rail_d.toward(rail_d, w);
+            st.len.toward(&len, w);
+            let walk = self.walk_all * st.p.period_share as f64 - rail_walk;
+            st.walk += (walk - st.walk) * w;
+            if !self.unr_home.is_empty() {
+                st.unr = self.unr_all * st.p.period_share as f64 - st.sub.unr_rail();
+            }
+        } else {
+            st.round += 1;
+        }
+        st.ms = now_ms() - t0;
+        self.per[q] = Some(st);
+        true
+    }
+
+    /// After the last crowding round (T-1070, T-1255): period `q`'s riders held to those who wait
+    /// for a train with room no longer than `WAIT_FOR_ROOM_S` (`kernel::capacity_fit`) from
+    /// `total`, every population's final loads as `crowd_with_external` takes them, then optionally
+    /// the riders coming to each platform; those turned away go by car or on foot as the pair's
+    /// other riders do. False if `q` has no solve or `total` another layout.
+    pub fn cap_with_external(&mut self, q: usize, total: &[f32]) -> bool {
+        let Some(Some(st)) = self.per.get_mut(q) else { return false };
+        let Some(fit) = capacity_fit(&st.g, &st.net, &st.p, total) else { return false };
+        let Some(sz) = self.sz.as_ref() else { return true };
+        if !fit.any {
+            return true;
+        }
+        let (keep, all) = cap_loads(&st.g, &fit, &st.xi, &mut st.avg, &mut st.xfer);
+        // a period's commutes run both ways: to work entering at the home end, home at the work end
+        let (w, h) = (TO_WORK[q], TO_HOME[q]);
+        let (fw, fh) = (w / (w + h), h / (w + h));
+        let all = all as f32;
+        let sub = &mut st.sub;
+        let (mut lost0, mut lost1) = (0f64, 0f64);
+        for u in 0..sz.n {
+            let ks = sz.acc_off[u] as usize..sz.acc_off[u + 1] as usize;
+            let (mut h0, mut h1, mut w0, mut w1) = (0f32, 0f32, 0f32, 0f32);
+            for k in ks {
+                let k_st = keep[sz.acc_st[k] as usize];
+                if let Some(v) = sub.acc_home.get_mut(k) {
+                    h0 += *v;
+                    *v *= fw * k_st + fh * all;
+                    h1 += *v;
+                }
+                if let Some(v) = sub.acc_work.get_mut(k) {
+                    w0 += *v;
+                    *v *= fw * all + fh * k_st;
+                    w1 += *v;
+                }
+            }
+            let (fh_u, fw_u) = (if h0 > 0.0 { h1 / h0 } else { all }, if w0 > 0.0 { w1 / w0 } else { all });
+            if let Some(v) = sub.rail_home.get_mut(u) {
+                *v *= fh_u;
+            }
+            if let Some(v) = sub.walk_lost_home.get_mut(u) {
+                lost0 += *v as f64;
+                *v *= fh_u;
+                lost1 += *v as f64;
+            }
+            if let Some(v) = sub.rail_work.get_mut(u) {
+                *v *= fw_u;
+            }
+            if let Some(v) = sub.walk_lost_work.get_mut(u) {
+                *v *= fw_u;
+            }
+            // T-2214: those turned away between two land parts stay home
+            if let Some(v) = sub.unr_lost_home.get_mut(u) {
+                *v *= fh_u;
+            }
+            if let Some(v) = sub.unr_lost_work.get_mut(u) {
+                *v *= fw_u;
+            }
+        }
+        let m = self.od_st.len();
+        if sub.od.len() == m * m {
+            for i in 0..m {
+                let ki = keep[self.od_st[i] as usize];
+                for j in 0..m {
+                    sub.od[i * m + j] *= fw * ki + fh * keep[self.od_st[j] as usize];
+                }
+            }
+        }
+        st.rail *= all as f64;
+        st.rail_d.scale(all as f64);
+        let rail_walk = self.walk_all * st.p.period_share as f64 - st.walk;
+        let kw = if lost0 > 0.0 { lost1 / lost0 } else { all as f64 };
+        st.walk += rail_walk * (1.0 - kw);
+        // T-2365: the bins follow, the trips between land parts by what their subzones kept
+        let unr_before: f64 = st.len.unr[..N_LEN].iter().sum();
+        if !self.unr_home.is_empty() {
+            st.unr = self.unr_all * st.p.period_share as f64 - st.sub.unr_rail();
+        }
+        let ku = if unr_before > 0.0 { st.sub.unr_rail() / unr_before } else { all as f64 };
+        st.len.scale(all as f64, kw, ku);
+        true
+    }
+
+    /// Period `q`: round (0 = free flow), trips, rail trips, walked trips, ms of the last stage,
+    /// subzone pairs, segments over seats at the busiest hour, worst load as a share of crush,
+    /// rider-weighted p50 and p90 crowding penalty, (T-1300) the fare sensitivity
+    /// (`FareSense`: d, d_km, km) and (T-2214) the trips no way serves (between two land parts,
+    /// not by rail; driving is trips less rail, walking and these). Empty if `q` has no solve. A part of the origins (T-1543) has
+    /// the trips only in its first part and no crowding figures, which would not add up.
+    pub fn summary(&self, q: usize) -> Vec<f64> {
+        let Some(Some(st)) = self.per.get(q) else { return vec![] };
+        let (_, cs) = if st.part.1 > 1 { (vec![], CrowdStats { segs_over_seats: 0, segs: 0, max_load_of_crush: 0.0, p50: 0.0, p90: 0.0 }) } else { crowd_factors(&st.g, &st.net, &st.avg, &st.p) };
+        vec![
+            st.round as f64,
+            if st.part.0 == 0 { st.trips } else { 0.0 },
+            st.rail,
+            st.walk,
+            st.ms,
+            st.pairs as f64,
+            cs.segs_over_seats as f64,
+            cs.max_load_of_crush as f64,
+            cs.p50 as f64,
+            cs.p90 as f64,
+            st.rail_d.d,
+            st.rail_d.d_km,
+            st.rail_d.km,
+            st.unr,
+        ]
+    }
+
+    /// Riders in period `q` on the segment leaving each route node (0 at a run's last stop).
+    pub fn seg(&self, q: usize) -> Vec<f32> {
+        self.per.get(q).and_then(|p| p.as_ref()).map_or(vec![], |st| st.avg.seg.clone())
+    }
+    /// Riders in period `q` boarding at each route node.
+    pub fn board(&self, q: usize) -> Vec<f32> {
+        self.per.get(q).and_then(|p| p.as_ref()).map_or(vec![], |st| st.avg.rn_board.clone())
+    }
+    /// Riders in period `q` leaving the train at each route node.
+    pub fn alight(&self, q: usize) -> Vec<f32> {
+        self.per.get(q).and_then(|p| p.as_ref()).map_or(vec![], |st| st.avg.rn_alight.clone())
+    }
+    /// The fare curve's extra in period `q` (T-1143), US$, at each route node where the trips paying
+    /// it first board: what the trips pay beyond the base and the first stretch's rate per km; with
+    /// the transfer fares (T-1801) at the route nodes riders board after changing.
+    pub fn fare_extra(&self, q: usize) -> Vec<f32> {
+        self.per.get(q).and_then(|p| p.as_ref()).map_or(vec![], |st| fare_extra_usd(&st.avg.rn_fare_x, &st.p, &st.g, &st.xi, &st.xfer))
+    }
+    /// Riders in period `q` boarding at each route node after changing lines (T-1530); empty when
+    /// the period has no result.
+    pub fn transfers_in(&self, q: usize) -> Vec<f32> {
+        self.per.get(q).and_then(|p| p.as_ref()).map_or(vec![], |st| transfers_in(&st.g, &st.xi, &st.xfer))
+    }
+    /// `transfers` on a kind of day (T-260): each period's riders times the commute's load factor.
+    pub fn transfers_day(&self, sel: &[u8], day: u32) -> Vec<f32> {
+        let mut out = vec![];
+        for (q, st) in self.per.iter().enumerate() {
+            let Some(st) = st else { continue };
+            let at = out.len();
+            transfer_pairs(&st.g, &st.xi, &st.xfer, sel, &mut out);
+            scale_triples(&mut out[at..], load_factor(day as usize, WORK, q));
+        }
+        out
+    }
+    /// Load at the period's busiest hour on the segment leaving each route node, as a share of
+    /// the crush capacity of the trains running then (0 where none run).
+    pub fn load_of_crush(&self, q: usize) -> Vec<f32> {
+        let Some(Some(st)) = self.per.get(q) else { return vec![] };
+        (0..st.avg.seg.len())
+            .map(|r| {
+                let l = st.g.rn_line[r] as usize;
+                let tph = 60.0 / st.net.line_headway_min[l][q];
+                let crush = tph * st.net.line_crush[l];
+                if crush > 0.0 { st.avg.seg[r] / st.p.period_hours * st.p.peak_hour_factor / crush } else { 0.0 }
+            })
+            .collect()
+    }
+
+    // --- Demand views (T-078 for T-084; notes/T-078.md). A worker holds only its own periods,
+    // so each answers for the periods it has solved and the main thread adds them up.
+
+    /// Periods this worker has a result for, as a bit mask (bit q = period q).
+    pub fn solved_mask(&self) -> u32 {
+        (0..PERIODS).filter(|&q| self.period(q).is_some()).fold(0, |m, q| m | 1 << q)
+    }
+
+    /// Selected commute trip legs: outward then return, each mode-major, five periods.
+    /// Same endpoint allocation as cell_modes; this is a period-specific mode query.
+    pub fn purpose_timing(&self, end: u32, cells: &[u32]) -> Vec<f32> {
+        self.purpose_timing_day(end, cells, WEEKDAY as u32)
+    }
+
+    /// `purpose_timing` on a kind of day (T-260): each period's legs scaled by the commute's load
+    /// factor and split into to work and home by that day's shares.
+    pub fn purpose_timing_day(&self, end: u32, cells: &[u32], day: u32) -> Vec<f32> {
+        self.purpose_timing_in(end, cells, day, u32::MAX)
+    }
+
+    /// `purpose_timing_day` over the solved periods in `mask` alone (bit q = period q; T-336): a
+    /// zone no station reaches, held by the auxiliary worker alone, answers for each solving
+    /// worker's periods in turn, so a selection's figures add up as a solve's would.
+    pub fn purpose_timing_mask_day(&self, end: u32, cells: &[u32], mask: u32, day: u32) -> Vec<f32> {
+        self.purpose_timing_in(end, cells, day, mask)
+    }
+
+    fn purpose_timing_in(&self, end: u32, cells: &[u32], day: u32, mask: u32) -> Vec<f32> {
+        let day = day as usize;
+        let n = self.city.len();
+        let mut out = vec![0.0; 30];
+        for q in 0..PERIODS {
+            if mask >> q & 1 == 0 { continue; }
+            let Some(st) = self.period(q) else { continue };
+            let mut sums = vec![0.0; 6 * self.sz.as_ref().map_or(0, |s| s.n)];
+            let ns = sums.len() / 6;
+            if ns > 0 {
+                sums[..ns].copy_from_slice(&st.sub.rail_home);
+                sums[ns..2*ns].copy_from_slice(&st.sub.rail_work);
+                sums[2*ns..3*ns].copy_from_slice(&st.sub.walk_lost_home);
+                sums[3*ns..4*ns].copy_from_slice(&st.sub.walk_lost_work);
+                if !st.sub.unr_lost_home.is_empty() {
+                    sums[4*ns..5*ns].copy_from_slice(&st.sub.unr_lost_home);
+                    sums[5*ns..].copy_from_slice(&st.sub.unr_lost_work);
+                }
+            }
+            let modes = self.cell_modes(&sums);
+            let share = TO_WORK[q] + TO_HOME[q];
+            for &c in cells {
+                let c = c as usize;
+                if c >= n { continue; }
+                let base = (end.min(1) as usize * 3) * n + c;
+                let rail = 2.0 * modes[base];
+                // cell_modes includes all-day walking/driving baselines: take this period's
+                // baseline and subtract its actual rail diversion, rather than scaling daily rail.
+                let z = self.z.cell_zone[c] as usize;
+                let daily_total = if end == 0 { self.city.pop[c] * self.home_k[z] } else { self.city.jobs[c] * self.work_k[z] };
+                let s = self.slot(c);
+                let (mass, zmass, walkz) = if end == 0 { (self.city.pop[c], self.slot_w(s, true), self.walk_home_zone[s]) }
+                    else { (self.city.jobs[c], self.slot_w(s, false), self.walk_work_zone[s]) };
+                let (lost, unr_lost) = if let Some(sz) = &self.sz {
+                    let u = sz.cell[c];
+                    if u == u32::MAX { (0.0, 0.0) } else {
+                        let u = u as usize;
+                        let denom = if end == 0 { sz.pop[u] } else { sz.jobs[u] };
+                        let v = if end == 0 { st.sub.walk_lost_home[u] } else { st.sub.walk_lost_work[u] };
+                        if denom > 0.0 { (v * mass / denom, st.sub.unr_lost(end == 0, u) * mass / denom) } else { (0.0, 0.0) }
+                    }
+                } else { (0.0, 0.0) };
+                let walk = ((walkz / zmass.max(1e-9)) as f32 * mass * share - lost).max(0.0);
+                // T-2214: the trips no way serves are in no mode here
+                let unr = (self.unr_per(c, end == 0) * mass * share - unr_lost).max(0.0);
+                let drive = (daily_total * share - rail - walk - unr).max(0.0);
+                let f = load_factor(day, WORK, q);
+                let (tw, th) = (share_out(day, WORK, q), share_ret(day, WORK, q));
+                let sh = tw + th;
+                for (m, v) in [rail, walk, drive].into_iter().enumerate() {
+                    out[m*5+q] += v * f * tw / sh;
+                    out[15+m*5+q] += v * f * th / sh;
+                }
+            }
+        }
+        out
+    }
+
+
+    /// Rail trips by subzone summed over this worker's solved periods, six blocks of
+    /// `n_subzones`: rail by home/work, the walkers rail takes by home/work, then (T-2214) the rail
+    /// trips between two land parts by home/work (0 with no parts). Add the blocks of every
+    /// worker and pass the sum to `cell_modes`.
+    pub fn sub_sums(&self) -> Vec<f32> {
+        self.sub_sums_day(WEEKDAY as u32)
+    }
+
+    /// `sub_sums` on a kind of day (T-260, `days.rs`): each period's rail weighed by the commute's
+    /// load factor that day (exactly 1 on a weekday).
+    pub fn sub_sums_day(&self, day: u32) -> Vec<f32> {
+        let ns = self.n_subzones() as usize;
+        let mut out = vec![0f32; 6 * ns];
+        for q in 0..PERIODS {
+            let Some(st) = self.period(q) else { continue };
+            if st.sub.rail_home.len() != ns {
+                continue;
+            }
+            let f = load_factor(day as usize, WORK, q);
+            for (b, v) in [&st.sub.rail_home, &st.sub.rail_work, &st.sub.walk_lost_home, &st.sub.walk_lost_work, &st.sub.unr_lost_home, &st.sub.unr_lost_work].into_iter().enumerate() {
+                for (o, &x) in out[b * ns..(b + 1) * ns].iter_mut().zip(v) {
+                    *o += x * f;
+                }
+            }
+        }
+        out
+    }
+
+    /// Commuters a day per cell by how they travel, from the day's `sub_sums` of every worker:
+    /// six blocks of one value per cell (pack order), at the home end rail, walk, drive, then at
+    /// the work end rail, walk, drive. Empty if `sums` does not fit the current network. A
+    /// commuter is one person making a trip to work and one home.
+    pub fn cell_modes(&self, sums: &[f32]) -> Vec<f32> {
+        self.cell_modes_day(sums, WEEKDAY as u32)
+    }
+
+    /// `cell_modes` on a kind of day (T-260), from that day's `sub_sums_day`: everyone's trips
+    /// and the walkers scaled by the day's commute rate.
+    pub fn cell_modes_day(&self, sums: &[f32], day: u32) -> Vec<f32> {
+        let mut out = self.modes_cells(sums, day);
+        out.truncate(6 * self.city.len());
+        out
+    }
+
+    /// T-2365: the commutes a day on `day` by straight-line length, over this worker's solved
+    /// periods in `mask` (bit q = period q): eight blocks of one value per bin
+    /// (`lengths::trip_length_edges`): trips, rail, walking, no way (T-2214), then the km of each.
+    /// Driving is the trips less the other three. Each block adds up to the periods' `summary` as
+    /// the day weighs it (`days::load_factor`).
+    pub fn trip_lengths_day(&self, day: u32, mask: u32) -> Vec<f64> {
+        let b = self.len_base();
+        let mut out = vec![0f64; 8 * N_LEN];
+        for q in 0..PERIODS {
+            if mask >> q & 1 == 0 {
+                continue;
+            }
+            let Some(st) = self.period(q) else { continue };
+            let f = load_factor(day as usize, WORK, q) as f64;
+            let lead = if st.part.0 == 0 { st.p.period_share as f64 } else { 0.0 };
+            for x in 0..2 {
+                for k in 0..N_LEN {
+                    let i = x * N_LEN + k;
+                    out[4 * x * N_LEN + k] += f * lead * b.trips[i];
+                    out[(4 * x + 1) * N_LEN + k] += f * st.len.rail[i];
+                    out[(4 * x + 2) * N_LEN + k] += f * (lead * b.walk[i] - st.len.walk[i]);
+                    out[(4 * x + 3) * N_LEN + k] += f * (lead * b.unr[i] - st.len.unr[i]);
+                }
+            }
+        }
+        out
+    }
+
+    /// T-2214: commuters a day per cell that no way serves (between two land parts, not by rail),
+    /// from the day's `sub_sums_day` as `cell_modes_day` counts its modes: two blocks of one value
+    /// per cell, at the home end and at the work end (0 everywhere in a pack with one land part).
+    /// `cell_modes_day`'s drive leaves them out.
+    pub fn cell_unreach_day(&self, sums: &[f32], day: u32) -> Vec<f32> {
+        let mut out = self.modes_cells(sums, day);
+        if out.is_empty() {
+            return out;
+        }
+        out.split_off(6 * self.city.len())
+    }
+
+    /// `cell_modes_day`'s six blocks, then `cell_unreach_day`'s two.
+    fn modes_cells(&self, sums: &[f32], day: u32) -> Vec<f32> {
+        let r = day_rate(day as usize, WORK);
+        let n = self.city.len();
+        // No subzones (a network with no running line): nobody by rail, everyone walks or drives.
+        // An empty answer would leave the demand views on the previous network's (T-099).
+        let sz = self.sz.as_ref();
+        let ns = sz.map_or(0, |s| s.n);
+        if sums.len() != 6 * ns {
+            return vec![];
+        }
+        let (scell, spop, sjobs): (&[u32], &[f32], &[f32]) = match sz {
+            Some(s) => (&s.cell, &s.pop, &s.jobs),
+            None => (&[], &[], &[]),
+        };
+        let mut out = vec![0f32; 8 * n];
+        for c in 0..n {
+            let zc = self.z.cell_zone[c] as usize;
+            let sc = self.slot(c);
+            let (pop, jobs) = (self.city.pop[c], self.city.jobs[c]);
+            let u = scell.get(c).copied().unwrap_or(u32::MAX);
+            // home end
+            let total = pop * self.home_k[zc] * r;
+            let mut walk = if self.slot_w(sc, true) > 0.0 { (self.walk_home_zone[sc] / self.slot_w(sc, true)) as f32 * pop * r } else { 0.0 };
+            let mut unr = self.unr_per(c, true) * pop * r;
+            let mut rail = 0.0;
+            if u != u32::MAX && spop[u as usize] > 0.0 {
+                let f = pop / spop[u as usize] / 2.0;
+                rail = sums[u as usize] * f;
+                walk -= sums[2 * ns + u as usize] * f;
+                unr -= sums[4 * ns + u as usize] * f;
+            }
+            let (walk, unr) = (walk.max(0.0), unr.max(0.0));
+            out[c] = rail;
+            out[n + c] = walk;
+            out[2 * n + c] = (total - rail - walk - unr).max(0.0);
+            out[6 * n + c] = unr;
+            // work end
+            let total = jobs * self.work_k[zc] * r;
+            let mut walk = if self.slot_w(sc, false) > 0.0 { (self.walk_work_zone[sc] / self.slot_w(sc, false)) as f32 * jobs * r } else { 0.0 };
+            let mut unr = self.unr_per(c, false) * jobs * r;
+            let mut rail = 0.0;
+            if u != u32::MAX && sjobs[u as usize] > 0.0 {
+                let f = jobs / sjobs[u as usize] / 2.0;
+                rail = sums[ns + u as usize] * f;
+                walk -= sums[3 * ns + u as usize] * f;
+                unr -= sums[5 * ns + u as usize] * f;
+            }
+            let (walk, unr) = (walk.max(0.0), unr.max(0.0));
+            out[3 * n + c] = rail;
+            out[4 * n + c] = walk;
+            out[5 * n + c] = (total - rail - walk - unr).max(0.0);
+            out[7 * n + c] = unr;
+        }
+        out
+    }
+
+
+    /// `station_riders` on a kind of day (T-260): each period weighed by the commute's load factor.
+    pub fn station_riders_day(&self, station: u32, day: u32) -> Vec<f32> {
+        let (Some(sz), Some(svc)) = (self.sz.as_ref(), self.svc.as_ref()) else { return vec![] };
+        let Some(&a) = svc.st_map.get(station as usize) else { return vec![] };
+        let a = a as usize;
+        let s = svc.st_x.len();
+        let nz = self.z.n;
+        let (mut home_r, mut work_r) = (vec![0f32; sz.n], vec![0f32; sz.n]);
+        let (mut to_zone, mut from_zone) = (vec![0f32; nz], vec![0f32; nz]);
+        let (mut dep, mut arr) = (vec![0f32; s], vec![0f32; s]);
+        let (mut walked, mut rode) = (0f32, 0f32);
+        for q in 0..PERIODS {
+            let Some(st) = self.period(q) else { continue };
+            let sub = &st.sub;
+            if sub.acc_home.len() != sz.acc_st.len() || sub.od.len() != self.od_st.len() * self.od_st.len() {
+                continue;
+            }
+            dep.iter_mut().for_each(|v| *v = 0.0);
+            arr.iter_mut().for_each(|v| *v = 0.0);
+            let f = load_factor(day as usize, WORK, q);
+            for (k, &t) in sz.acc_st.iter().enumerate() {
+                dep[t as usize] += sub.acc_home[k];
+                arr[t as usize] += sub.acc_work[k];
+            }
+            for u in 0..sz.n {
+                for k in sz.acc_off[u] as usize..sz.acc_off[u + 1] as usize {
+                    let t = sz.acc_st[k] as usize;
+                    if t == a {
+                        home_r[u] += sub.acc_home[k] * f;
+                        work_r[u] += sub.acc_work[k] * f;
+                        if k < sz.acc_mid[u] as usize {
+                            walked += sub.acc_home[k] * f;
+                        } else {
+                            rode += sub.acc_home[k] * f;
+                        }
+                    }
+                    // where this station's home riders work: their trips to station t, spread
+                    // over the subzones arriving at t; and where its work riders live
+                    let zu = sz.zone[u] as usize;
+                    if arr[t] > 0.0 {
+                        to_zone[zu] += self.sub_od(sub, a, t) * sub.acc_work[k] / arr[t] * f;
+                    }
+                    if dep[t] > 0.0 {
+                        from_zone[zu] += self.sub_od(sub, t, a) * sub.acc_home[k] / dep[t] * f;
+                    }
+                }
+            }
+        }
+        let cells = |r: &[f32], w: &[f32], wsub: &[f32]| -> (Vec<f32>, Vec<f32>) {
+            let (mut c, mut v) = (vec![], vec![]);
+            for u in 0..sz.n {
+                if r[u] <= 0.0 || wsub[u] <= 0.0 {
+                    continue;
+                }
+                for &m in &sz.mem[sz.mem_off[u] as usize..sz.mem_off[u + 1] as usize] {
+                    let x = r[u] / 2.0 * w[m as usize] / wsub[u];
+                    if x > 0.0 {
+                        c.push(m as f32);
+                        v.push(x);
+                    }
+                }
+            }
+            (c, v)
+        };
+        let (hc, hv) = cells(&home_r, &self.city.pop, &sz.pop);
+        let (wc, wv) = cells(&work_r, &self.city.jobs, &sz.jobs);
+        let mut out = Vec::with_capacity(4 + 2 * (hc.len() + wc.len()) + 2 * nz);
+        out.extend([hc.len() as f32, wc.len() as f32, walked / 2.0, rode / 2.0]);
+        out.extend(hc);
+        out.extend(hv);
+        out.extend(wc);
+        out.extend(wv);
+        out.extend(to_zone.iter().map(|&v| v / 2.0));
+        out.extend(from_zone.iter().map(|&v| v / 2.0));
+        out
+    }
+
+    // --- Flows (T-098 for T-097's bubbles; notes/T-098.md): for a set of cells at one end of the
+    // commute (homes, or jobs), all their commuters by mode spread over the other end. Two steps,
+    // like `sub_sums` and `cell_modes`: every worker gives the rail part of its periods
+    // (`flow_rail`), the main thread adds them up, one worker spreads everything (`flows`).
+
+    /// The selection's share of each subzone at its end (`end` 0: homes, 1: jobs), by the
+    /// commuters living or working in the selected cells. Repeated or unknown cells are ignored.
+    fn selection(&self, end: u32, cells: &[u32]) -> Vec<f32> {
+        let Some(sz) = self.sz.as_ref() else { return vec![] };
+        let (w, wsub) = if end == 0 { (&self.city.pop, &sz.pop) } else { (&self.city.jobs, &sz.jobs) };
+        let mut seen = vec![false; self.city.len()];
+        let mut su = vec![0f32; sz.n];
+        for &c in cells {
+            let c = c as usize;
+            if c >= seen.len() || seen[c] {
+                continue;
+            }
+            seen[c] = true;
+            let u = sz.cell[c];
+            if u != u32::MAX && wsub[u as usize] > 0.0 {
+                su[u as usize] += w[c] / wsub[u as usize];
+            }
+        }
+        su
+    }
+
+
+    /// `flow_rail` on a kind of day (T-260): each period weighed by the commute's load factor.
+    pub fn flow_rail_day(&self, end: u32, cells: &[u32], day: u32) -> Vec<f32> {
+        let (Some(sz), Some(svc)) = (self.sz.as_ref(), self.svc.as_ref()) else { return vec![] };
+        let su = self.selection(end, cells);
+        let (ns, s) = (sz.n, svc.st_x.len());
+        let mut out = vec![0f32; 4 * ns];
+        let (mut dep, mut arr, mut q) = (vec![0f32; s], vec![0f32; s], vec![0f32; s]);
+        let mut far_st = vec![0f32; s];
+        for p in 0..PERIODS {
+            let Some(st) = self.period(p) else { continue };
+            let sub = &st.sub;
+            if sub.acc_home.len() != sz.acc_st.len() || sub.od.len() != self.od_st.len() * self.od_st.len() {
+                continue;
+            }
+            let (near_rail, near_lost) = if end == 0 { (&sub.rail_home, &sub.walk_lost_home) } else { (&sub.rail_work, &sub.walk_lost_work) };
+            let f = load_factor(day as usize, WORK, p);
+            for u in 0..ns {
+                if su[u] > 0.0 {
+                    out[ns + u] += near_rail[u] * f;
+                    out[2 * ns + u] += near_lost[u] * f;
+                    out[3 * ns + u] += sub.unr_lost(end == 0, u) * f;
+                }
+            }
+            dep.iter_mut().for_each(|v| *v = 0.0);
+            arr.iter_mut().for_each(|v| *v = 0.0);
+            q.iter_mut().for_each(|v| *v = 0.0);
+            far_st.iter_mut().for_each(|v| *v = 0.0);
+            // stations used at the near end by the selection, and by everyone
+            let near_acc = if end == 0 { &sub.acc_home } else { &sub.acc_work };
+            for u in 0..ns {
+                for k in sz.acc_off[u] as usize..sz.acc_off[u + 1] as usize {
+                    let t = sz.acc_st[k] as usize;
+                    dep[t] += sub.acc_home[k];
+                    arr[t] += sub.acc_work[k];
+                    if su[u] > 0.0 {
+                        q[t] += su[u] * near_acc[k];
+                    }
+                }
+            }
+            // over the station pairs to the stations used at the far end
+            for a in 0..s {
+                if q[a] <= 0.0 {
+                    continue;
+                }
+                if end == 0 {
+                    let f = q[a] / dep[a];
+                    let k = self.od_st.len();
+                    let i = self.od_at[a] as usize;
+                    for (&t, &x) in self.od_st.iter().zip(&sub.od[i * k..(i + 1) * k]) {
+                        far_st[t as usize] += f * x;
+                    }
+                } else {
+                    let f = q[a] / arr[a];
+                    for (b, o) in far_st.iter_mut().enumerate() {
+                        *o += f * self.sub_od(sub, b, a);
+                    }
+                }
+            }
+            // and over the places around them
+            let (far_acc, far_tot) = if end == 0 { (&sub.acc_work, &arr) } else { (&sub.acc_home, &dep) };
+            for v in 0..ns {
+                let mut x = 0.0f32;
+                for k in sz.acc_off[v] as usize..sz.acc_off[v + 1] as usize {
+                    let t = sz.acc_st[k] as usize;
+                    if far_st[t] > 0.0 {
+                        x += far_st[t] * far_acc[k] / far_tot[t];
+                    }
+                }
+                out[v] += x * f;
+            }
+        }
+        out
+    }
+
+    /// Step 2, one worker: the selected cells' commuters a day by mode, from `sums` (every
+    /// worker's `flow_rail` added up), packed: `[rail, walk, drive, cut rail, cut walk, cut drive,
+    /// n, n far cells (pack order).., their rail.., walk.., drive..]`. The first three are the
+    /// selection's totals and match `cell_modes` summed over the selected cells. Far cells are
+    /// every cell at the other end with commuters from (or to) the selection, rail included;
+    /// cells that together hold the last `FLOW_CUT` of them, the smallest, are left out and
+    /// their commuters added to the cut totals, so the far cells plus the cut add up to the
+    /// totals. Cell indices are exact in f32. Empty if `sums` does not fit the current network.
+    pub fn flows(&self, end: u32, cells: &[u32], sums: &[f32]) -> Vec<f32> {
+        self.flows_day(end, cells, sums, WEEKDAY as u32)
+    }
+
+    /// `flows` on a kind of day (T-260), from that day's `flow_rail_day`: everyone and the
+    /// walkers scaled by the day's commute rate.
+    pub fn flows_day(&self, end: u32, cells: &[u32], sums: &[f32], day: u32) -> Vec<f32> {
+        let rate = day_rate(day as usize, WORK);
+        // No subzones (no running line): no rail, everyone walks or drives (T-099; this answered
+        // empty before, and a selection's far end never came after a new game).
+        let (scell, szone, spop, sjobs, ns): (&[u32], &[u32], &[f32], &[f32], usize) = match self.sz.as_ref() {
+            Some(s) => (&s.cell, &s.zone, &s.pop, &s.jobs, s.n),
+            None => (&[], &[], &[], &[], 0),
+        };
+        let (n, nz) = (self.city.len(), self.z.n);
+        if sums.len() != 4 * ns {
+            return vec![];
+        }
+        let home = end == 0;
+        let (w, wsub, wzone, walk_zone) = if home { (&self.city.pop, spop, &self.z.pop, &self.walk_home_zone) } else { (&self.city.jobs, sjobs, &self.z.jobs, &self.walk_work_zone) };
+        // T-2214: the near end's trips no way serves, left out of its drive
+        let mut unr_near = 0f64;
+        let (fw, fwsub, fzone) = if home { (&self.city.jobs, sjobs, &self.z.jobs) } else { (&self.city.pop, spop, &self.z.pop) };
+        // T-276: each zone's trips kept in the pack per unit of weight
+        let kz = if home { &self.home_k } else { &self.work_k };
+        // the near end, cell by cell as `cell_modes` does
+        let (mut rail, mut walk, mut drive, mut lost) = (0f64, 0f64, 0f64, 0f64);
+        let mut wz = vec![0f64; nz];
+        let mut seen = vec![false; n];
+        for &c in cells {
+            let c = c as usize;
+            if c >= n || seen[c] || w[c] <= 0.0 {
+                continue;
+            }
+            seen[c] = true;
+            let zc = self.z.cell_zone[c] as usize;
+            if wzone[zc] <= 0.0 {
+                continue;
+            }
+            wz[zc] += w[c] as f64 / wzone[zc];
+            let total = w[c] * kz[zc] * rate;
+            let sc = self.slot(c);
+            let mut wk = (walk_zone[sc] / self.slot_w(sc, home)) as f32 * w[c] * rate;
+            let mut un = self.unr_per(c, home) * w[c] * rate;
+            let mut r = 0.0;
+            let u = scell.get(c).copied().unwrap_or(u32::MAX);
+            if u != u32::MAX && wsub[u as usize] > 0.0 {
+                let f = w[c] / wsub[u as usize] / 2.0;
+                r = sums[ns + u as usize] * f;
+                wk -= sums[2 * ns + u as usize] * f;
+                lost += (sums[2 * ns + u as usize] * f) as f64;
+                un -= sums[3 * ns + u as usize] * f;
+            }
+            let (wk, un) = (wk.max(0.0), un.max(0.0));
+            rail += r as f64;
+            walk += wk as f64;
+            unr_near += un as f64;
+            drive += (total - r - wk - un).max(0.0) as f64;
+        }
+        // the far end by zone: all commuters and those who would walk with no rail (the gravity),
+        // and rail (from the far subzones)
+        let (mut t_z, mut w_z, mut r_z) = (vec![0f64; nz], vec![0f64; nz], vec![0f64; nz]);
+        let wt = self.gr.walk_set;
+        let nr = &self.nr;
+        for a in 0..nz {
+            if wz[a] <= 0.0 {
+                continue;
+            }
+            for b in 0..nz {
+                // home end: a is the home zone; job end: a is the work zone
+                let (i, j) = if home { (a, b) } else { (b, a) };
+                let idx = (self.gr.base(&self.z, i) + self.gr.key(&self.z, j)) as usize;
+                let t = wz[a] * self.gr.row[i] * self.gr.col[j] * (self.gr.ftab[idx] * self.gr.k(&self.z, i, j)) as f64 * rate as f64;
+                t_z[b] += t;
+                if wt && self.gr.walk_c(idx) < NO_WALK {
+                    w_z[b] += t * nr.split(&self.gr, &self.base, i, j, idx) as f64;
+                }
+            }
+        }
+        for v in 0..ns {
+            r_z[szone[v] as usize] += sums[v] as f64 / 2.0;
+        }
+        // the near end counted the walkers rail takes exactly (`lost`); the far end's estimate, from
+        // rail by zone, is scaled to match
+        let lost_w: f64 = (0..nz).filter(|&b| t_z[b] > 0.0).map(|b| r_z[b] * w_z[b] / t_z[b]).sum();
+        let lf = if lost_w > 0.0 { lost / lost_w } else { 0.0 };
+        // per far cell: its zone's commuters by its people, rail from its subzone over its cells
+        // the selection reaches (T-1920), the rest split as its zone's walk and drive
+        let (reach, win) = self.far_reach(home, cells);
+        let mut fc: Vec<(u32, f32, f32, f32)> = vec![];
+        for c in 0..n {
+            let j = self.z.cell_zone[c] as usize;
+            if fw[c] <= 0.0 || t_z[j] <= 0.0 || fzone[j] <= 0.0 {
+                continue;
+            }
+            let tot = (t_z[j] * fw[c] as f64 / fzone[j]) as f32;
+            let v = scell.get(c).copied().unwrap_or(u32::MAX) as usize;
+            let r = if v != u32::MAX as usize && fwsub[v] > 0.0 {
+                let wv = win.get(v).copied().unwrap_or(0.0);
+                let share = if wv <= 0.0 { fw[c] / fwsub[v] } else if reach[c] { fw[c] / wv } else { 0.0 };
+                sums[v] / 2.0 * share
+            } else {
+                0.0
+            };
+            let non_z = (t_z[j] - r_z[j]).max(1e-12);
+            let walk_z = (w_z[j] - r_z[j] * w_z[j] / t_z[j] * lf).max(0.0);
+            let share = (walk_z / non_z).min(1.0) as f32;
+            let non = (tot - r).max(0.0);
+            if tot > 0.0 || r > 0.0 {
+                fc.push((c as u32, r, non * share, non * (1.0 - share)));
+            }
+        }
+        // The rail chain is exact in total but blurred per place, so a far cell can get more rail
+        // than the gravity sends it commuters (its non-rail goes to 0, and the far end adds up to
+        // more than the near end: 1.7% at a line's end on the test network). Scale walk and drive
+        // to the near end's totals, so every total is exact.
+        let (sw, sd) = fc.iter().fold((0f64, 0f64), |a, e| (a.0 + e.2 as f64, a.1 + e.3 as f64));
+        let (kw, kd) = ((if sw > 0.0 { walk / sw } else { 0.0 }) as f32, (if sd > 0.0 { drive / sd } else { 0.0 }) as f32);
+        for e in fc.iter_mut() {
+            e.2 *= kw;
+            e.3 *= kd;
+        }
+        // leave out the smallest far cells holding the last FLOW_CUT of the commuters: a
+        // histogram on log2 of each cell's commuters, from the top down
+        let mass: f64 = fc.iter().map(|e| (e.1 + e.2 + e.3) as f64).sum();
+        const BINS: usize = 512;
+        let top = fc.iter().map(|e| e.1 + e.2 + e.3).fold(0f32, f32::max).max(1e-30);
+        let (hi, lo) = (top.log2() + 1e-3, top.log2() - 40.0);
+        let bin = |x: f32| if x <= 0.0 { 0 } else { (((x.log2() - lo) / (hi - lo) * BINS as f32) as isize).clamp(0, BINS as isize - 1) as usize };
+        let mut hist = vec![0f64; BINS];
+        for e in &fc {
+            hist[bin(e.1 + e.2 + e.3)] += (e.1 + e.2 + e.3) as f64;
+        }
+        let (mut cum, mut keep_from) = (0f64, 0usize);
+        for b in (0..BINS).rev() {
+            cum += hist[b];
+            keep_from = b;
+            if cum >= (1.0 - FLOW_CUT) * mass {
+                break;
+            }
+        }
+        let (mut kept, mut cut) = (vec![], [0f64; 3]);
+        for e in fc {
+            if bin(e.1 + e.2 + e.3) >= keep_from {
+                kept.push(e);
+            } else {
+                cut[0] += e.1 as f64;
+                cut[1] += e.2 as f64;
+                cut[2] += e.3 as f64;
+            }
+        }
+        // the cut is what the kept cells leave of the totals (the same as adding up the cells left
+        // out, but free of rounding)
+        let far = |m: usize| kept.iter().map(|e| [e.1, e.2, e.3][m] as f64).sum::<f64>();
+        cut = [(rail - far(0)).max(0.0), (walk - far(1)).max(0.0), (drive - far(2)).max(0.0)];
+        let mut out = Vec::with_capacity(7 + 4 * kept.len());
+        out.extend([rail as f32, walk as f32, drive as f32, cut[0] as f32, cut[1] as f32, cut[2] as f32, kept.len() as f32]);
+        out.extend(kept.iter().map(|e| e.0 as f32));
+        out.extend(kept.iter().map(|e| e.1));
+        out.extend(kept.iter().map(|e| e.2));
+        out.extend(kept.iter().map(|e| e.3));
+        // T-2214: last, the selection's trips no way serves (not in its far cells yet, T-2256)
+        out.push(unr_near as f32);
+        out
+    }
+
+    /// T-1920: which cells at the far end of a selection (`cells`; `home`: its homes) its own trips
+    /// reach, as the trip explorer's cells have it: the far cell's cheapest walk (a home's ride
+    /// where the two zones are far enough apart for one) and the selection's cheapest end
+    /// together within `Params::pair_walk_max`. Then per subzone the far end's weight in reach.
+    fn far_reach(&self, home: bool, cells: &[u32]) -> (Vec<bool>, Vec<f32>) {
+        let Some(sz) = self.sz.as_ref().filter(|s| s.walk_c.len() == self.city.len()) else { return (vec![], vec![]) };
+        let p = &self.base;
+        let (w, fw) = if home { (&self.city.pop, &self.city.jobs) } else { (&self.city.jobs, &self.city.pop) };
+        // the selection's cheapest walk, and per zone its homes' cheapest ride
+        let mut walk = f32::INFINITY;
+        let mut zones: Vec<(usize, f32)> = vec![];
+        for &c in cells {
+            let c = c as usize;
+            if c >= w.len() || w[c] <= 0.0 || sz.cell[c] == u32::MAX {
+                continue;
+            }
+            let u = sz.cell[c] as usize;
+            walk = walk.min(sz.walk_c[c]);
+            let ride = if home { sz.ride_min(p, u) } else { f32::INFINITY };
+            match zones.iter_mut().find(|e| e.0 == sz.zone[u] as usize) {
+                Some(e) => e.1 = e.1.min(ride),
+                None => zones.push((sz.zone[u] as usize, ride)),
+            }
+        }
+        let mut reach = vec![false; fw.len()];
+        let mut win = vec![0f32; sz.n];
+        for c in 0..fw.len() {
+            let v = sz.cell[c];
+            if fw[c] <= 0.0 || v == u32::MAX {
+                continue;
+            }
+            let (v, j) = (v as usize, sz.zone[v as usize] as usize);
+            let (near, far) = if home {
+                (zones.iter().filter(|e| ride_offered(&self.z, p, e.0, j)).fold(walk, |m, e| m.min(e.1)), sz.walk_c[c])
+            } else {
+                let ride = if zones.iter().any(|e| ride_offered(&self.z, p, j, e.0)) { sz.ride_min(p, v) } else { f32::INFINITY };
+                (walk, sz.walk_c[c].min(ride))
+            };
+            if near + far <= p.pair_walk_max {
+                reach[c] = true;
+                win[v] += fw[c];
+            }
+        }
+        (reach, win)
+    }
+
+    /// The city's cells: x, y per cell (metres east and north of the pack origin, pack order).
+    pub fn cell_xy(&self) -> Vec<f32> {
+        self.city.x.iter().zip(&self.city.y).flat_map(|(&x, &y)| [x, y]).collect()
+    }
+    /// H3 index of each cell (resolution 9).
+    pub fn cell_h3(&self) -> Vec<u64> {
+        self.city.h3.clone()
+    }
+    /// The weights of local commuting per cell: commuters living there, then commuters working
+    /// there (T-118: a selection's share of a 600 m square of the longer-trip market).
+    pub fn cell_commuters(&self) -> Vec<f32> {
+        self.city.pop.iter().chain(self.city.jobs.iter()).copied().collect()
+    }
+    /// Gravity zone of each cell.
+    pub fn cell_zone(&self) -> Vec<u32> {
+        self.z.cell_zone.clone()
+    }
+    /// The zones: side in metres, then the centre x, y of each zone (metres from the pack origin).
+    /// A square a region border cuts holds a zone per region (T-162): those are placed at the
+    /// mean of their own cells instead, so they do not sit on top of each other.
+    pub fn zone_xy(&self) -> Vec<f32> {
+        let zm = self.z.zone_m;
+        let (off, _) = self.z.by_square();
+        let shared = |i: usize| {
+            let s = (self.z.gx[i] * self.z.h + self.z.gy[i]) as usize;
+            off[s + 1] - off[s] > 1
+        };
+        let (mut sx, mut sy, mut sn) = (vec![0f64; self.z.n], vec![0f64; self.z.n], vec![0u32; self.z.n]);
+        for c in 0..self.city.len() {
+            let i = self.z.cell_zone[c] as usize;
+            if shared(i) {
+                sx[i] += self.city.x[c] as f64;
+                sy[i] += self.city.y[c] as f64;
+                sn[i] += 1;
+            }
+        }
+        let mut out = vec![zm];
+        for i in 0..self.z.n {
+            if sn[i] > 0 {
+                out.push((sx[i] / sn[i] as f64) as f32);
+                out.push((sy[i] / sn[i] as f64) as f32);
+            } else {
+                out.push(self.z.x0 + self.z.hx(i) as f32 * 0.5 * zm);
+                out.push(self.z.y0 + self.z.hy(i) as f32 * 0.5 * zm);
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod bus_tests;
+#[cfg(test)]
+mod tram_tests;
+#[cfg(test)]
+mod islands_tests;
+
+/// Per merged station, whether only tram lines serve it (`Service::st_tram`); empty with no tram lines.
+pub(crate) fn tram_stops(st_map: &[u32], n: usize, stops: &[u32], line_off: &[u32], tram_line: &[bool]) -> Vec<bool> {
+    if !tram_line.iter().any(|&t| t) {
+        return vec![];
+    }
+    let (mut tram, mut other) = (vec![false; n], vec![false; n]);
+    for (l, &t) in tram_line.iter().enumerate() {
+        for &s in &stops[line_off[l] as usize..line_off[l + 1] as usize] {
+            let m = st_map[s as usize] as usize;
+            if t { tram[m] = true } else { other[m] = true }
+        }
+    }
+    (0..n).map(|s| tram[s] && !other[s]).collect()
+}

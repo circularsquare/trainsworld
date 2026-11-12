@@ -1,0 +1,18 @@
+# Water
+
+Track at ground level can't cross water. Draw across it at ground level and the game raises that stretch into a bridge for you, with ramps on land either side. If there's no room for the ramps the track is refused.
+
+Street tram track is the exception: it follows a street, and the street crosses on its own bridge, so it stays at ground level over water with no ramps. Tram track off the street, and rail, still get raised.
+
+Over or under water, track adds 2.5 to its [level's multiplier](levels-and-tunnels.md), at any level. Stations, junctions and crossings over water cost 2 times as much.
+
+Water replaces [terrain](terrain.md): what the ground would have been under it adds nothing.
+
+Viaducts and cut and cover tunnels stop at 30 km of unbroken water. Bored tunnels have no limit, and a stretch of bored tunnel starts the count over.
+
+A water stretch's price is the level's multiplier plus the water surcharge, in place of the ground's, times length and base price.
+
+Small creeks and ditches aren't on the water map, so track crosses them at ground level.
+
+Exact rule: `docs/track-and-service.md` "Water, bridges and ramps" for how a bridge gets made, "Construction prices" for the price and the longest span.
+In the code: **main** `sim/src/track/bridge.rs` `bridge_long`, also `sim/src/track/cost.rs` `track_cost_parts_t` `sim/src/track/net.rs` `bridged_water_through` `sim/src/track/params.rs` `WATER_SURCHARGE`, `WATER_COST`, `WATER_SPAN_MAX`

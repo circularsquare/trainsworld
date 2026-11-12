@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trainsworld privacy</title>
+<style>
+  :root { --bg: #fafafa; --fg: #222; --muted: #666; --link: #1a5fb4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111; --fg: #ddd; --muted: #999; --link: #8ab4f8; }
+  }
+  body { background: var(--bg); color: var(--fg); margin: 0;
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 6px; }
+  p, li { margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  a { color: var(--link); }
+</style>
+</head>
+<body>
+<main>
+<h1>trainsworld privacy</h1>
+<p class="muted">Last updated 11 November 2026</p>
+
+<p>trainsworld is a railway building game that runs in your browser. It is a hobby project
+run by one person, Anita. This page describes what it stores about you.</p>
+
+<h2>Without an account</h2>
+<p>Your games are saved in your own browser and are never sent anywhere. Clearing your
+browser's site data deletes them.</p>
+<p>The game also keeps a random id for this browser in its storage. It is sent only while you
+are signed in (below), and says nothing about your computer.</p>
+
+<h2>Play counts</h2>
+<p>While a game is open and its tab is showing, the page sends a short note to the server once a
+minute. It holds a random id made when the page loads (kept in memory only, so a reload makes a
+new one), the city the game started in (or that you started on the map), whether it is a sandbox
+game, the version of the game and the language your browser is set to. The server adds this up
+into totals per day: how many games were played, for how many minutes, from which starting city,
+in which browser language and on which version. It does not keep your IP address. The id
+is kept as a hash until the end of that day (UTC) and then dropped, so only the totals stay.</p>
+<p>The note also holds a second random id, kept in this browser's storage so it stays the same
+between visits. Anita uses it to count how many different people play and how long each one
+plays in total. The server keeps it as a hash, with the first and last day it was seen and the
+number of days, games and minutes. It is never linked to your account. If it is not seen for 13
+months, the server forgets it.</p>
+<p>When a game earns an achievement, the page also sends its name (such as "orient") with that same
+browser id, once per achievement. The server keeps a count for each achievement, and a hash of the id
+(made differently from the one above) so that a browser counts once. Nothing else is sent, and it is
+never linked to your account. The game shows the counts as the share of players who have each
+achievement. If the id is not seen for 13 months, the server forgets it; the counts stay.</p>
+<p>To send no play counts or achievement counts at all from this browser, open the game once with <code>?notrack</code>
+at the end of its address.</p>
+<p>If you are signed in, your minutes are also added up per day under your account. Deleting
+your account removes them.</p>
+
+<h2>With an account</h2>
+<p>Accounts are for people 13 and over. If you are under 13, play without one. If Anita learns
+an account belongs to someone under 13, she deletes it.</p>
+<p>Signing in is optional. The account is the same one used by
+<a href="../noritetsu/">noritetsu</a>, another map on this site, so signing in on one signs
+you in on the other. If you sign in, the server keeps:</p>
+<ul>
+  <li>With Google sign-in, the account number Google gives this app. Your Google name, email
+    address and photo are not stored.</li>
+  <li>With a username and password, your username and a one-way hash of your password (the
+    password itself is not stored), plus a recovery email address if you add one.</li>
+  <li>Your games, so you can open them on another device. While you are signed in, each game
+    in your browser is copied to the server whenever it is saved: the game itself (your
+    network, money, game clock and the name you gave it), the figures shown on its card
+    (day, cities, lines, stations, cash), a small picture of its network, when it was saved,
+    and the random id of the browser that saved it. The server also keeps up to four older
+    copies of each game: the last two, one from about a day ago and one from about a week ago. Games you choose to keep only in your browser when you sign in are
+    not sent. Your IP address, browser and device name are not stored with them.</li>
+  <li>For each game you play while signed in: its points in total and per city, and its game
+    day. Sandbox games send nothing but the fact that they are sandboxes.</li>
+  <li>If you join the leaderboards, the display name you choose.</li>
+  <li>If you share a network to Community: a drawing of that network (its lines, colors, stops and
+    station names), its points, cities, game day, line and station counts, and the time you shared
+    it. Unless you untick Let others open a copy, the game itself goes up too, with its name. Who
+    liked or reported it is stored too.</li>
+</ul>
+<p>Everything travels to the server over an encrypted connection (HTTPS). On the server it is
+stored without encryption, on a computer Anita rents from Hetzner in Ashburn, Virginia, in the
+United States.</p>
+<p>A recovery email is used only to confirm the address and to send password reset links.
+Those emails are sent through <a href="https://resend.com/legal/privacy-policy">Resend</a>.</p>
+
+<h2>What other people can see</h2>
+<p>If you join the leaderboards, your display name and your best points are public, on the
+world leaderboard and on the leaderboard of each city where you have points. Your username
+and email are never shown to anyone. Nothing is public if you do not join or share.</p>
+<p>Your games are private unless you share one. Sharing makes a drawing of the network public,
+with your display name, station names, points and cities. Unless you untick Let others open a
+copy, anyone can also open a copy of the game and play it, with its name, line names, money and
+history. Anita runs the server, so she can read the files on it.</p>
+<p>Your feedback is private. Only you and Anita can see it.</p>
+
+<h2>Feedback</h2>
+<p>The feedback form in Settings sends the message you type, the tag if you pick one, and the name and email if you fill
+them in. If you are signed in, your account id and name go with it. The server also keeps the
+IP address the report came from, to spot spam; it is left out of the email. Each report also
+carries the game version, your browser's name and version, the language the game is set to, whether your device reports its
+memory and how much, and the text of the last error from loading the game's data, if there was one. The report is
+stored on the server and emailed to Anita through <a href="https://resend.com/legal/privacy-policy">Resend</a>.</p>
+<p>So you can see your earlier feedback and Anita's replies, the game makes a random key the
+first time you send feedback without an account and keeps it in this browser's storage. The
+server keeps only a hash of it. The key is not connected to your play counts or your games.
+Anyone using this browser can read that feedback. If you clear your browser's site data the key
+is gone and you can't see that feedback again, but it stays on the server. If you sign in,
+feedback sent with the key moves to your account and the key is removed.</p>
+
+<h2>Other things</h2>
+<p>There are no ads, and trainsworld does not use tracking cookies or sell or share your data.
+The server sees your IP address with each request, uses it to limit abuse, and it can show up
+in the server's logs; it is not kept with your account or your play counts. The game loads its
+data from Cloudflare and its map from OpenFreeMap, and the sign-in button from Google when you
+open the account panel; those services see requests as they would from any website. The
+fonts come from the game's own site.</p>
+<p>Your browser's Do Not Track setting changes nothing here, because trainsworld does not follow
+you across other sites.</p>
+
+<h2>How long things are kept</h2>
+<p>Games, scores and account details stay until you delete them. Play count totals stay; the
+ids behind them go at the end of each day. A browser's play totals go 13 months after it was
+last seen. Feedback stays until you delete it in the feedback form or Anita deletes it. If you can't
+reach it any more, write to her. The email Anita got about it stays in her mailbox unless you
+ask her to delete that too. The server's whole disk is backed up once per day and each
+backup is kept for 7 days, so a deleted game or account can stay in the backups for up to 7
+days after you delete it.</p>
+
+<h2>Deleting your data</h2>
+<p>Deleting a saved game while signed in removes it from the server straight away, with its
+older copies and its scores. Your other browsers delete their copy the next time they open
+trainsworld, unless the game was changed there.</p>
+<p>Stopping sharing, or deleting the game, removes the shared network and its game from the
+server straight away. A copy someone already opened stays in their own games. Deleting your
+account removes your shares and your likes.</p>
+<p>You can delete your account from the account panel in the game or on noritetsu. That
+removes your login details, email address, games, scores, feedback and leaderboard entries, and your
+noritetsu rides, from the server straight away. The games in your browser stay there.</p>
+
+<h2>Contact</h2>
+<p>To see, fix or delete what is stored about you, or with any other question, write through
+<a href="https://anita.garden/">anita.garden</a> or use Submit feedback in the game's Settings.</p>
+
+<p class="muted"><a href="./">Back to the game</a> · <a href="terms.html">Terms</a></p>
+</main>
+</body>
+</html>

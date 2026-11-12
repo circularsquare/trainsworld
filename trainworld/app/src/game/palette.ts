@@ -1,0 +1,317 @@
+// Colours of the network itself. These are not UI theme colours and do not change with the theme
+// (SPEC 8: only the UI is styled; lines, trains and stations take the line colours).
+
+import { signal } from "@preact/signals";
+import type { Level } from "./types";
+
+/** Default line colours: a normal saturated metro palette (SPEC 8), a new line taking the one
+ * farthest from the lines near it (T-1278, `nextFreeColour`). Every pair is at least 19 apart in CIEDE2000 (T-223, T-856) and at least 17 from the
+ * map's land, water and parks in both themes (the closest, light blue on light water); yellow-green,
+ * pink, light blue and lavender are light enough that their chips take dark letters (`inkOn`). */
+export const LINE_PALETTE = ["#d7263d", "#1f6fd1", "#1a9a4a", "#f08a00", "#8a3fb8", "#f2c200", "#8f5a2a", "#0e9a9a",
+  "#74797e", "#9ccb19", "#f59dc6", "#e62aa6", "#5cc3f0", "#6f7a0f", "#ee7d63", "#a9a0e8"];
+
+/** Track colour by height: blue-green, blue and indigo going up (open sky), green at ground, then
+ * yellow, orange and red-orange going down (deep; T-480). Neighbours are at least 30 apart in
+ * CIELAB (T-478). The one source for the drawn track, the build ghost, the Build tab's level
+ * buttons and the Height key. */
+export const LEVEL_COLOURS: Record<Level, string> = {
+  3: "#4a2c9a",
+  2: "#2f6fd0",
+  1: "#16a39a",
+  0: "#58b04a",
+  [-1]: "#f0b928",
+  [-2]: "#ee7a1a",
+  [-3]: "#c2351c",
+};
+
+/** The Speed display's colours by km/h, one ramp for trains, trams, buses and ferries (T-3013);
+ * the stroke shader is built from the same stops. Maroon to red, orange, yellow (a tram's top speed), yellow-green,
+ * green, blue-green, blue, indigo and purple at high-speed track's 320. */
+export const SPEED_STOPS: [number, string][] = [[1, "#8a2232"], [20, "#d85b4b"], [40, "#e2922e"], [60, "#d9b92e"], [80, "#a3c23c"], [110, "#4aa850"], [160, "#4e9d95"], [200, "#397bc1"], [260, "#5b4fc9"], [320, "#a03fc2"]];
+
+/** The colour of `v` along `stops`, blended between the two either side. */
+function rampColour(stops: [number, string][], v: number): string {
+  const s = stops;
+  if (v <= s[0][0]) return s[0][1];
+  for (let i = 1; i < s.length; i++) {
+    if (v > s[i][0]) continue;
+    const t = (v - s[i - 1][0]) / (s[i][0] - s[i - 1][0]);
+    const a = rgb(s[i - 1][1]), b = rgb(s[i][1]);
+    return "#" + a.map((c, k) => Math.round(c + (b[k] - c) * t).toString(16).padStart(2, "0")).join("");
+  }
+  return s[s.length - 1][1];
+}
+
+/** The colour the Speed display gives `kmh`. */
+export const speedColour = (kmh: number) => rampColour(SPEED_STOPS, kmh);
+
+/** T-2420, T-2440: the Profit view's colour by a stretch's fares over its costs: deep red at none,
+ * orange at half, yellow just under break-even, pale green just over it, then light blue to deep blue
+ * at three times (blue past green for red-green colour blindness), the same in both themes. */
+export const PROFIT_STOPS: [number, string][] = [[0, "#b2182b"], [0.5, "#e9853b"], [0.95, "#f1d54a"], [1.05, "#96d58f"], [1.6, "#8ecae6"], [3, "#2166ac"]];
+export const profitColour = (ratio: number) => rampColour(PROFIT_STOPS, ratio);
+
+/** T-2236, T-2688: crowding's colour by trains' load as a share of the rated load (the busiest hour's),
+ * the same in both themes: green to 70%, yellow-green at 80%, yellow at 100%, orange at 130%,
+ * red at 140% and crimson at crush's 150% (the old wait ramp's colours, T-1255). The line panel's
+ * crowding dots and stops diagram, the Lines list's trains, and the Traffic view's hover. The map's
+ * strain marks start at `CROWDED_FROM` (boarding.rs), not here. */
+export const CROWD_STOPS: [number, string][] = [[0.7, "#4f9a4f"], [0.8, "#98bd3a"], [1, "#d8b425"], [1.3, "#e07a1f"], [1.4, "#c43c3c"], [1.5, "#a82846"]];
+export const crowdColour = (load: number) => rampColour(CROWD_STOPS, load);
+
+/** Station rings and names on the map. */
+export const NET_INK = "#2b2b2b";
+
+/** A platform's edges inside its station box (T-236, Anita: "show the actual platforms as like
+ * little blue lines"), on the map and in the complex map. A periwinkle: CIEDE2000 15 from the line
+ * blue and the light blue (the palette's blues leave no room for more), 38 from white. */
+export const PLATFORM_BLUE = "#8085f0";
+
+/**
+ * How commuters travel (T-097, Anita: Subway Builder's scheme, red car, blue train, green walk):
+ * the commuter bubbles and the mode-split bar in the top bar use these, whatever the
+ * theme. Hand-tunable. Near-pure primaries, so a bubble's mix (`modeMix`) reads as RGB: all car
+ * red, all train blue, half and half magenta.
+ */
+export const MODE_COLOURS = {
+  train: "#1e3ce6",
+  walk: "#1eaa3c",
+  drive: "#e61e1e",
+} as const;
+
+/** T-833: the colours bars and swatches show modes in under Train share bubbles. Car red and train
+ * blue are the default ramp's ends, lighter than the mode colours (Anita, T-1138); walking is the mode green in both schemes (T-1724) and "other" (planes: the one mode that is not car, walk or train) orange, a step from
+ * both the yellow and the red. Under Mode mix, planes stay the muted grey. */
+const SHARE_MODE_COLOURS = { train: "#4d4dff", walk: MODE_COLOURS.walk, drive: "#ff4d4d", other: "#f07a14", none: "var(--none-grey)" } as const;
+const MIX_MODE_COLOURS = { ...MODE_COLOURS, other: "var(--muted)", none: "var(--none-grey)" } as const;
+/** The scheme in force; a signal, so panels that read `modeColours()` follow a change. */
+export const modeScheme = signal<BubbleScheme>("mode");
+/** The mode colours for bars, swatches and hover tags under the bubble scheme in force; `none` is
+ * "No route" (T-2215), the bubbles' `NONE_GREY` in both schemes (style.css `--none-grey`). */
+export const modeColours = (): { readonly train: string; readonly walk: string; readonly drive: string; readonly other: string; readonly none: string } =>
+  modeScheme.value === "colorblind" ? CB_MODE_COLOURS : modeScheme.value === "ramp" ? SHARE_MODE_COLOURS : MIX_MODE_COLOURS;
+const CB_MODE_COLOURS = { ...SHARE_MODE_COLOURS, train: "#0072b2", drive: "#f2c200" } as const;
+
+/**
+ * A bubble's colour for commuters by train, walking and driving, 0-255 rgb: the three mode colours
+ * blended by share and scaled to full brightness (Anita chose this RGB mix, T-099), then towards a
+ * light grey as all three modes near a third each. Nobody: grey
+ * (never drawn, a bubble with nobody is left out).
+ */
+export function modeMix(train: number, walk: number, drive: number): [number, number, number] {
+  const all = train + walk + drive;
+  if (all <= 0) return [163, 155, 143];
+  const [t, w, d] = MIX ?? (MIX = [rgb(MODE_COLOURS.train), rgb(MODE_COLOURS.walk), rgb(MODE_COLOURS.drive)]);
+  const r = (t[0] * train + w[0] * walk + d[0] * drive) / all;
+  const gg = (t[1] * train + w[1] * walk + d[1] * drive) / all;
+  const b = (t[2] * train + w[2] * walk + d[2] * drive) / all;
+  const k = MIX_TOP / Math.max(r, gg, b, 1);
+  // T-653: an even three-way mix would come out near white; the smallest share, from nothing up to a
+  // third, pulls the colour towards one grey. T-1450: a darker grey on the light map.
+  const g = Math.min(1, 3 * Math.min(train, walk, drive) / all);
+  const grey = lightMap ? MIX_GREY_LIGHT : MIX_GREY;
+  return [Math.round(r * k + (grey - r * k) * g), Math.round(gg * k + (grey - gg * k) * g), Math.round(b * k + (grey - b * k) * g)];
+}
+const MIX_GREY = 190;
+const MIX_GREY_LIGHT = 160;
+let lightMap = false;
+let lastScheme: [BubbleScheme, string, string] = ["mode", "", ""];
+let MIX: [number, number, number][] | null = null;
+const MIX_TOP = Math.max(...rgb(MODE_COLOURS.train), ...rgb(MODE_COLOURS.walk), ...rgb(MODE_COLOURS.drive));
+
+/** How the demand bubbles are coloured (T-804): the mode mix above, a ramp by train share from
+ * one colour at 0% to another at 100%, or (T-2886) by trip purpose: work and school blue, errands and leisure red,
+ * everything else green, the same three colours blended by share as the mode mix. Until a bubble's
+ * purposes are in, it is painted as the mix or ramp chosen before. */
+export type BubbleScheme = "mode" | "ramp" | "purpose" | "colorblind";
+/** T-3005: Color blind is the ramp with fixed ends, Okabe-Ito blue (100% train) and a deeper yellow (0%; the Okabe-Ito one, #f0e442, is too pale on the light map): they differ in
+ * lightness as well as hue, so they hold for red-green and, by lightness, blue-yellow colour blindness. */
+export const COLORBLIND_RAMP = { from: "#f2c200", to: "#0072b2" } as const;
+let cbOn = false;
+export const DEFAULT_RAMP = { from: SHARE_MODE_COLOURS.drive, to: SHARE_MODE_COLOURS.train } as const;
+/** The ramp's position is the train share to this power, so a 30% share sits halfway (Anita, T-812:
+ * 30% purple, 70% clearly blue; 0.3^K = 0.5, and 70% lands at 81%). */
+const RAMP_SKEW = Math.log(0.5) / Math.log(0.3);
+let schemeKey = "mode";
+/** the mix or ramp that bubbles without their purposes are painted in under the purpose scheme */
+let baseScheme: "mode" | "ramp" = "mode";
+let purposeOn = false;
+/** the ramp as 256 rgb triples */
+let rampLut: Uint8ClampedArray | null = null;
+
+/** Set the bubble colouring for everything built from now on (the map views, the inspectors'
+ * swatches); the same arguments again change nothing. */
+export function setBubbleColours(s: BubbleScheme, from: string, to: string) {
+  lastScheme = [s, from, to];
+  if (s === "colorblind") {
+    from = COLORBLIND_RAMP.from;
+    to = COLORBLIND_RAMP.to;
+  }
+  if (s !== "purpose") baseScheme = s === "colorblind" ? "ramp" : s;
+  purposeOn = s === "purpose";
+  const ramp = baseScheme === "ramp";
+  cbOn = s === "colorblind";
+  // the shade is in the key under either scheme: the No route grey (T-2215) follows it
+  const key = (purposeOn ? "purpose-" : "") + (ramp ? `ramp${from}${to}` : "mode") + (lightMap ? "-light" : "");
+  modeScheme.value = cbOn ? "colorblind" : ramp ? "ramp" : "mode";
+  if (key === schemeKey) return;
+  schemeKey = key;
+  rampLut = ramp ? buildRamp(HEX.test(from) ? from : DEFAULT_RAMP.from, HEX.test(to) ? to : DEFAULT_RAMP.to) : null;
+}
+/** T-1450: the mode mix's grey is darker on the light map; views call this with the shade beside
+ * `setBubbleColours`, and a changed shade is a changed scheme key, so built discs are painted again. */
+export function setBubbleShade(shade: "light" | "dark") {
+  const light = shade === "light";
+  if (light === lightMap) return;
+  lightMap = light;
+  setBubbleColours(...lastScheme);
+}
+/** Names the scheme set now ("mode", or "ramp" with its two colours), to tell built discs apart. */
+export const bubbleSchemeKey = () => schemeKey;
+/** Whether the purpose scheme is in force (bubbles with their purposes use `purposeColour3`). */
+export const purposeSchemeOn = () => purposeOn;
+/** A bubble's colour by trips for work, for everything but work, errands and leisure, and for errands and leisure. */
+export function purposeColour3(work: number, other: number, errands: number): [number, number, number] {
+  const all = work + other + errands;
+  if (all <= 0) return [163, 155, 143];
+  const [t, w, d] = MIX ?? (MIX = [rgb(MODE_COLOURS.train), rgb(MODE_COLOURS.walk), rgb(MODE_COLOURS.drive)]);
+  // no pull to grey (the mode mix has one for an even split): most bubbles hold all three, and a grey would wash them out
+  const r = (t[0] * work + w[0] * other + d[0] * errands) / all, g = (t[1] * work + w[1] * other + d[1] * errands) / all, b = (t[2] * work + w[2] * other + d[2] * errands) / all;
+  const k = MIX_TOP / Math.max(r, g, b, 1);
+  return [Math.round(r * k), Math.round(g * k), Math.round(b * k)];
+}
+const HEX =/^#[0-9a-f]{6}$/i;
+
+/** A bubble's colour under the chosen scheme: `modeMix`, or the ramp at the train share; then, with
+ * trips no way serves (`none`, T-2215: between two land parts, no rail), pulled towards the No
+ * route grey by their share. */
+export function bubbleColour(train: number, walk: number, drive: number, none = 0): [number, number, number] {
+  return towardNone(modeColour(train, walk, drive), train + walk + drive, none);
+}
+/** Colour `c` of `moved` trips pulled towards the No route grey by the share of `none` trips beside
+ * them (T-2215). */
+export function towardNone(c: [number, number, number], moved: number, none: number): [number, number, number] {
+  if (!(none > 0)) return c;
+  const g = lightMap ? NONE_GREY_LIGHT : NONE_GREY;
+  if (!(moved > 0)) return [g, g, g];
+  const k = none / (moved + none);
+  return [Math.round(c[0] + (g - c[0]) * k), Math.round(c[1] + (g - c[1]) * k), Math.round(c[2] + (g - c[2]) * k)];
+}
+function modeColour(train: number, walk: number, drive: number): [number, number, number] {
+  if (!rampLut) return modeMix(train, walk, drive);
+  const all = train + walk + drive;
+  if (all <= 0) return [163, 155, 143];
+  const k = Math.round((train / all) * 255) * 3;
+  return [rampLut[k], rampLut[k + 1], rampLut[k + 2]];
+}
+/** T-2215: the No route grey, its own, lighter and flatter than the mix grey (`MIX_GREY`); style.css
+ * `--none-grey` is the same for bars. A visual call for Anita. */
+const NONE_GREY = 214;
+const NONE_GREY_LIGHT = 182;
+
+// OKLab (Ottosson): even steps of lightness and hue between the two ends
+const toLinear = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+const fromLinear = (v: number) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
+function toOklab(hex: string): [number, number, number] {
+  const [r, g, b] = rgb(hex).map((v) => toLinear(v / 255));
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+function fromOklab([L, a, b]: [number, number, number]): [number, number, number] {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s]
+    .map((v) => Math.round(255 * fromLinear(Math.min(1, Math.max(0, v))))) as [number, number, number];
+}
+/** Distance in OKLab from `hex` to another colour (T-1278: a new line's colour). */
+export function colourDistanceFrom(hex: string): (other: string) => number {
+  const a = HEX.test(hex) ? toOklab(hex) : null;
+  return (other) => {
+    if (!a) return Infinity;
+    const b = toOklab(other);
+    return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  };
+}
+
+/** The colour `t` (0-1) of the way from hex `from` to hex `to`, evened in OKLab as the ramp is, as hex. */
+export function mixOklab(from: string, to: string, t: number): string {
+  const a = toOklab(from), b = toOklab(to), u = Math.min(1, Math.max(0, t));
+  const [r, g, bl] = fromOklab([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]);
+  return "#" + [r, g, bl].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+function buildRamp(from: string, to: string): Uint8ClampedArray {
+  const a = toOklab(from), b = toOklab(to), out = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = (i / 255) ** RAMP_SKEW;
+    out.set(fromOklab([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]), i * 3);
+  }
+  return out;
+}
+
+/** T-976, T-1120: the fill of the small dots that stand for zones the game has not opened (the
+ * zoomed-out overview, map/intercityView.ts), in both themes. */
+export const UNBUILT_FILL = "#ffffff";
+/** T-2391: their 1 px outline, a medium grey in both themes (on the light map's land and on the
+ * dark map's alike; the dark theme's map ink is near white and left the dots rimless). */
+export const UNBUILT_RIM = "#8c8c8c";
+/** T-2690: their fill by start tier until a line is set up: the crowding ramp's yellow, and its green
+ * and red raised to OKLCH lightness 0.68 and 0.66, nearer the yellow's 0.78 (T-2748), in both themes. */
+export const START_TIER_FILL = { easy: "#62ad61", medium: CROWD_STOPS[2][1], hard: "#e95f5a" } as const;
+
+/** Commuter bubbles are this opaque, so the network shows through where they pile up. */
+export const BUBBLE_ALPHA = 0.8;
+
+export function rgb(hex: string): [number, number, number] {
+  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+}
+
+/** The over-full red: a platform at capacity, a mark on bad track (map/renderer.ts, gradeMarks.ts). */
+export const BAD_RED = "#d23c3c";
+
+const RGBF = new Map<string, Float32Array>();
+/** A hex colour as three floats 0-1 for a uniform, parsed once. The array is shared: do not change it. */
+export function rgbf(hex: string): Float32Array {
+  let c = RGBF.get(hex);
+  if (!c) RGBF.set(hex, (c = Float32Array.from(rgb(hex), (v) => v / 255)));
+  return c;
+}
+
+/** T-1817: a line colour used as text or outline on the page: a light one a little darker on the
+ * light shade, a dark one a little lighter on the dark, mixed toward black or white only as far as
+ * the relative luminance needs, so the hue stays. */
+export function legibleOn(hex: string, dark: boolean): string {
+  const lin = (v: number) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const lum = (c: number[]) => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+  const c = rgb(hex), to = dark ? 255 : 0, target = dark ? 0.14 : 0.45;
+  if (dark ? lum(c) >= target : lum(c) <= target) return hex;
+  const mix = (t: number) => c.map((v) => Math.round(v + (to - v) * t));
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 12; i++) { const m = (lo + hi) / 2; if (dark ? lum(mix(m)) < target : lum(mix(m)) > target) lo = m; else hi = m; }
+  return "#" + mix(hi).map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+/** T-2284: each click mode's colour, for the aura round the map and the descriptor's square; plain
+ * selecting has none. Chosen against every colour the game draws, in both shades (notes/T-2267.md 3.7). */
+export const CLICK_MODE_COLOURS = {
+  track: "#0a819d",
+  station: "#8d71b1",
+  delete: "#d63f73",
+  blueprint: "#9c7b31",
+  bus: "#a09e2d",
+  ferry: "#16716f",
+  line: "#d777ed",
+  trip: "#268769",
+  building: "#a15b7b",
+  passage: "#b0866a",
+} as const;
+
+/** Letter colour on a line chip: dark on light lines (yellow), white on the rest. */
+export function inkOn(hex: string): string {
+  const [r, g, b] = rgb(hex).map((v) => v / 255);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 0.62 ? NET_INK : "#ffffff";
+}

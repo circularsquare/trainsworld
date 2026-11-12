@@ -1,0 +1,721 @@
+// The trip explorer (T-195; docs/demand-views.md "The trip explorer", docs/ui-inspectors.md). Trips
+// between two places on the map, from homes at the first to destinations at the second, as the
+// view it was opened from counts them (T-586): the purpose filter's trips a day by mode between
+// the two places (the same sums as the bubbles' hovers, `tripMix`), then one representative trip
+// the way the demand model decides it: the train's routes through the model's strategies, the
+// drive, and the chance of each mode in each period. The numbers are the model's own
+// (`DemandApi.trip` and `EverydayApi.trip` in sim/src/demand/trip.rs, and the selection's far end,
+// asked of the demand workers); this file only names them. Main thread only.
+
+import { t as tr } from "../i18n";
+import { signal } from "@preact/signals";
+import { lngLatToPack } from "./coords";
+import { stationNameNear } from "./places";
+import type { Flows } from "./demand";
+import { PERIODS } from "./periods";
+import { EVERYDAY_KEYS, FILTER_PURPOSES, shownKey, type PurposeFilter, type PurposeKey } from "./purposes";
+import type { CommutersOneWay, Selection } from "./types";
+import { MARKET_TRIP_LAYOUT, TRIP_LAYOUT } from "../workers/demandProtocol";
+import { stationNames, stationsById, world } from "./world";
+
+/** One leg of a route: a ride on a line, or a walk after a ride, to another station or between the
+ * platforms of one (T-717). */
+export interface TripLeg {
+  kind: "ride" | "walk";
+  /** the line ridden (a ride's) */
+  line: string;
+  /** snapshot stations at the two ends */
+  from: string;
+  to: string;
+  /** every station passed, in order, from `from` to `to` (a ride's; a walk's two ends) */
+  stations: string[];
+  /** a ride's two ends as indices into its line's stops (run 0's order: `k0 > k1` rides run 1),
+   * so the map can draw it along the line's track (T-208); -1 for a walk */
+  k0: number;
+  k1: number;
+  /** a ride on a circle through its first stop (T-798): the line's stop count, else 0; then
+   * `k0 > k1` rides run 0 round past the last stop and `k0 < k1` run 1 */
+  wrapN?: number;
+  stops: number;
+  /** real minutes riding or walking, and perceived (a ride's with crowding, without its fare) */
+  min: number;
+  perceived: number;
+  /** a ride's distance fare, perceived minutes */
+  farePerceived: number;
+  /** the wait before a ride: real minutes (half the combined headway of the useful trains there)
+   * and perceived (more where some riders have no train due for hours, T-842) */
+  waitMin: number;
+  waitPerceived: number;
+  /** a ride's fixed cost of the change onto it, perceived minutes (0 on the first ride; T-717) */
+  changePerceived: number;
+  /** the part of `waitMin` (and of `waitPerceived`) spent waiting for a train with room (T-188) */
+  fullWaitMin: number;
+}
+
+/** A sequence of boardings the train riders take, and its share of them. */
+export interface TripRoute {
+  /** share of this trip's train riders on the route (0-1) */
+  share: number;
+  /** index into `TripPeriod.pairs` */
+  pair: number;
+  legs: TripLeg[];
+}
+
+/** A pair of stations to board at and leave from, with the walks to and from them. */
+export interface TripPair {
+  access: string;
+  egress: string;
+  /** straight-line metres and perceived minutes of the walk to `access` and from `egress` */
+  accessM: number;
+  accessPerceived: number;
+  egressM: number;
+  egressPerceived: number;
+  /** the two walks' real minutes (6 km/h, SPEC 4.3); the access entry of a ride has the drive's */
+  accessMin: number;
+  egressMin: number;
+  /** the access entry is a ride (T-371: a car, bus, bike or lift to the station, one mode) rather
+   * than a walk, and then the perceived minutes beyond the drive's: the ride's fixed cost and the
+   * parking or drop-off at the station */
+  accessRide: boolean;
+  rideExtra: number;
+  /** T-915: a ride's `rideExtra` in parts, perceived minutes (0 for a walk): the fixed cost of
+   * starting, the parking or drop-off at the station (`rideDropOff`) with the part of it that is
+   * money, parking at home, and the car's ownership cost (money) */
+  rideStart: number;
+  rideStation: number;
+  rideStationMoney: number;
+  rideDropOff: boolean;
+  rideHome: number;
+  rideCar: number;
+  /** perceived minutes station to station (waits, rides, changes, distance fare; no base fare) */
+  strategy: number;
+  share: number;
+  /** T-865: the cell pair's own two ends in an averaged trip (world metres), where its walks are drawn from */
+  from?: [number, number];
+  to?: [number, number];
+}
+
+/** Why the train is not a choice for a trip. */
+export type NoRail = "" | "noStationStart" | "noStationEnd" | "walksTooLong" | "noRoute" | "walkFurther";
+/** Perceived minutes a dollar of the car's money (ownership, parking, a ride to a station): the
+ * sim's `api::FARE_MIN_PER_USD`, whatever the country (T-1277). */
+export const CAR_MIN_PER_USD = 3;
+const WHY: NoRail[] = ["", "noStationStart", "noStationEnd", "walksTooLong", "noRoute", "walkFurther"];
+
+/** The trip in one period. Minutes are perceived where named so, else real. */
+export interface TripPeriod {
+  /** the crowding round the period's costs are from */
+  round: number;
+  /** world metres of the cells the two points fell in, and the cells (pack ids) */
+  from: [number, number];
+  to: [number, number];
+  cells: [number, number];
+  /** walking the whole way between the two cells, real minutes (T-628) */
+  walkMin: number;
+  /** the weight a minute of walking the whole way counts at */
+  walkWeight: number;
+  /** an everyday purpose's trips a day between the two cells' areas (0: a commute, or none) */
+  pairTrips: number;
+  /** straight line between the two cells, and the drive's distance, metres */
+  distM: number;
+  driveDistM: number;
+  /** the drive's length by road, km */
+  driveRoadKm: number;
+  driveMin: number;
+  drivePerceived: number;
+  parkPerceived: number;
+  /** the car's ownership cost per trip (T-620), included in `roadPerceived` */
+  carOwnPerceived: number;
+  roadPerceived: number;
+  railOffered: boolean;
+  why: NoRail;
+  /** T-1902: not offered for these two cells (walks too long, or slower than walking), but the
+   * pairs, routes and `railPerceived` are those read with the walk limits lifted: the route the
+   * train riders the views count here take */
+  lifted: boolean;
+  /** the train's cost (the logsum over station pairs, perceived minutes); NaN if not offered,
+   * except where the route is `lifted` */
+  railPerceived: number;
+  /** T-2265: the quickest station pair's real minutes, as the rule against a train slower than
+   * walking counts them (NaN none) */
+  trainQuickestMin: number;
+  /** the train's share of the trips that do not walk, and its utility against the road */
+  railOfMotor: number;
+  utility: number;
+  /** shares of all trips walking the whole way (T-558: walking is a mode in the choice), by
+   * train, and by car or other */
+  pWalk: number;
+  pTrain: number;
+  pDrive: number;
+  /** T-2214: the two cells are on two land parts no road joins: no car and no walk (`pWalk`,
+   * `pDrive` 0), and `pNone` (the rest beside the train) has no way at all, "No route" */
+  apart: boolean;
+  pNone: number;
+  baseFarePerceived: number;
+  /** T-1801: the transfer fare each change pays, perceived minutes (0 none) */
+  xferFarePerceived: number;
+  /** perceived minutes a fare dollar, the riders' country's (T-1277); the car's money is at
+   * `CAR_MIN_PER_USD` */
+  minPerUsd: number;
+  /** the cheapest perceived walk at each end */
+  walkStartPerceived: number;
+  walkEndPerceived: number;
+  pairs: TripPair[];
+  routes: TripRoute[];
+  /** share of the train riders on routes too small to list */
+  cut: number;
+  /** T-720: the same shares as the demand views count them, for the nearby homes and places the
+   * model groups the two cells with, and that group's walk to its nearest station at the start,
+   * real minutes (-1 none). Everything else is the two cells' own trip. */
+  groupWalk: number;
+  groupTrain: number;
+  groupDrive: number;
+  /** T-2214: the group's trips with no way (between two land parts, not by rail) */
+  groupNone: number;
+  groupWalkStartMin: number;
+  /** T-910: whether the home end could drive to a station: the trip is under `rideMinKm`, the
+   * drives were among its ways to a station, or none is within a drive. `walkStartPerceived` and
+   * `walkEndPerceived` over `pairWalkMax` together offer no train (`walksTooLong`). */
+  rideToStation: "short" | "tried" | "none";
+  rideMinKm: number;
+  pairWalkMax: number;
+  /** T-865: the period is several cell pairs averaged (`averageTrips`): how many, and how many of
+   * them the train is offered for */
+  sampled?: number;
+  railSampled?: number;
+}
+
+export interface Trip {
+  version: number;
+  round: number;
+  /** "x,y>x,y": the points asked about */
+  key: string;
+  /** -1 a commute, else the everyday purpose (`EVERYDAY_KEYS` index) the trip was read as */
+  purpose: number;
+  /** per period (game/periods.ts order); null where the trip could not be read */
+  periods: (TripPeriod | null)[];
+  /** a point is outside the city's cells */
+  outside: boolean;
+}
+
+/** Route node -> line, snapshot station and its index in the line's stops, from the solve's layout
+ * (as `transfers`); `o` the line's first route node and `n` its stops. */
+export type RouteNodes = { line: string; station: string; k: number; o?: number; n?: number }[];
+
+/** The route node after `rn` on its run: past a circle's last stop, its first (T-798). */
+function nextNode(at: RouteNodes, rn: number): number {
+  const a = at[rn];
+  if (!a || a.o === undefined || !a.n) return rn + 1;
+  const start = a.o + (rn - a.o < a.n ? 0 : a.n);
+  return rn === start + a.n - 1 ? start : rn + 1;
+}
+
+const { HEAD, PAIR_LEN, LEG_LEN } = TRIP_LAYOUT;
+const stationAt = (at: RouteNodes, rn: number) => (rn >= 0 && at[rn] ? at[rn].station : "");
+const RIDE: TripPeriod["rideToStation"][] = ["short", "tried", "none"];
+
+/** Read one period's packed answer (layout: `DemandApi.trip`). */
+export function readTripPeriod(v: Float64Array, at: RouteNodes): TripPeriod | null {
+  if (v.length < HEAD || v[0] !== 1) return null;
+  const st = (rn: number) => stationAt(at, rn);
+  const np = v[24], nr = v[25];
+  const pairs: TripPair[] = [];
+  for (let k = 0; k < np; k++) {
+    const p = v.subarray(HEAD + k * PAIR_LEN, HEAD + (k + 1) * PAIR_LEN);
+    pairs.push({ access: st(p[2]), egress: st(p[3]), accessM: p[4], accessPerceived: p[5], egressM: p[6], egressPerceived: p[7], strategy: p[8], share: p[9], accessMin: p[10], egressMin: p[11], accessRide: p[12] === 1, rideExtra: p[13],
+      rideStart: p[14], rideStation: p[15], rideStationMoney: p[16], rideDropOff: p[17] === 1, rideHome: p[18], rideCar: p[19] });
+  }
+  const routes = readRoutes(v, HEAD + np * PAIR_LEN, nr, at);
+  const offered = v[13] === 1;
+  const why = WHY[v[26]] ?? "";
+  // T-2214: on two land parts the shares beside the train's have no way
+  const apart = v[47] === 1;
+  return {
+    apart, pNone: apart ? Math.max(0, 1 - v[18]) : 0, groupNone: apart ? Math.max(0, 1 - v[38]) : 0,
+    round: v[1], from: [v[27], v[28]], to: [v[29], v[30]], cells: [v[2], v[3]], walkMin: v[33], walkWeight: v[36], pairTrips: v[34], distM: v[6], driveDistM: v[7], driveRoadKm: v[35],
+    driveMin: v[9], drivePerceived: v[10], parkPerceived: v[11], carOwnPerceived: v[32], roadPerceived: v[12],
+    railOffered: offered, why, lifted: v[46] === 1, railPerceived: offered || v[46] === 1 ? v[14] : NaN, trainQuickestMin: v[44] >= 0 ? v[44] : NaN, railOfMotor: v[15], utility: v[16],
+    pWalk: v[17], pTrain: v[18], pDrive: v[19], baseFarePerceived: v[22], xferFarePerceived: v[45] ?? 0, minPerUsd: v[23], walkStartPerceived: v[20], walkEndPerceived: v[21], pairs, routes, cut: v[31],
+    groupWalk: v[37], groupTrain: v[38], groupDrive: v[39], groupWalkStartMin: v[40],
+    rideToStation: RIDE[v[41]] ?? "none", rideMinKm: v[42], pairWalkMax: v[43],
+  };
+}
+
+/** `nr` routes packed from `o` (`DemandApi.trip`'s layout, and `IntercityApi.market_trip`'s). */
+function readRoutes(v: Float64Array, o: number, nr: number, at: RouteNodes): TripRoute[] {
+  const st = (rn: number) => stationAt(at, rn);
+  const routes: TripRoute[] = [];
+  for (let k = 0; k < nr; k++) {
+    const pair = v[o], share = v[o + 1], n = v[o + 2];
+    o += 3;
+    const legs: TripLeg[] = [];
+    for (let i = 0; i < n; i++, o += LEG_LEN) {
+      const l = v.subarray(o, o + LEG_LEN);
+      if (l[0] === 1) {
+        const stations: string[] = [];
+        // a ride on a circle may carry on round past its last stop (T-798): its first stop is
+        // both route nodes there, named once
+        for (let rn = l[1], i = 0; i <= at.length; rn = nextNode(at, rn), i++) {
+          if (stations[stations.length - 1] !== st(rn)) stations.push(st(rn));
+          if (rn === l[2]) break;
+        }
+        const wrapN = l[1] > l[2] ? at[l[1]]?.n ?? 0 : 0;
+        legs.push({ kind: "ride", line: at[l[1]]?.line ?? "", from: st(l[1]), to: st(l[2]), stations, k0: at[l[1]]?.k ?? -1, k1: at[l[2]]?.k ?? -1, ...(wrapN ? { wrapN } : {}), stops: l[10], min: l[5], perceived: l[6], farePerceived: l[7], waitMin: l[8], waitPerceived: l[9], changePerceived: l[11], fullWaitMin: l[12] });
+      } else {
+        const from = st(l[1]), to = st(l[2]);
+        legs.push({ kind: "walk", line: "", from, to, stations: [from, to], k0: -1, k1: -1, stops: 0, min: l[5], perceived: l[6], farePerceived: 0, waitMin: 0, waitPerceived: 0, changePerceived: 0, fullWaitMin: 0 });
+      }
+    }
+    routes.push({ share, pair, legs });
+  }
+  return routes;
+}
+
+/** Why the market's rail is not offered between two zones (T-866). */
+export type MarketNoRail = "" | "farClosed" | "noRail" | "unmatched";
+const MARKET_WHY: MarketNoRail[] = ["", "farClosed", "noRail", "unmatched"];
+
+/**
+ * T-866: the longer trips between a selection and a far place (or one of its 6 km zones) in one
+ * period, as the regional market chooses them (`IntercityApi.market_trip`): every zone pair's
+ * choice added up by its trips. Minutes are perceived where named so. The station pairs' walks
+ * are not known here (`accessM` and the real minutes NaN): their perceived minutes are the zones'
+ * access weights' mean cost.
+ */
+export interface MarketPeriod {
+  round: number;
+  /** the period's longer trips between the two ends, and by train, plane and car */
+  trips: number;
+  rail: number;
+  air: number;
+  car: number;
+  /** rail's perceived cost over the zone pairs it can serve, the car's, and the reference mode's
+   * (the car's, or the plane's where no car goes), trip weighted; NaN none */
+  railPerceived: number;
+  carPerceived: number;
+  refPerceived: number;
+  /** the zone pairs' mean distance, km, and how many were counted */
+  km: number;
+  zonePairs: number;
+  /** the trips' share on zone pairs rail can serve */
+  served: number;
+  baseFarePerceived: number;
+  minPerUsd: number;
+  why: MarketNoRail;
+  pairs: TripPair[];
+  routes: TripRoute[];
+  cut: number;
+  /** T-1229: the everyday outings across a zone line between the two ends, legs a day both ways
+   * (the home's and the return), by train and walked the whole way; the rest go by car. Their
+   * train riders are in `pairs` and `routes` with the longer trips'. */
+  everyday: { legs: number; rail: number; walk: number };
+  /** T-880: the commutes between zones with homes at the commuting end (the near end for Homes,
+   * the far end for Destinations), legs a day both ways and by train; the rest drive. Their train
+   * riders are in `pairs` and `routes` too. */
+  commute: { legs: number; rail: number };
+  /** T-1902: the car and the plane as one figure, as the choice weighs them against the train, over
+   * the same zone pairs and riders as `railPerceived`; NaN none */
+  otherPerceived: number;
+}
+
+const { HEAD: MT_HEAD, PAIR_LEN: MT_PAIR_LEN } = MARKET_TRIP_LAYOUT;
+
+/** Read one period's `IntercityApi.market_trip` answer. */
+export function readMarketPeriod(v: Float64Array, at: RouteNodes): MarketPeriod | null {
+  if (v.length < MT_HEAD || v[0] !== 1) return null;
+  const st = (rn: number) => stationAt(at, rn);
+  const np = v[11], nr = v[12];
+  const pairs: TripPair[] = [];
+  for (let k = 0; k < np; k++) {
+    const p = v.subarray(MT_HEAD + k * MT_PAIR_LEN, MT_HEAD + (k + 1) * MT_PAIR_LEN);
+    pairs.push({ access: st(p[0]), egress: st(p[1]), accessM: NaN, accessPerceived: p[2], egressM: NaN, egressPerceived: p[3], strategy: p[4], share: p[5], accessMin: NaN, egressMin: NaN, accessRide: false, rideExtra: 0,
+      rideStart: 0, rideStation: 0, rideStationMoney: 0, rideDropOff: false, rideHome: 0, rideCar: 0 });
+  }
+  const nan = (x: number) => (x < 0 ? NaN : x);
+  return {
+    round: v[1], trips: v[2], rail: v[3], air: v[4], car: v[5], railPerceived: nan(v[6]), carPerceived: nan(v[7]), refPerceived: v[17],
+    km: v[8], zonePairs: v[18], served: v[15], baseFarePerceived: v[9], minPerUsd: v[10], why: MARKET_WHY[v[14]] ?? "noRail",
+    pairs, routes: readRoutes(v, MT_HEAD + np * MT_PAIR_LEN, nr, at), cut: v[13],
+    everyday: { legs: v[19], rail: v[20], walk: v[21] },
+    commute: { legs: v[22], rail: v[23] },
+    otherPerceived: nan(v[24]),
+  };
+}
+
+/** A market place, or one of its 6 km zones (`gid`, -1 the whole place). */
+export interface MarketEnd {
+  place: number;
+  gid: number;
+}
+
+let marketQuery: ((end: "home" | "work", cells: Uint32Array, far: number, farGid: number, near?: MarketEnd) => Promise<(MarketPeriod | null)[] | null>) | null = null;
+/** Set by workers/demandClient.ts when the pool starts. */
+export function setMarketTripQuery(q: typeof marketQuery) {
+  marketQuery = q;
+}
+/** Ask the workers about the longer trips between a selection's cells (`end`: as the bubble
+ * selection's) and far place `far`, or its 6 km zone `farGid` (-1 the whole place), per period. */
+export const askMarketTrip = (end: "home" | "work", cells: Uint32Array, far: number, farGid = -1, near?: MarketEnd): Promise<(MarketPeriod | null)[] | null> =>
+  marketQuery?.(end, cells, far, farGid, near) ?? Promise.resolve(null);
+
+/** Several answers' routes as one: merged by `label`, each weighted by its answer's `weight`; the
+ * five biggest kept, as shares of the weights' total, with only the pairs they use (re-indexed).
+ * `cut` is the share left out. */
+function mergeRoutes(sources: { pairs: TripPair[]; routes: TripRoute[]; weight: number }[], label: (r: TripRoute) => string): { pairs: TripPair[]; routes: TripRoute[]; cut: number } {
+  const pairs: TripPair[] = [];
+  const merged = new Map<string, TripRoute>();
+  let total = 0;
+  for (const s of sources) {
+    total += s.weight;
+    const off = pairs.length;
+    pairs.push(...s.pairs);
+    for (const r of s.routes) {
+      const k = label(r), m = merged.get(k);
+      if (m) m.share += s.weight * r.share;
+      else merged.set(k, { ...r, pair: r.pair + off, share: s.weight * r.share });
+    }
+  }
+  const routes = [...merged.values()].sort((a, b) => b.share - a.share).slice(0, 5);
+  for (const r of routes) r.share = total > 0 ? r.share / total : 0;
+  const used = [...new Set(routes.map((r) => r.pair))];
+  for (const r of routes) r.pair = used.indexOf(r.pair);
+  return { pairs: used.map((i) => pairs[i]), routes, cut: Math.max(0, 1 - routes.reduce((s, r) => s + r.share, 0)) };
+}
+
+/**
+ * T-885: several far ends' market answers for one period as one: the trips added up; rail's
+ * perceived cost weighted by the trips rail can serve, the car's, the reference mode's and the
+ * distance by trips; the routes merged by `label` and weighted by each answer's rail trips, the
+ * five biggest kept with their own station pairs. The rest is the answer with most trips'.
+ */
+export function mergeMarketPeriods(xs: (MarketPeriod | null)[], label: (r: TripRoute) => string): MarketPeriod | null {
+  const ps = xs.filter((p): p is MarketPeriod => !!p);
+  if (ps.length <= 1) return ps[0] ?? null;
+  const sum = (f: (p: MarketPeriod) => number) => ps.reduce((s, p) => s + f(p), 0);
+  const wmean = (f: (p: MarketPeriod) => number, w: (p: MarketPeriod) => number) => {
+    const W = sum((p) => (Number.isFinite(f(p)) ? w(p) : 0));
+    return W > 0 ? sum((p) => (Number.isFinite(f(p)) ? w(p) * f(p) : 0)) / W : NaN;
+  };
+  const trips = sum((p) => p.trips), rail = sum((p) => p.rail);
+  const everyday = { legs: sum((p) => p.everyday.legs), rail: sum((p) => p.everyday.rail), walk: sum((p) => p.everyday.walk) };
+  const commute = { legs: sum((p) => p.commute.legs), rail: sum((p) => p.commute.rail) };
+  const top = ps.reduce((a, b) => (b.trips > a.trips ? b : a));
+  const riders = (p: MarketPeriod) => p.rail + p.everyday.rail + p.commute.rail;
+  const { pairs, routes, cut } = mergeRoutes(ps.filter((p) => riders(p) > 0).map((p) => ({ pairs: p.pairs, routes: p.routes, weight: riders(p) })), label);
+  return {
+    ...top, trips, rail, everyday, commute, air: sum((p) => p.air), car: sum((p) => p.car),
+    railPerceived: wmean((p) => p.railPerceived, (p) => p.trips * p.served),
+    otherPerceived: wmean((p) => p.otherPerceived, (p) => p.trips * p.served),
+    // T-991: ends with no trips worked out (not open) still carry a distance and a car, by place
+    carPerceived: trips > 0 ? wmean((p) => p.carPerceived, (p) => p.trips) : wmean((p) => p.carPerceived, () => 1),
+    refPerceived: wmean((p) => p.refPerceived, (p) => p.trips),
+    km: trips > 0 ? wmean((p) => p.km, (p) => p.trips) : wmean((p) => p.km, () => 1), zonePairs: sum((p) => p.zonePairs),
+    served: trips > 0 ? sum((p) => p.trips * p.served) / trips : 0,
+    why: rail + everyday.rail + commute.rail > 0 ? "" : top.why,
+    pairs, routes, cut,
+  };
+}
+
+/** A route's totals: real minutes driving to the station (a ride access), walking, waiting, riding
+ * and walking between stations, the changes, and the fare in dollars (base fare and transfer fares
+ * included; `xferUsd` the transfer fares alone). */
+export function routeTotals(t: TripPeriod, r: TripRoute) {
+  const pair = t.pairs[r.pair];
+  const driveMin = pair?.accessRide ? pair.accessMin : 0;
+  const walkM = pair ? (pair.accessRide ? 0 : pair.accessM) + pair.egressM : 0;
+  const walkMin = pair ? (pair.accessRide ? 0 : pair.accessMin) + pair.egressMin : 0;
+  let wait = 0, ride = 0, xfer = 0, fare = t.baseFarePerceived, rides = 0;
+  for (const l of r.legs) {
+    if (l.kind === "ride") { wait += l.waitMin; ride += l.min; fare += l.farePerceived; rides++; }
+    else xfer += l.min;
+  }
+  const changes = Math.max(0, rides - 1), xferFare = changes * (t.xferFarePerceived ?? 0);
+  return { driveMin, walkMin, walkM, wait, ride, xfer, changes, fareUsd: (fare + xferFare) / t.minPerUsd, xferUsd: xferFare / t.minPerUsd, total: driveMin + walkMin + wait + ride + xfer };
+}
+
+/** What crowded trains add to a route: the rides' perceived minutes beyond their real ones (the
+ * crowding factor past 70% of the rated load), and the minutes waited for a train with room after full ones
+ * (T-188), both as the sim charges them. */
+export function routeCrowding(r: TripRoute) {
+  let crowding = 0, fullWait = 0;
+  for (const l of r.legs) if (l.kind === "ride") { crowding += Math.max(0, l.perceived - l.min); fullWait += Math.max(0, l.fullWaitMin); }
+  return { crowding, fullWait };
+}
+
+/** One term of a route's perceived total: what it is, its real amount (minutes, dollars for the
+ * fare, or a count of changes) with the weight it counts at, and its perceived minutes. */
+export interface CostTerm {
+  /** the term's stable English id, for code that tells terms apart */
+  id: string;
+  /** the term as the player reads it */
+  label: string;
+  real: number;
+  weight: number;
+  perceived: number;
+  unit: "min" | "usd" | "count";
+}
+
+/** A route's perceived total as terms, from the worker's own perceived minutes: the walks (or the
+ * drive to the station), the waits, the rides with their crowding, the walks between stations and
+ * the fare. A change costs its wait, its walk and a fixed few minutes (T-717); the base fare is in
+ * the fare. */
+export function routeTerms(t: TripPeriod, r: TripRoute): CostTerm[] {
+  const pair = t.pairs[r.pair];
+  const tot = routeTotals(t, r);
+  const out: CostTerm[] = [];
+  if (pair) {
+    // T-915: a drive to the station in its parts, which add up to its perceived minutes
+    if (pair.accessRide) {
+      const drive = pair.accessPerceived - pair.rideExtra;
+      out.push({ id: "starting the drive", label: tr("trip.startingDrive"), real: 0, weight: 1, perceived: pair.rideStart, unit: "min" }); // i18n-ignore
+      out.push({ id: "drive", label: tr("trip.drive"), real: pair.accessMin, weight: pair.accessMin > 0 ? drive / pair.accessMin : 1, perceived: drive, unit: "min" });
+      out.push({ id: pair.rideDropOff ? "drop-off" : "parking at the station", label: tr(pair.rideDropOff ? "trip.dropOff" : "trip.parkingStation"), real: 0, weight: 1, perceived: pair.rideStation, unit: "min" }); // i18n-ignore
+      out.push({ id: "parking at home", label: tr("trip.parkingHome"), real: 0, weight: 1, perceived: pair.rideHome, unit: "min" }); // i18n-ignore
+      out.push({ id: "car", label: tr("trip.car"), real: pair.rideCar / CAR_MIN_PER_USD, weight: CAR_MIN_PER_USD, perceived: pair.rideCar, unit: "usd" });
+    }
+    const walkPerc = pair.egressPerceived + (pair.accessRide ? 0 : pair.accessPerceived);
+    if (tot.walkMin > 0) out.push({ id: "walk", label: tr("trip.walk"), real: tot.walkMin, weight: walkPerc / tot.walkMin, perceived: walkPerc, unit: "min" });
+  }
+  let waitP = 0, xferP = 0, changeP = 0;
+  for (const l of r.legs) {
+    if (l.kind === "ride") { waitP += l.waitPerceived; changeP += l.changePerceived; }
+    else xferP += l.perceived;
+  }
+  const { crowding, fullWait } = routeCrowding(r);
+  const wait = tot.wait - fullWait;
+  out.push({ id: "wait", label: tr("trip.wait"), real: wait, weight: wait > 0 ? (waitP - fullWait) / wait : 1, perceived: waitP - fullWait, unit: "min" });
+  if (fullWait >= 0.05) out.push({ id: "waiting for a train with room", label: tr("trip.waitRoom"), real: fullWait, weight: 1, perceived: fullWait, unit: "min" }); // i18n-ignore
+  out.push({ id: "ride", label: tr("trip.ride"), real: tot.ride, weight: 1, perceived: tot.ride, unit: "min" });
+  if (crowding >= 0.05) out.push({ id: "crowding", label: tr("trip.crowding"), real: 0, weight: 1, perceived: crowding, unit: "min" });
+  if (tot.xfer > 0) out.push({ id: "walk between stations", label: tr("trip.walkBetween"), real: tot.xfer, weight: xferP / tot.xfer, perceived: xferP, unit: "min" }); // i18n-ignore
+  if (changeP > 0) out.push(tot.changes > 1
+    ? { id: "changes", label: tr("trip.changes"), real: tot.changes, weight: changeP / tot.changes, perceived: changeP, unit: "count" }
+    : { id: "change", label: tr("trip.change"), real: 0, weight: 1, perceived: changeP, unit: "min" });
+  const fare = tot.fareUsd - tot.xferUsd;
+  out.push({ id: "fare", label: tr("trip.fare"), real: fare, weight: t.minPerUsd, perceived: fare * t.minPerUsd, unit: "usd" });
+  if (tot.xferUsd > 0) out.push({ id: "transfer fare", label: tr("trip.transferFare"), real: tot.xferUsd, weight: t.minPerUsd, perceived: tot.xferUsd * t.minPerUsd, unit: "usd" }); // i18n-ignore
+  return out;
+}
+
+/** Routes that read the same in the explorer: the same lines to a station of the same name
+ * (`names`: station id to name). */
+export const routeLabel = (names: Map<string, string>) => (r: TripRoute) =>
+  r.legs.filter((l) => l.kind === "ride").map((l) => l.line).join(">") + ">" + (names.get(r.legs[r.legs.length - 1]?.to ?? "") ?? "");
+
+/** T-870: the other route opened in the explorer, by its `routeLabel`, so it stays open through
+ * new rounds and periods while the trip is the same. */
+export const openRoute = signal<string | null>(null);
+
+let query: ((from: [number, number], to: [number, number], purpose: number) => Promise<Trip | null>) | null = null;
+/** Set by workers/demandClient.ts when the pool starts. */
+export function setTripQuery(q: typeof query) {
+  query = q;
+}
+/** Ask the demand workers about a trip as a commute (`purpose` -1) or as an everyday purpose
+ * (an `EVERYDAY_KEYS` index), for the solve `demandView` shows. */
+export const askTrip = (from: [number, number], to: [number, number], purpose = -1): Promise<Trip | null> => query?.(from, to, purpose) ?? Promise.resolve(null);
+
+/** The two places the explorer counts trips between (T-586): the cells at the end the view
+ * counts by (a bubble selection's end, else the trip's start as homes), and the cells at the
+ * other end (pack cell ids). */
+export interface TripPlaces {
+  end: "home" | "work";
+  near: Uint32Array;
+  far: Uint32Array;
+  /** T-865: an end of more than one bubble: how many at each end, the station nearest each end's
+   * centre (or ""), and the cell pairs the routes and times are averaged over, `from` homes to
+   * `to` destinations (world metres), each weighted by its two bubbles' trips */
+  group?: { near: number; far: number; nearName: string; farName: string; samples: { from: [number, number]; to: [number, number]; w: number }[] };
+  /** T-885: a group of far places or 6 km zones (a box over inter-region bubbles), merged */
+  fars?: MarketEnd[];
+}
+
+/** T-885: a bubble selection of several areas as the near end of a market trip: its count and the
+ * station nearest its busiest cell `at`, for the panel's name (no samples: the market sums them). */
+export const marketGroup = (s: { areas: number }, at: [number, number] | null): Pick<TripPlaces, "group"> =>
+  s.areas > 1 ? { group: { near: s.areas, far: 1, nearName: at ? stationNameNear(at[0], at[1]) : "", farName: "", samples: [] } } : {};
+
+/** T-865: how many cell pairs a group's trip is averaged over at most, a side. */
+export const GROUP_SAMPLE_SIDE = 3;
+
+/**
+ * T-865: the trips of several cell pairs as one, each weighted by `w`: per period, the weighted
+ * mean of the times, distances and mode chances; the train's effective time over the pairs it is
+ * offered for; the routes merged by `label` and weighted by the pair's weight, its train chance and
+ * the route's share, the five biggest kept, each with its own pair (and that pair's two ends, so
+ * the map draws its walks from them). The rest is the heaviest pair's. `sampled` is the pair count.
+ */
+export function averageTrips(trips: { trip: Trip; w: number }[], label: (r: TripRoute) => string): Trip {
+  const top = trips.reduce((a, b) => (b.w > a.w ? b : a));
+  const periods = top.trip.periods.map((_, q) => {
+    const xs = trips.flatMap(({ trip, w }) => (trip.periods[q] && w > 0 ? [{ t: trip.periods[q]!, w }] : []));
+    if (!xs.length) return null;
+    const W = xs.reduce((s, x) => s + x.w, 0);
+    const mean = (f: (t: TripPeriod) => number) => xs.reduce((s, x) => s + x.w * f(x.t), 0) / W;
+    const rail = xs.filter((x) => x.t.railOffered && Number.isFinite(x.t.railPerceived));
+    const railW = rail.reduce((s, x) => s + x.w, 0);
+    const base = xs.reduce((a, b) => (b.w > a.w ? b : a)).t;
+    const walkMin = mean((t) => t.walkMin), walkPerc = mean((t) => t.walkMin * t.walkWeight);
+    // routes: weight of each pair's train riders on it
+    const { pairs, routes, cut } = mergeRoutes(rail.map(({ t, w }) => ({ pairs: t.pairs.map((p) => ({ ...p, from: t.from, to: t.to })), routes: t.routes, weight: w * t.pTrain })), label);
+    const p: TripPeriod = {
+      ...base,
+      walkMin, walkWeight: walkMin > 0 ? walkPerc / walkMin : base.walkWeight,
+      distM: mean((t) => t.distM), driveDistM: mean((t) => t.driveDistM), driveRoadKm: mean((t) => t.driveRoadKm),
+      driveMin: mean((t) => t.driveMin), drivePerceived: mean((t) => t.drivePerceived), parkPerceived: mean((t) => t.parkPerceived),
+      carOwnPerceived: mean((t) => t.carOwnPerceived), roadPerceived: mean((t) => t.roadPerceived),
+      railOffered: rail.length > 0, why: rail.length ? "" : base.why, lifted: false, apart: xs.every((x) => x.t.apart),
+      railPerceived: railW > 0 ? rail.reduce((s, x) => s + x.w * x.t.railPerceived, 0) / railW : NaN,
+      railOfMotor: mean((t) => t.railOfMotor), utility: mean((t) => t.utility),
+      pWalk: mean((t) => t.pWalk), pTrain: mean((t) => t.pTrain), pDrive: mean((t) => t.pDrive), pNone: mean((t) => t.pNone),
+      groupWalk: mean((t) => t.groupWalk), groupTrain: mean((t) => t.groupTrain), groupDrive: mean((t) => t.groupDrive), groupNone: mean((t) => t.groupNone),
+      pairs, routes, cut,
+      sampled: xs.length, railSampled: rail.length,
+    };
+    return p;
+  });
+  return { ...top.trip, periods };
+}
+
+/** T-911: `n` whole people shared out by `shares` (any scale) by largest remainder, so they add up
+ * to `n`; ties go to the bigger share. `pooled`: the index of a share that is many smaller ones
+ * added (routes too small to list), which takes a leftover person only after every other. */
+export function wholePeople(shares: number[], n: number, pooled = -1): number[] {
+  const total = shares.reduce((s, x) => s + Math.max(0, x), 0);
+  if (n <= 0 || total <= 0) return shares.map(() => 0);
+  const raw = shares.map((x) => (Math.max(0, x) / total) * n);
+  const out = raw.map(Math.floor);
+  const left = n - out.reduce((s, x) => s + x, 0);
+  const order = raw.map((_, i) => i).sort((a, b) => Number(a === pooled) - Number(b === pooled) || raw[b] - out[b] - (raw[a] - out[a]) || shares[b] - shares[a]);
+  for (let k = 0; k < left; k++) out[order[k]]++;
+  return out;
+}
+
+/** T-911: the whole number of people `n` trips a day stand for (at least one, when there are any). */
+export const peopleOf = (n: number) => (n > 0 ? Math.max(1, Math.round(n)) : 0);
+
+/** T-1902: the headline counts at least one whole train trip (as its bar rounds the modes), so the
+ * explorer shows a train route even where the two exact points have none (`TripPeriod.lifted`). */
+export function countsTrain(mix: TripMix | null): boolean {
+  const n = mix ? mix.rail + mix.walk + mix.drive : 0;
+  return n > 0 && wholePeople([mix!.rail, mix!.walk, mix!.drive], peopleOf(n))[0] > 0;
+}
+
+/** Trips a day (legs both ways) between two places by mode, under the purpose filter. */
+export interface TripMix {
+  rail: number;
+  walk: number;
+  drive: number;
+  /** each shown purpose's alone, biggest first; under one purpose, that one */
+  purposes: { key: PurposeKey; rail: number; walk: number; drive: number }[];
+}
+
+/** The far end of `f` (a selection's trips, every purpose and each on its own) summed over the far
+ * cells `far`, as the far-end bubbles and their hovers sum it. */
+export function tripMix(f: Flows, far: Uint32Array, filter: PurposeFilter): TripMix {
+  const inFar = new Set(far);
+  const sum = (fe: Pick<Flows, "cells" | "farRail" | "farWalk" | "farDrive">) => {
+    let rail = 0, walk = 0, drive = 0;
+    for (let i = 0; i < fe.cells.length; i++) if (inFar.has(fe.cells[i])) (rail += fe.farRail[i]), (walk += fe.farWalk[i]), (drive += fe.farDrive[i]);
+    return { rail, walk, drive };
+  };
+  const purposes: TripMix["purposes"] = [];
+  for (const { key } of FILTER_PURPOSES) {
+    if (filter !== "all" && key !== filter) continue;
+    const fe = f.byPurpose?.get(key);
+    if (fe) purposes.push({ key, ...sum(fe) });
+  }
+  purposes.sort((a, b) => b.rail + b.walk + b.drive - (a.rail + a.walk + a.drive));
+  const all = filter === "all" ? sum(f) : purposes[0] ?? { rail: 0, walk: 0, drive: 0 };
+  return { ...all, purposes };
+}
+
+/** The everyday purpose kinds a shown purpose counts (school counts university), in kind order. */
+export const kindsOf = (key: PurposeKey): number[] => EVERYDAY_KEYS.flatMap((k, i) => (shownKey(k) === key ? [i] : []));
+
+/** The period with most of a purpose's trips in a selection's far end (`Flows.purposes`: work
+ * first, then the everyday kinds in order), or null if it has none. The periods' shares are the
+ * purpose's own, the same for every pair of places. */
+export function busiestPeriod(f: Flows, key: PurposeKey): number | null {
+  const rows = key === "work" ? [f.purposes[0]] : kindsOf(key).map((k) => f.purposes[1 + k]);
+  let best = -1, most = 0;
+  for (let q = 0; q < PERIODS.length; q++) {
+    let n = 0;
+    for (const r of rows) if (r) for (let m = 0; m < 3; m++) n += (r.outward[m][q] ?? 0) + (r.returning[m][q] ?? 0);
+    if (n > most) (most = n), (best = q);
+  }
+  return best >= 0 ? best : null;
+}
+
+/** What the explorer shows: the trip's routes, the trips between the two places under the
+ * view's filter and day (null until counted, or when nothing counts them), and the purpose and
+ * period the routes are read for. */
+export interface TripShown {
+  key: string;
+  trip: Trip | null;
+  asking: boolean;
+  /** T-979: the model gave no answer for a final result, so asking again would not help */
+  failed?: boolean;
+  mix: TripMix | null;
+  /** the purpose the routes are read as */
+  purpose: PurposeKey;
+  /** the period with most of its trips (null: none counted) */
+  busiest: number | null;
+  /** T-866: the trips are between zones, as the regional market chooses them (`trip` is then null) */
+  market?: MarketShown | null;
+}
+
+/** T-866: what the explorer shows between zones: the far end, its name, and each period's answer. */
+export interface MarketShown {
+  far: { place: number; gid: number };
+  periods: (MarketPeriod | null)[];
+  /** T-885: every far end merged (more than one: a group), and the near end when it is a place
+   * or 6 km zone rather than cells */
+  fars?: MarketEnd[];
+  near?: MarketEnd;
+  /** the near end's cells are homes (trips from them) or destinations */
+  end?: "home" | "work";
+  /** T-1148: the ends' places with no station near them, when that leaves no train in play and the
+   * answer is the market rows' (game/marketRule.ts `rowsAnswer`) */
+  unbuilt?: number[];
+}
+
+/** The trip shown (asked for by map/tripView.ts when the selection, the purpose filter or the
+ * demand result changes). */
+export const tripView = signal<TripShown | null>(null);
+/** A trip opened from a bubble selection by clicking a far-end bubble (T-208): the trip selection,
+ * the one it came from (for the inspector's way back) and the two places it counts between. */
+export const tripOpenedFrom = signal<{ trip: Selection; from: Selection; places: TripPlaces | null } | null>(null);
+
+/** Open the trip explorer between a bubble selection's near end (`near`, world metres) and a far
+ * place at `at` (T-208, T-866), from the selection `from`; `fars` more than one are counted as a
+ * group. Returns the trip selection. */
+export function openFarTrip(sel: CommutersOneWay, from: Selection, near: [number, number], at: [number, number], far: MarketEnd, fars: MarketEnd[] = []): Selection {
+  const trip: Selection = sel.end === "home" ? { kind: "trip", from: near, to: at, far } : { kind: "trip", from: at, to: near, far };
+  tripOpenedFrom.value = { trip, from, places: { end: sel.end, near: Uint32Array.from(sel.cells), far: new Uint32Array(0), ...(fars.length > 1 ? { fars } : {}), ...marketGroup(sel, near) } };
+  return trip;
+}
+/** The period the explorer shows: null follows the busiest period of the purpose shown. */
+export const tripPeriod = signal<number | null>(null);
+
+/** Where a trip end picked as a station (T-221) is asked about: the station's own position, world
+ * metres. The model reads a point as the cell nearest it, so this is the station's own cell, and
+ * the model's subzones are the cells of a zone that share their nearest station: the station's cell
+ * is in the subzone whose nearest station is this one, so its riders walk the least and board here
+ * most. (The busiest cell of its catchment was the other choice; it can be nearer another station,
+ * and the trip would then mostly start from that one instead of the station clicked.) */
+export function stationPoint(id: string): [number, number] | null {
+  const w = world.peek();
+  const s = w && stationsById(w).get(id);
+  if (!s) return null;
+  const p = lngLatToPack(s.lng, s.lat);
+  return [p.x, p.y];
+}
+
+/** The name of a station picked as a trip's end, if one was. */
+export function stationName(id: string | undefined): string | null {
+  const w = world.peek();
+  return (id && w ? stationNames(w).get(id) : undefined) ?? null;
+}
+
+export const tripKey = (from: [number, number], to: [number, number]) => `${Math.round(from[0])},${Math.round(from[1])}>${Math.round(to[0])},${Math.round(to[1])}`;

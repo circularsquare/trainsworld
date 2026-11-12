@@ -1,0 +1,1937 @@
+/* trainworld UI. Three colour tokens per colour theme and light or dark (--bg, --text, --accent),
+   two for warnings (--bad, --warn); everything else in the UI is mixed from them. The map's own
+   light and dark colours (--map-land, --map-ink) are set from game/shades.ts. Line, mode and level
+   colours never change (game/palette.ts). Nunito, Zen Maru Gothic for kana and kanji; sizes 12, 14, 18 px (16 for the top bar's figures); weights 400, 700 and 500 (the top bar's figures). No transitions. */
+
+:root,
+:root[data-theme="pink"]  { --bg: #fbf7f0; --text: #4b403a; --accent: #d9788e; }
+:root[data-theme="blue"]  { --bg: #f6f9fb; --text: #2f4255; --accent: #4f8ac6; }
+:root[data-theme="green"] { --bg: #f6f6ec; --text: #3d4535; --accent: #7f9f4f; }
+/* T-039: the dark theme, each colour's background a near-black tinted towards it */
+:root[data-shade="dark"],
+:root[data-shade="dark"][data-theme="pink"]  { --bg: #262120; --text: #ebe3de; --accent: #e08aa0; }
+:root[data-shade="dark"][data-theme="blue"]  { --bg: #1d232a; --text: #dfe7ef; --accent: #6fa3da; }
+:root[data-shade="dark"][data-theme="green"] { --bg: #22241d; --text: #e3e6d8; --accent: #9dbb68; }
+:root { --bad: #b23a3a; --warn: #c0661c; --yellow: #c9a01c; --good: #3f8a3a; --map-land: #f2f2ef; --map-ink: #2b2b2b; }
+:root[data-shade="dark"] { color-scheme: dark; --bad: #ec7b7b; --warn: #eb9a52; --yellow: #e5c34a; --good: #7cc576; }
+/* T-1835, T-1852: every hotkey hint (key letters on buttons, bracketed keys in hovers, the Help panel's keys) is in the theme's accent */
+.key, .key.muted, .tip-key, .help-panel dt { color: var(--accent); }
+/* T-2157: a hint, not a figure: the keys on buttons and in hovers (brackets and all) at 0.7; the Help panel's list keeps full ink */
+.key, .tip-hint { opacity: 0.7; }
+/* the top bar's demand band (ui/SkyBanner.tsx, T-861): high, medium and low demand; six-digit hex only */
+:root { --dl-high: #d64545; --dl-medium: #e5b22a; --dl-low: #3f7fd4; }
+:root[data-shade="dark"] { --dl-high: #ec6b6b; --dl-medium: #edc54c; --dl-low: #6aa2ea; }
+/* stop editing's grey markers (map/stopMarkers.ts, T-543): a station the line reaches by track it
+   already uses, one it reaches by a new route, one it cannot reach; dark ones fade into the land */
+:root { --mk-route-ring: #7d7872; --mk-reroute-fill: #e6e3df; --mk-reroute-ring: #a8a39d; --mk-cut-fill: #d6d3cf; --mk-cut-ring: #b9b5b0; }
+:root[data-shade="dark"] { --mk-route-ring: #a39e97; --mk-reroute-fill: #34373c; --mk-reroute-ring: #8d8983; --mk-cut-fill: #2a2c30; --mk-cut-ring: #66635f; }
+/* T-2215: No route, the bubbles' grey (game/palette.ts NONE_GREY) for bars and swatches */
+:root { --none-grey: #b6b6b6; }
+:root[data-shade="dark"] { --none-grey: #d6d6d6; }
+/* T-2273: the ferry tool's leg from the active port to the pointer, over light or dark water */
+:root { --ferry-ghost: #1d4f91; }
+:root[data-shade="dark"] { --ferry-ghost: #9cc2ee; }
+
+:root {
+  --font: "Nunito", "Zen Maru Gothic", system-ui, sans-serif;
+  --muted: color-mix(in srgb, var(--text) 58%, var(--bg));
+  --rule: color-mix(in srgb, var(--text) 22%, var(--bg));
+  --shade: color-mix(in srgb, var(--text) 6%, var(--bg));
+  --tint: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  --net-ink: #2b2b2b; /* station rims, in both themes */
+  --dock-w: clamp(304px, 24vw, 352px);
+  --bar-h: 44px; /* T-349: one centre line; the status lies under the bar. T-1853: the sky beside the time */
+  /* T-1695: one device pixel inside the zoomed panels (game/ui.ts sets --ui and --dpr): a hairline
+     measured in these is the same whole pixels at every UI scale */
+  --px: calc(1px / (var(--ui, 1) * var(--dpr, 1)));
+}
+/* T-2636: each language's CJK face after Nunito (so Latin and digits stay Nunito's): Zen Maru is Japanese
+   and lacks a third of common Simplified hanzi, so Chinese never falls into it. Traditional takes the
+   rounded Huninn (i18n/huninn.css); Simplified the rounded Hanzi Round (i18n/hanziround.css, T-2936). */
+:root:lang(zh-Hans) { --font: "Nunito", "Hanzi Round", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif; }
+:root:lang(zh-TW) { --font: "Nunito", "Huninn", "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif; }
+/* T-2889: Korean takes the system's hangul face after Nunito; lines break between words, not inside one */
+:root:lang(ko) { --font: "Nunito", "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif; }
+:root:lang(ko) body { word-break: keep-all; }
+/* T-2680: Huninn and Hanzi Round have no bold, and the browser's made-up bold fills in dense hanzi (圓圈, 顯); a system bold face
+   came out lighter than Huninn's regular. So no bold hanzi in zh-TW or zh-Hans (Nunito's Latin and digits keep theirs),
+   and a heading is told apart by size */
+:root:is(:lang(zh-TW), :lang(zh-Hans)) { font-synthesis-weight: none; }
+:root:is(:lang(zh-TW), :lang(zh-Hans)) .h { font-size: 16px; }
+:root:is(:lang(zh-TW), :lang(zh-Hans)) .h .right { font-size: 14px; }
+/* the browser's gap between hanzi or kana and Latin letters or digits, so messages carry no spaces for it;
+   Japanese lines break between phrases, not inside a word */
+:root:is(:lang(ja), :lang(zh)) body { text-autospace: normal; }
+:root:lang(ja) body { word-break: auto-phrase; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: var(--font); font-size: 14px; line-height: 1.45;
+  overflow: hidden;
+}
+*, *::before, *::after { transition: none !important; animation: none !important; }
+/* T-647, Anita: the one exception to no animation, a small calm spinner for demand still loading */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { display: inline-block; flex: none; box-sizing: border-box; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--muted) 30%, transparent); border-top-color: var(--muted); vertical-align: 1px; animation: spin 1.2s linear infinite !important; }
+.spin.row-dot { margin-right: 6px; }
+.status-tag .spin { width: 10px; height: 10px; vertical-align: 0; }
+/* T-677, T-1057: the bunny's train (ui/Spinner.tsx), the loading card's motion: wheels turn, the
+   track runs by, the car chugs, the ear tips bob */
+.bunny-train { display: block; width: 104px; height: auto; margin: 0 auto 4px; overflow: visible; }
+.bt-rail, .bt-ties { stroke: var(--muted); }
+.bt-body { fill: color-mix(in srgb, var(--accent) 72%, #fff); }
+.bt-roof { fill: color-mix(in srgb, var(--accent) 30%, #f4efec); }
+.bt-curtain { fill: color-mix(in srgb, var(--accent) 52%, #fffdfb); }
+@keyframes bt-turn { to { transform: rotate(360deg); } }
+@keyframes bt-run { to { stroke-dashoffset: 12; } }
+@keyframes bt-chug { to { transform: translateY(-1.2px); } }
+@keyframes bt-bob { to { transform: rotate(-6deg); } }
+.bt-wheel { transform-box: fill-box; transform-origin: center; animation: bt-turn .7s linear infinite !important; }
+.bt-ties { animation: bt-run .35s linear infinite !important; }
+.bt-train { animation: bt-chug .35s steps(2, jump-none) infinite alternate !important; }
+.bt-ears { transform-box: fill-box; transform-origin: 50% 100%; animation: bt-bob .7s ease-in-out infinite alternate !important; }
+@media (prefers-reduced-motion: reduce) { .bunny-train * { animation-play-state: paused !important; } }
+* { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.muted { color: var(--muted); }
+/* T-2930: "Blueprint" on a blueprint's panel in the blueprint track's blue */
+.blueprint-tag { color: #2f62b3; font-weight: 600; }
+:root[data-shade="dark"] .blueprint-tag { color: #8fb6ec; }
+.big { font-size: 18px; font-weight: 700; }
+.small { font-size: 12px; }
+b, .b { font-weight: 700; }
+.num { font-variant-numeric: tabular-nums; }
+p { margin: 0; }
+
+#game { position: absolute; inset: 0; display: flex; }
+#dock-root, #topbar-root, #tools-root, #debug-root { display: contents; }
+
+/* ---------- buttons ---------- */
+
+button, input, select, textarea { font: inherit; color: inherit; }
+/* T-1292: a dropdown's list is drawn on the option's own background, white unless set */
+select, option, optgroup { background-color: var(--bg); color: var(--text); }
+.btn {
+  height: 28px; min-width: 28px; padding: 0 8px;
+  border: 1px solid var(--rule); border-radius: 0;
+  background: var(--bg); color: var(--text);
+  cursor: pointer; display: inline-grid; place-items: center;
+}
+.btn:hover { background: var(--shade); }
+.btn.on { background: var(--tint); border-color: var(--accent); position: relative; z-index: 1; }
+.btn.icon { width: 28px; padding: 0; }
+/* station upgrades (T-1281): outlined, dashed in the blueprint, filled when built */
+.upgrades { display: flex; gap: 6px; margin: 6px 0; }
+.btn.upgrade { color: var(--muted); }
+.btn.upgrade.planned { color: var(--text); border-style: dashed; border-color: var(--accent); }
+.btn.upgrade.on { color: var(--text); }
+.btn:disabled { color: var(--rule); cursor: default; background: var(--bg); }
+.btn.text { gap: 6px; grid-auto-flow: column; white-space: nowrap; }
+.btn.text svg { width: 14px; height: 14px; }
+/* T-2601: SwapLabel's two labels in one cell, the hidden one keeping its width */
+.swap-label { display: inline-grid; }
+.swap-label > * { grid-area: 1 / 1; text-align: center; }
+.swap-label > .off { visibility: hidden; }
+.group { display: inline-flex; }
+.group > .btn { white-space: nowrap; flex: none; }
+.group > .btn + .btn { margin-left: -1px; }
+/* T-1664: the speed slider opens under the fastest button; a slider speed shows on that button as text.
+   T-1665: the chosen speed is dimmed while the clock is held at the demand cap. */
+.group.speed { position: relative; }
+.btn.icon.rate { width: 36px; padding: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.btn.on.held { opacity: 0.55; }
+.slider.speed-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; margin: 0; width: 200px; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--rule); }
+svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5;
+      stroke-linejoin: round; stroke-linecap: round; display: block; }
+svg .solid { fill: currentColor; }
+svg .bg { fill: var(--bg); }
+svg .stroke2 { stroke-width: 2; }
+/* T-2959: the track-count icons are 20 px (even inside a 26 px button, so no half pixel) with 2-unit lines
+   4 units apart, which land on whole device pixels at 1, 1.25 and 1.5 */
+.tool-bar .btn.icon svg.tracks { width: 20px; height: 20px; stroke-width: 2; stroke-linecap: butt;
+  margin-top: -2px; /* undoes the 2 px padding-top that .tool-bar .group .btn gets for text, which sat the icon 1 px low */ }
+/* T-3321: the same icons in the Select tool's bar, whose buttons have no such padding */
+.blueprint-bar .btn.icon svg.tracks { width: 20px; height: 20px; stroke-width: 2; stroke-linecap: butt; }
+
+/* ---------- dock ---------- */
+
+#dock {
+  width: var(--dock-w); flex: none; height: 100%;
+  border-right: 1px solid var(--rule);
+  display: flex; flex-direction: column; min-height: 0; position: relative;
+}
+/* T-252: the tabs are icons (their names on hover), on the left; the saves button (T-251) and
+   the settings gear on the right */
+.tabs { display: flex; flex: none; background: var(--shade); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.tab {
+  flex: 1 1 0; min-width: 34px; height: 36px; padding: 0; margin-bottom: -1px;
+  border: 0; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+  background: var(--shade); color: var(--muted); cursor: pointer; display: grid; place-items: center;
+}
+.tab svg { width: 18px; height: 18px; }
+.tab svg .bg { fill: var(--shade); }
+.tab:hover { color: var(--text); }
+.tab.on { background: var(--bg); color: var(--text); border-bottom-color: var(--bg);
+          box-shadow: inset 0 3px 0 var(--accent); }
+.tab.on svg .bg { fill: var(--bg); }
+.tab.gear { flex: none; width: 36px; min-width: 0; border-right: 0; border-left: 1px solid var(--rule); }
+.settings-top { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.discord-link { text-decoration: none; margin-left: auto; color: #5865f2; }
+.donate { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.donate a { text-decoration: none; flex: none; }
+.donate span { line-height: 1.3; }
+.lang-row { margin: 0 0 4px; }
+.lang-row { display: flex; align-items: center; gap: 4px; }
+.lang-row .lang-icon { display: inline-flex; }
+.slider.lang-row { gap: 4px; }
+.slider.lang-row .lang-icon { min-width: 0; }
+.lang-row .purpose-filter { margin-left: 0; font-size: inherit; }
+.settings-top .login-text { margin-left: 4px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* T-908: the controls panel, over the map beside the dock's tab row */
+.help-panel { position: absolute; top: 36px; left: calc(100% + 1px); z-index: 20; width: 430px;
+  max-height: calc(100% - 48px); overflow-y: auto; padding: 4px 14px 12px; background: var(--bg);
+  border: 1px solid var(--rule); box-shadow: 0 2px 8px rgb(0 0 0 / 18%); }
+.help-panel h3 { font-size: inherit; margin: 10px 0 4px; }
+/* T-2603: the timetable chart (MareyChart.tsx), over the map beside the dock's foot */
+.marey { position: absolute; bottom: 10px; left: calc(100% + 10px); z-index: 20; padding: 6px 10px 4px; background: var(--bg);
+  border: 1px solid var(--rule); box-shadow: 0 2px 8px rgb(0 0 0 / 18%); max-width: calc(100vw - var(--dock-w) - 24px); overflow-x: auto; }
+.marey-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.marey-name { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* T-2665: the trains are one layer in .marey-scroll, moved by a transform as the clock runs */
+.marey-chart { position: relative; }
+.marey-chart svg { position: absolute; left: 0; top: 0; overflow: visible; stroke-width: 1; }
+.marey-plot { position: absolute; top: 0; overflow: hidden; }
+.marey-scroll { position: absolute; left: 0; top: 0; will-change: transform; }
+.marey-lit, .marey-over { pointer-events: none; }
+.marey-chart text { fill: var(--muted); stroke: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+.marey-chart .marey-stop { text-anchor: end; fill: var(--text); font-size: 12px; }
+.marey-chart .marey-time { text-anchor: middle; }
+.marey-grid { stroke: var(--rule); }
+.marey-tick { stroke: var(--shade); stroke-width: 1; }
+.marey-chart .run, .marey-stand { --run-ink: var(--run); stroke: var(--run-ink); }
+/* a dark line colour is lifted toward white on the dark panel, so navy and black lines stay visible */
+:root[data-shade="dark"] .marey-chart .run, :root[data-shade="dark"] .marey-stand { --run-ink: color-mix(in srgb, var(--run) 65%, #fff); }
+.marey-chart .run { fill: none; stroke-width: 1.6; pointer-events: none; }
+.marey-chart .run.on { stroke-width: 3.2; }
+.marey-chart .run-hit { fill: none; stroke: transparent; stroke-width: 9; pointer-events: stroke; }
+.marey-stand { stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
+/* T-2660: other lines' trains, quieter than the line's own; flat junctions and crossings as dashed rules */
+.marey-chart .run.other { stroke-width: 1; stroke-opacity: 0.55; }
+.marey-chart .run.other.on { stroke-width: 2.4; stroke-opacity: 1; }
+.marey-pass { --run-ink: var(--run); fill: var(--run-ink); stroke: var(--bg); stroke-width: 1; }
+:root[data-shade="dark"] .marey-pass { --run-ink: color-mix(in srgb, var(--run) 65%, #fff); }
+.marey-flat { stroke: var(--text); stroke-opacity: 0.4; stroke-dasharray: 4 3; }
+.marey-flat-mark .hit { fill: transparent; stroke: none; }
+.marey-flat-mark rect { fill: #fff; stroke: var(--net-ink); stroke-width: 1.5; }
+.marey-flat-mark path { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+.marey-past { fill: var(--bg); fill-opacity: 0.5; stroke: none; pointer-events: none; }
+.marey-now { stroke: var(--accent); stroke-width: 1.5; }
+.help-panel dl { display: grid; grid-template-columns: 170px 1fr; gap: 3px 12px; margin: 0; }
+.help-panel dt { color: var(--muted); }
+.help-panel dd { margin: 0; }
+
+/* The tab area has one fixed height whatever the tab, so the inspector never moves; only the
+   player's drag of the divider below it does (T-085). By default it is 36% of the dock but never
+   under 440 px, which holds the Build tab's tools, elevation, track rows and blueprint bar
+   (T-1128); the inspector keeps at least 160 px. */
+.pane { flex: none; height: var(--pane-h, max(36%, 440px)); max-height: calc(100% - 196px); overflow-y: auto; padding: 10px 14px 12px; }
+.dock-resize { position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; z-index: 5; cursor: col-resize; }
+.dock-grab { display: none; }
+.pane-resize { flex: none; height: 7px; margin: -3px 0 -4px; position: relative; z-index: 4; cursor: row-resize; }
+.dock-resize:hover, .pane-resize:hover, .dock-resize.on, .pane-resize.on { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+#inspector { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 16px;
+             border-top: 1px solid var(--rule); }
+body.resizing, body.resizing * { user-select: none; }
+
+.h { display: flex; align-items: baseline; font-weight: 700; margin: 14px 0 4px; }
+.pane > .h:first-child, #inspector > .h:first-child { margin-top: 0; }
+.h .right { margin-left: auto; font-weight: 400; }
+/* T-692: the line panel's rule between sections */
+.h.divided { border-top: 1px solid var(--rule); padding-top: 10px; margin-top: 12px; }
+.note { margin-top: 10px; }
+
+/* T-1237: no rules between rows within a section (trainworld/CLAUDE.md); the row height spaces them */
+.rows { list-style: none; margin: 0; padding: 0; }
+/* T-1802: a row of plain text is 24 px, one holding a stepper, button or box keeps 28 */
+.rows > li { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.rows > li:has(:where(.stepper, .btn:not(.mini), input, select, textarea)) { min-height: 28px; }
+.rows .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows .val { font-variant-numeric: tabular-nums; text-align: right; }
+/* T-751: the sentence under a refused train length, its button on the line below at the right */
+.rows > li.offer { flex-wrap: wrap; row-gap: 4px; padding: 2px 0 4px; }
+.rows > li.offer .grow { flex: 1 1 100%; overflow: visible; white-space: normal; }
+.rows > li.offer .btn { margin-left: auto; }
+.rows.pick > li { cursor: pointer; padding: 0 6px; margin: 0 -6px; user-select: none; }
+.rows.pick > li:hover { background: var(--shade); }
+.rows.pick > li.on { background: var(--tint); }
+.w-trains { width: 68px; }
+.w-num { width: 44px; }
+/* T-378: inter-region trips by train, car and plane */
+.w-mode { width: 36px; }
+.rows .val.w-mode .mode-icon { display: inline-flex; justify-content: flex-end; width: 100%; }
+.rows .val.w-mode svg { width: 14px; height: 14px; }
+.w-riders { width: 56px; }
+.w-near { width: 58px; white-space: nowrap; }
+/* T-670: the Lines list's city column, left aligned and cut to the room */
+.rows .val.w-city { width: 62px; flex: none; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sort-btn.val.w-city { justify-content: flex-start; width: 62px; }
+/* T-735, T-746: the Lines list. The name keeps about six characters (`.line-name`); the columns are
+   as wide as their figures, and the money column goes first when the dock is too narrow (each
+   width: the bullet, the columns before the name's 56 px and the 8 px gaps between them). */
+.lines-box { container-type: inline-size; container-name: lines; }
+.lines-box .w-riders { width: 40px; }
+.lines-box .w-linemoney { width: 56px; white-space: nowrap; }
+/* T-2730: as wide as its label; its figures are short */
+.lines-box .w-trains { width: 32px; }
+.lines-box .sort-btn.grow { min-width: 56px; }
+/* T-1818: a wide bullet takes room from the name, not from the columns, so they stay in line */
+.lines-box .rows .grow.line-name { min-width: 0; }
+/* T-2152: "calculating..." is wider than the riders column: it takes the room from the name, so
+   the right-aligned columns stay in line and Money keeps its place */
+.lines-box .rows .val.w-riders.pending { width: auto; white-space: nowrap; }
+/* T-2392: a pending line's label sits small above its old riders figure, inside the row's height */
+.rows .val.pending.stacked { display: flex; flex-direction: column; align-items: flex-end; line-height: 13px; }
+.rows .val.pending .pending-label { font-size: 11px; line-height: 11px; }
+.h .pending-note { margin-left: auto; font-weight: 400; font-size: 12px; }
+@container lines (max-width: 244px) { .lines-box .w-linemoney { display: none; } }
+@container lines (max-width: 310px) { .lines-box.with-city .w-linemoney { display: none; } }
+@container lines (max-width: 310px) { .lines-box.near-on .w-linemoney { display: none; } }
+@container lines (max-width: 376px) { .lines-box.with-city.near-on .w-linemoney { display: none; } }
+@container lines (max-width: 314px) { .lines-box.with-city.near-on .w-city { display: none; } }
+/* T-3020: the long words for million and billion make the figure columns wider (German, Russian and
+   Turkish by about 18 px each, French, Spanish and Portuguese by 8), and the drops come at a wider list */
+:root:lang(de), :root:lang(ru), :root:lang(tr) { --dock-w: clamp(344px, 26vw, 396px); }
+:root:lang(de) :is(.lines-box, .lines-box.with-city) .w-riders, :root:lang(ru) :is(.lines-box, .lines-box.with-city) .w-riders, :root:lang(tr) :is(.lines-box, .lines-box.with-city) .w-riders { width: 58px; }
+:root:lang(de) .lines-box .w-linemoney, :root:lang(ru) .lines-box .w-linemoney, :root:lang(tr) .lines-box .w-linemoney { width: 84px; }
+:root:lang(de) .w-num, :root:lang(ru) .w-num, :root:lang(tr) .w-num { width: 58px; }
+:root:lang(ru) .lines-box .w-trains { width: 44px; }
+:root:lang(ja) :is(.lines-box, .lines-box.with-city) .w-riders, :root:lang(ko) :is(.lines-box, .lines-box.with-city) .w-riders, :root:lang(zh) :is(.lines-box, .lines-box.with-city) .w-riders { width: 48px; }
+:root:lang(ja) .lines-box .w-linemoney, :root:lang(ko) .lines-box .w-linemoney, :root:lang(zh) .lines-box .w-linemoney { width: 62px; }
+:root:lang(ja) .w-num, :root:lang(ko) .w-num, :root:lang(zh) .w-num { width: 48px; }
+:root:lang(fr) :is(.lines-box, .lines-box.with-city) .w-riders, :root:lang(es) :is(.lines-box, .lines-box.with-city) .w-riders, :root:lang(pt) :is(.lines-box, .lines-box.with-city) .w-riders { width: 48px; }
+:root:lang(fr) .lines-box .w-linemoney, :root:lang(es) .lines-box .w-linemoney, :root:lang(pt) .lines-box .w-linemoney { width: 70px; }
+:root:lang(fr) .w-num, :root:lang(es) .w-num, :root:lang(pt) .w-num { width: 48px; }
+@container lines (max-width: 290px) { :root:lang(de) .lines-box .w-linemoney, :root:lang(ru) .lines-box .w-linemoney, :root:lang(tr) .lines-box .w-linemoney { display: none; } }
+@container lines (max-width: 356px) { :root:lang(de) .lines-box:is(.with-city, .near-on) .w-linemoney, :root:lang(ru) .lines-box:is(.with-city, .near-on) .w-linemoney, :root:lang(tr) .lines-box:is(.with-city, .near-on) .w-linemoney { display: none; } }
+@container lines (max-width: 422px) { :root:lang(de) .lines-box.with-city.near-on .w-linemoney, :root:lang(ru) .lines-box.with-city.near-on .w-linemoney, :root:lang(tr) .lines-box.with-city.near-on .w-linemoney { display: none; } }
+@container lines (max-width: 360px) { :root:lang(de) .lines-box.with-city.near-on .w-city, :root:lang(ru) .lines-box.with-city.near-on .w-city, :root:lang(tr) .lines-box.with-city.near-on .w-city { display: none; } }
+@container lines (max-width: 268px) { :root:lang(fr) .lines-box .w-linemoney, :root:lang(es) .lines-box .w-linemoney, :root:lang(pt) .lines-box .w-linemoney { display: none; } }
+@container lines (max-width: 334px) { :root:lang(fr) .lines-box:is(.with-city, .near-on) .w-linemoney, :root:lang(es) .lines-box:is(.with-city, .near-on) .w-linemoney, :root:lang(pt) .lines-box:is(.with-city, .near-on) .w-linemoney { display: none; } }
+@container lines (max-width: 400px) { :root:lang(fr) .lines-box.with-city.near-on .w-linemoney, :root:lang(es) .lines-box.with-city.near-on .w-linemoney, :root:lang(pt) .lines-box.with-city.near-on .w-linemoney { display: none; } }
+@container lines (max-width: 338px) { :root:lang(fr) .lines-box.with-city.near-on .w-city, :root:lang(es) .lines-box.with-city.near-on .w-city, :root:lang(pt) .lines-box.with-city.near-on .w-city { display: none; } }
+/* T-1791: a line group's row (chevron, its lines' chips, its name) and its lines indented under it;
+   a dragged row's target outlined */
+/* T-1818: the figure columns never shrink, and a group's row has the same gaps as a line's, so the
+   three columns stand in one place on every row */
+.lines-box .rows > li > .val { flex: none; }
+.lines-box .chevron { margin: 0 -6px 0 -6px; }
+.lines-box .chevron svg { width: 12px; height: 12px; }
+.lines-box .chevron.open svg { transform: rotate(90deg); }
+.lines-box .group-chips { display: flex; gap: 2px; flex: none; max-width: 45%; overflow-x: clip; }
+.lines-box .rows > li.in-group { padding-left: 24px; }
+.lines-box .rows > li .name-edit { min-width: 56px; }
+.lines-box .rows.dragging > li { cursor: grabbing; }
+.lines-box .rows > li.drop-on { box-shadow: inset 0 0 0 2px var(--accent); }
+.lines-box .rows > li.dragged { opacity: 0.5; }
+.row-ghost { position: fixed; z-index: 50; pointer-events: none; display: flex; align-items: center; gap: 6px; padding: 3px 8px;
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.25); }
+/* T-1791 stage 2: the group view */
+.title .group-chips { display: flex; gap: 2px; flex: none; }
+.group-copy { display: flex; gap: 4px; margin: 0 0 8px; }
+.group-diagram { padding-bottom: 4px; }
+.group-diagram .group-col.idle, .group-bullet.idle .chip:not(.idle) { opacity: 0.7; }
+/* T-1809: the diagram, its bullets and the names are placed by groupLayout's y */
+.group-body { position: relative; }
+.group-body > svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; stroke: none; stroke-width: 1; }
+.group-bullet { position: absolute; z-index: 2; display: flex; }
+.group-bullet.float { z-index: 3; }
+.group-names { position: absolute; top: 0; right: 0; }
+.group-name { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 2px; white-space: nowrap; }
+.group-name > .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.group-name > .stop-more { flex: none; width: 10px; font-size: 12px; text-align: center; color: var(--muted); }
+.group-name > .stop-chips2 { flex: none; display: grid; grid-template-rows: 16px 16px; gap: 2px; justify-items: start; }
+.group-name:hover { background: var(--shade); }
+.group-diagram .group-row { fill: transparent; }
+.group-diagram .group-row:hover { fill: var(--shade); }
+.group-diagram .group-cross { cursor: pointer; }
+.group-diagram .pill { fill: #fff; stroke: var(--net-ink); stroke-width: 2; }
+.group-diagram .pill.idle { opacity: 0.7; }
+.group-diagram .pill.pass { stroke-opacity: 0.4; }
+.group-diagram .tick, .group-diagram .ghost { fill: #fff; stroke: var(--net-ink); stroke-width: 1; }
+.group-diagram .ghost { opacity: 0; }
+.group-diagram .hit { fill: transparent; }
+.group-diagram .dot { opacity: 0; }
+.group-diagram .group-cell.edit { cursor: pointer; }
+.group-diagram .group-cell.edit:hover .dot { opacity: 1; }
+.group-diagram .group-cell.edit:hover .ghost { opacity: 0.7; }
+.group-diagram .group-cell.edit:hover .pill.pass { stroke-opacity: 1; }
+/* T-1818: "Part of [pill] group"; the top margin keeps the pill clear of the sticky title's 6 px of padding */
+.line-group { display: flex; align-items: center; gap: 6px; min-height: 28px; margin-top: 6px; color: var(--muted); white-space: nowrap; }
+.line-group > .muted { flex: none; }
+.line-group .group-pill { flex: 0 1 auto; }
+.line-group > .btn { margin-left: auto; }
+.sub.flush { margin-left: 0; }
+/* T-1813: a group's bullet, see-through, outlined and lettered in its colour */
+.group-pill { display: inline-block; vertical-align: middle; flex: none; min-width: 0; max-width: 100%; height: 20px; padding: 0 7px; box-sizing: border-box;
+  border: 2px solid var(--c); border-radius: 999px; color: var(--c); background: transparent;
+  font-size: 12px; font-weight: 700; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-pill.lg { height: 30px; padding: 0 11px; font-size: 16px; line-height: 26px; }
+.group-pill.link { cursor: pointer; }
+.group-pill-text { position: relative; }
+.lines-box .group-row .group-pill { max-width: 45%; min-width: 28px; flex: 0 1 auto; }
+.lines-box .rows > li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.lines-box .rows > li.drop-after, .rows.stations > li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.rows.stations > li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.rows.stations.dragging > li { cursor: grabbing; }
+.rows.stations > li.dragged { opacity: 0.5; }
+.lines-box.with-city .w-riders { width: 36px; }
+/* T-550: the Money tab's Cities section: name, split bar, train rides a day, net money a day */
+.w-citybar { width: 64px; }
+.w-money { width: 76px; white-space: nowrap; }
+.w-points { width: 52px; white-space: nowrap; }
+.rows.cities .w-riders, .rows.cities .w-money, .rows.cities .w-points, .rows.cities .city-bar { flex: none; white-space: nowrap; }
+.rows.cities .city-star { display: inline-flex; flex: none; color: var(--accent, currentColor); }
+.rows.cities .city-star svg { width: 13px; height: 13px; }
+.rows.cities .city-bar { display: block; width: 44px; }
+/* T-684: room for the points column and the name. T-2680: one grid for the heads and every row, so a column is
+   as wide as its widest cell, its head included: a head longer in another language (ja ポイント) widens its
+   column on every row instead of running into the next */
+.cities-box { display: grid; grid-template-columns: minmax(0, 1fr) repeat(5, auto); }
+.cities-box > .sort-head, .cities-box > .rows.cities, .cities-box > .rows.cities > li { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; column-gap: 0; }
+.cities-box .grow { grid-column: 1; }
+.cities-box .sort-btn.grow { grid-column: 1 / 3; }
+.cities-box .city-star { grid-column: 2; margin-left: 8px; }
+.cities-box :is(.w-citybar, .city-bar) { grid-column: 3; margin-left: 8px; justify-self: end; }
+.cities-box .w-citybar { width: auto; min-width: 44px; }
+.cities-box .w-riders { grid-column: 4; margin-left: 8px; width: auto; min-width: 40px; }
+/* T-2739: the Profit column as wide as its widest figure, as the others */
+.cities-box .w-money { grid-column: 5; margin-left: 8px; width: auto; min-width: 40px; }
+.cities-box .w-points { grid-column: 6; margin-left: 8px; width: auto; min-width: 40px; }
+/* T-693: about six characters of a name kept (60 px with the ellipsis); a narrower list drops the
+   star, then the money (each width: the columns, their 8 px gaps and that name) */
+.cities-box { container-type: inline-size; container-name: cities; }
+/* T-3020: the long words for million and billion widen the figure columns, so the same drops come at
+   a wider list. The bar goes first (350 px in German, Russian and Turkish, 330 in French, Spanish and
+   Portuguese), then the star and the money 20 px earlier. */
+@container cities (max-width: 296px) { :root:lang(de) .cities-box .rows.cities .city-star, :root:lang(ru) .cities-box .rows.cities .city-star, :root:lang(tr) .cities-box .rows.cities .city-star { display: none; } }
+@container cities (max-width: 275px) { :root:lang(de) .cities-box .c-money, :root:lang(ru) .cities-box .c-money, :root:lang(tr) .cities-box .c-money { display: none; } }
+@container cities (max-width: 350px) { :root:lang(de) .cities-box :is(.w-citybar, .city-bar), :root:lang(ru) .cities-box :is(.w-citybar, .city-bar), :root:lang(tr) .cities-box :is(.w-citybar, .city-bar) { display: none; } }
+@container cities (max-width: 330px) { :root:lang(fr) .cities-box :is(.w-citybar, .city-bar), :root:lang(es) .cities-box :is(.w-citybar, .city-bar), :root:lang(pt) .cities-box :is(.w-citybar, .city-bar) { display: none; } }
+@container cities (max-width: 276px) { .cities-box .rows.cities .city-star { display: none; } }
+@container cities (max-width: 255px) { .cities-box .c-money { display: none; } }
+/* T-1438: beside the city view on a phone, then the points and the bar */
+@container cities (max-width: 215px) { .cities-box .w-points { display: none; } }
+@container cities (max-width: 167px) { .cities-box .w-citybar, .cities-box .city-bar { display: none; } }
+.rows.cities .bar { height: 10px; }
+/* the World row and its divider evenly spaced: as far from the head's rule, the divider and the first city */
+.rows.pick.cities > li.total { margin: 6px -6px 2px; padding-bottom: 2px; border-bottom: 1px solid var(--rule); }
+.rows.cities .val.neg, .money-neg { color: var(--bad); }
+.group.scope .btn { display: inline-flex; align-items: center; gap: 4px; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group.scope .btn svg { width: 14px; height: 14px; flex: none; }
+/* T-310: the Lines and Stations lists' column headers, one button a column; the sorted one is dark
+   and has an arrow (beside the label, before it on the number columns so the label keeps its place) */
+.sort-head { display: flex; align-items: center; gap: 8px; min-height: 22px; border-bottom: 1px solid var(--rule); position: relative; }
+.sort-btn { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none;
+            font-size: 12px; color: var(--muted); cursor: pointer; }
+.sort-btn.grow { flex: 1; min-width: 0; }
+.sort-btn.val { flex: none; justify-content: flex-end; }
+/* T-332: the Near header with no distance column under it sits beside "Name" instead */
+.sort-btn.near-off { position: absolute; left: 58px; }
+.sort-btn:hover, .sort-btn.on { color: var(--text); }
+.sort-arrow { display: none; width: 0; height: 0; border-left: 3.5px solid transparent; border-right: 3.5px solid transparent; }
+.sort-arrow.up { display: block; border-bottom: 5px solid currentColor; }
+.sort-arrow.down { display: block; border-top: 5px solid currentColor; }
+.hbar { display: inline-block; height: 8px; background: var(--accent); vertical-align: middle; }
+.pane-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px; }
+/* T-1134: an inspector's buttons, in a row under its header */
+.inspector-actions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin: 8px 0; gap: 6px 8px; }
+
+/* a hairline slider (the settings pane's) */
+.slider { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.slider:has(> .group) { flex-wrap: wrap; }
+/* T-2942: the superholiday days belong to the day row above them */
+.slider.day-super { margin-top: 2px; }
+.slider span { min-width: 3.6em; }
+.slider .slider-pct { flex: none; width: 4ch; min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.slider input { flex: 1; min-width: 0; appearance: none; height: calc(15 * var(--px)); background: transparent; margin: 0; }
+.slider input::-webkit-slider-runnable-track { height: calc(3 * var(--px)); background: var(--rule); }
+.slider input::-moz-range-track { height: calc(3 * var(--px)); background: var(--rule); }
+.slider input::-webkit-slider-thumb { appearance: none; width: calc(3 * var(--px)); height: calc(15 * var(--px)); margin-top: calc(-6 * var(--px)); background: var(--accent); }
+.slider input::-moz-range-thumb { width: calc(3 * var(--px)); height: calc(15 * var(--px)); border: 0; border-radius: 0; background: var(--accent); }
+/* T-804: the two colour pickers of the bubbles' train-share ramp */
+.pickers { display: flex; gap: 16px; margin-top: 8px; }
+.pickers label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.pickers input { appearance: none; width: 22px; height: 22px; padding: 0; margin: 0; border: 1px solid var(--rule); background: none; cursor: pointer; }
+.pickers input::-webkit-color-swatch-wrapper { padding: 0; }
+.pickers input::-webkit-color-swatch { border: 0; }
+.pickers input::-moz-color-swatch { border: 0; }
+.checks { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.stack { display: grid; justify-items: start; gap: 6px; }
+.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { appearance: none; width: calc(14 * var(--px)); height: calc(14 * var(--px)); margin: 0; flex: none;
+               border: 1px solid var(--rule); background: var(--bg); display: grid; place-items: center; }
+.check input:checked { border-color: var(--accent); background: var(--tint); }
+.check input:checked::after { content: ""; width: calc(6 * var(--px)); height: calc(6 * var(--px)); background: var(--accent); }
+
+.chip {
+  display: inline-grid; place-items: center; flex: none;
+  min-width: 20px; width: max-content; height: 20px; padding: 0 5px; box-sizing: border-box; border-radius: 999px;
+  background: var(--c); color: var(--ct, #fff);
+  font-size: 12px; font-weight: 700; line-height: 1;
+}
+/* T-745: a measured bullet draws its own circle in its SVG (ui/bullet.ts); the span's background is
+   only for a symbol that could not be measured */
+.chip:has(> svg), .chip.sm:has(> svg), .chip.lg:has(> svg) { background: none; padding: 0; }
+.chip > svg { display: block; overflow: visible; stroke: none; }
+.chip > svg rect, .chip > svg path { fill: var(--c); }
+/* T-3319: a diamond's stroke, in its fill colour, rounds its corners */
+.chip > svg path { stroke: var(--c); stroke-linejoin: round; }
+/* T-1464, T-3319: a square bullet before it is measured */
+.chip.square { border-radius: 3px; }
+.chip.lg.square { border-radius: 5px; }
+/* T-3319: the shape choices in the line editor and Settings, in the line's colour or the text's */
+.shape-icon { display: block; overflow: visible; fill: var(--c, currentColor); stroke: none; }
+.shape-icon path { stroke: var(--c, currentColor); stroke-linejoin: round; }
+.group.shapes .btn { display: grid; place-items: center; min-width: 32px; }
+.chip > svg text { fill: currentColor; }
+/* T-1792: a line with no trains at its level now */
+.chip.idle { opacity: 0.7; filter: grayscale(0.3); }
+.chip.link { cursor: pointer; }
+/* T-2016: a row of bullets, 2 px apart whatever their widths and whatever gap the row around them keeps */
+.bullets { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.place-link { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+/* T-521: a station row keeps at least 3 bullets, its name gives way */
+.rows.stations > li { gap: 4px; }
+.rows.stations .grow { flex: 1 1 0; min-width: 0; }
+.rows.stations .w-num, .rows.stations .w-near { flex: none; }
+/* T-1200: the empty row that draws more stations as it scrolls into view */
+.rows.pick > li.rows-more { min-height: 1px; height: 1px; cursor: default; background: none; }
+.chips { position: relative; display: inline-flex; align-items: center; gap: 2px; flex: none; overflow-x: clip; }
+.chips-more { position: absolute; top: 50%; transform: translateY(-50%); width: 10px; font-size: 12px; line-height: 16px; text-align: center; color: var(--muted); }
+.chip.lg { min-width: 30px; height: 30px; padding: 0 7px; font-size: 18px; }
+.chip.sm { min-width: 16px; height: 16px; padding: 0 4px; font-size: 12px; }
+/* T-886: a train's next stops, each name followed by the bullets of the lines to change to */
+.train-stops .stop-name { display: flex; align-items: center; gap: 3px; }
+.train-stops .stop-name .name { flex: 0 1 auto; min-width: 24px; overflow: hidden; text-overflow: ellipsis; margin-right: 3px; }
+.train-stops .stop-name .chip { flex: none; }
+.h .one-rider-acts { display: inline-flex; align-self: center; margin-left: auto; font-weight: 400; }
+.one-rider .grow { flex: none; }
+.one-rider .val { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.one-rider .val .mk { margin-right: 4px; }
+.badge-edit { display: inline-flex; padding: 0; border: 0; background: transparent; cursor: pointer; flex: none; font: inherit; }
+.badge-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.line-list-actions, .line-stop-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.line-identity input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--rule); }
+.line-stop-actions { justify-content: flex-start; margin-top: 12px; }
+.top-speed .val .btn { margin-left: 8px; }
+.improvements { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.improvements .improve { height: auto; min-height: 28px; padding: 3px 8px; grid-auto-flow: row; gap: 0; max-width: 100%; white-space: normal; text-align: center; }
+.improve-price { font-size: 0.85em; color: var(--muted); }
+.line-identity { margin-top: 8px; }
+.line-identity label { display: flex; align-items: center; gap: 8px; }
+.line-identity input { width: 100px; min-width: 0; padding: 3px 5px; }
+.line-identity .line-shape { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.btn.danger { color: var(--bad); }
+.confirmation { width: min(380px, calc(100vw - 40px)); box-sizing: border-box; padding: 20px;
+  border: 1px solid var(--rule); background: var(--bg); color: var(--text); font: inherit; }
+.confirmation::backdrop { background: rgb(0 0 0 / 28%); }
+.confirmation h2 { font-size: 18px; margin: 0 0 12px; }
+.confirmation p { margin: 0 0 18px; }
+.confirmation-lines { list-style: none; margin: -6px 0 18px; padding: 0; display: grid; gap: 8px; }
+.confirmation-lines li { display: flex; align-items: baseline; gap: 8px; }
+.confirmation-lines .chip { flex: none; }
+.confirmation-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+
+/* ---------- inspector ---------- */
+
+.title { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+/* T-1812: the panel's title row stays at the top of the scrolled panel; it covers the panel's padding
+   (12 px above, 14 px at the sides) and gives back the 6 px it takes below, so nothing moves */
+#inspector > .title:first-child { position: sticky; top: -12px; z-index: 3; background: var(--bg); margin: -12px -14px -6px; padding: 12px 14px 6px; }
+.title .name { font-size: 18px; font-weight: 700; flex: 1; min-width: 0; }
+.name-edit { flex: 1; min-width: 0; font: inherit; font-size: 18px; font-weight: 700; color: var(--text);
+             background: var(--bg); border: 1px solid var(--accent); border-radius: 0; padding: 0 4px; height: 30px; }
+.sub { margin: 2px 0 0 40px; }
+.title:has(.name:first-child) + .sub { margin-left: 0; }
+.swatch { width: 28px; height: 28px; padding: 0; border: 1px solid var(--rule); border-radius: 0;
+          background: var(--c); box-shadow: inset 0 0 0 3px var(--bg); cursor: pointer; flex: none; }
+.st-glyph { width: 30px; height: 30px; display: grid; place-items: center; flex: none; }
+.st-glyph::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: #fff;
+                   border: 2.5px solid var(--net-ink); }
+
+table.sched { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+table.sched th { font-weight: 400; color: var(--muted); font-size: 12px; text-align: right; padding: 0 0 2px; }
+table.sched th:first-child, table.sched td:first-child { text-align: left; }
+/* T-1159: 2 px a side, so the demand rows' controls sit as far apart as the Trains and Train length rows' under the table */
+table.sched td { text-align: right; padding: 2px 0; }
+table.sched + .rows { margin-top: 4px; }
+table.sched tr.now td:first-child { font-weight: 700; }
+/* T-692: every cell one line; the demand column takes what the others leave and is cut with an ellipsis */
+table.sched th, table.sched td { white-space: nowrap; }
+table.sched th:not(:first-child), table.sched td:not(:first-child) { padding-left: 10px; }
+table.sched td:first-child { width: 100%; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* T-625, T-679: a count refused for cash, a headway shorter than the track allows; the headway a
+   line runs at when its track holds it just over the one set (no readout of it); a refused edit's control shakes once */
+table.sched .bad { color: var(--bad); }
+.shake { display: inline-block; animation: shake 300ms linear !important; }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
+.stepper.shake { display: inline-flex; }
+@media (prefers-reduced-motion: reduce) { .shake { animation: none !important; } }
+/* T-472, T-477: text the player should act on, and each demand level's crowding */
+.crowd-warn { color: var(--warn); }
+.crowd-bad { color: var(--bad); }
+.crowd-dot { display: inline-block; position: relative; width: 8px; height: 8px; border-radius: 50%; margin: 0 6px 0 3px; vertical-align: 1px; outline: 1px solid transparent; outline-offset: 1px; }
+/* T-2271: the hover reaches 6 px round the dot (to the row's left edge, short of the level's name) */
+.crowd-dot::before { content: ""; position: absolute; inset: -6px -5px -6px -6px; }
+/* T-2794: a finger on the dot landed on the pane's resize strip beside it, so the tutorial's crowding step would not tick */
+@media (pointer: coarse) { .crowd-dot { z-index: 5; } .crowd-dot::before { inset: -11px; } }
+.rows.sub-rows > li { padding-left: 12px; color: var(--muted); min-height: 24px; }
+svg.junction-map { display: block; margin: 8px auto 2px; width: 112px; height: 112px; stroke-width: initial; }
+.complex-map { margin: 8px 0 4px; }
+.complex-map svg { stroke: none; stroke-width: 1; stroke-linecap: butt; }
+.complex-map-platform { cursor: pointer; }
+.complex-map text { font-size: 12px; stroke: var(--map-land); stroke-width: 3px; stroke-linejoin: round; paint-order: stroke; }
+.complex-map-label { fill: var(--map-ink); }
+.complex-map-scale { fill: var(--muted); }
+/* T-249: back to the complex from a station opened on its own, a link in the subtitle */
+.sub .btn.inline { display: inline; min-height: 0; height: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
+/* T-246, T-250: the complex's lines on top, waiting now and boardings a day */
+.complex-stations { margin-top: 6px; }
+.complex-stations .val { min-width: 40px; }
+.complex-stations .val.bad { color: var(--bad); }
+/* T-3154, T-3173: a station's row: name, a Lines column of up to 3 bullets and a "+", figures, terminal button */
+.rows.pick.complex-stations > li { padding-top: 1px; padding-bottom: 1px; }
+.complex-stations .terminal-slot { flex: none; width: 28px; display: inline-flex; justify-content: flex-end; }
+.complex-stations .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.complex-stations .lines-col { flex: none; width: 66px; display: flex; align-items: center; gap: 2px; overflow: hidden; }
+.complex-stations .lines-col .stop-more { flex: none; width: 10px; font-size: 12px; text-align: center; color: var(--muted); }
+.rows.pick.complex-stations > li.cols { cursor: default; background: none; min-height: 20px; }
+.moves > li { align-items: flex-start; padding: 3px 0; }
+.board-bar { position: relative; display: block; height: 8px; margin: 8px 0 6px; border: 1px solid var(--rule); background: var(--bg); }
+.board-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.board-bar .fill.over { background: var(--warn); }
+.board-bar .seats { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--text); }
+.rows .grow.chip-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.moves .what { display: flex; flex-direction: column; gap: 1px; }
+/* T-164: a station's waiting riders, a line and direction a row */
+.rows.waiting > li { align-items: flex-start; padding: 3px 0; }
+.rows.waiting .what { display: flex; flex-direction: column; gap: 1px; }
+.rows.waiting .bad, .rows.waiting .val { color: var(--bad); }
+table.ledger { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; margin-top: 6px; }
+table.ledger th { font-weight: 400; color: var(--muted); font-size: 12px; text-align: right; padding: 0 0 2px; }
+table.ledger td { text-align: right; padding: 2px 0 2px 8px; white-space: nowrap; }
+table.ledger th:not(:first-child) { padding-left: 8px; }
+/* T-3020: a long label wraps so the figures keep their room */
+table.ledger td:first-child { text-align: left; padding-left: 0; white-space: normal; }
+table.ledger tr.b td { font-weight: 700; }
+/* T-447: the money history charts; T-1111: revenue blue, expenses red, in every theme */
+:root { --revenue: #3a78c9; --expense: #c8423b; }
+:root[data-shade="dark"] { --revenue: #6aa2ea; --expense: #ec7b7b; }
+.hist-title { display: flex; align-items: baseline; margin: 8px 0 2px; }
+.hist-title .right { margin-left: auto; }
+.hist-title .hist-fares { color: var(--revenue); }
+.hist-title .hist-costs { color: var(--expense); }
+rect.hist-oneoff, path.hist-oneoff { fill: color-mix(in srgb, var(--expense) 28%, var(--bg)); stroke: none; }
+path.hist-oneoff.cap { fill: var(--expense); }
+svg.hist { width: 100%; height: auto; stroke-width: 1.5; }
+.hist-axis { stroke: var(--rule); stroke-width: 1; }
+.hist-switches { display: inline-flex; gap: 6px; }
+/* T-864: the fare curve and its two draggable nodes */
+svg.fare-graph { width: 100%; height: auto; margin: 4px 0 6px; user-select: none; touch-action: none; stroke: none; }
+.fg-grid { stroke: var(--rule); stroke-width: 1; stroke-opacity: .5; }
+.fg-axis { stroke: var(--rule); stroke-width: 1; }
+.fg-label { fill: var(--muted); font-size: 11px; }
+@media (max-width: 600px) and (min-height: 560px) { .fg-label { font-size: var(--fg-fs, 11px); } }
+.fg-curve { fill: none; stroke: var(--accent); stroke-width: 1.8; }
+.fg-hover { fill: transparent; cursor: crosshair; }
+.fg-guide { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 2; pointer-events: none; }
+.fg-dot { fill: var(--accent); pointer-events: none; }
+.fg-node { cursor: move; }
+.fg-hit { fill: transparent; }
+.fg-knob { fill: var(--accent); stroke: var(--bg); stroke-width: 1.5; }
+.fg-node:hover .fg-knob, .fg-knob.sel { stroke: var(--text); }
+/* T-1143: the base fare drags up and down only; the arrows around a node the ways it drags */
+.fg-node.ns, .fg-drag-y .fg-node, .fg-drag-y .fg-hover { cursor: ns-resize; }
+.fg-drag-x .fg-node, .fg-drag-x .fg-hover { cursor: ew-resize; }
+.fg-hint { fill: var(--muted); fill-opacity: .7; pointer-events: none; }
+/* T-1112: a node past the plot, an arrow at its edge; the word between a node's two steppers;
+   T-1130: the undo button beside the zoom */
+.fg-buttons { display: inline-flex; gap: 6px; }
+/* T-2365: the city view's trips by length (ui/inspector/TripGraph.tsx): soft fills, each layer's top a
+   line in its colour behind a thin gap in the panel's, faint grid at the labelled lengths */
+svg.trip-graph { display: block; width: 100%; height: auto; margin: 2px 0 4px; user-select: none; stroke: none; }
+.tg-grid { stroke: var(--rule); stroke-width: 1; stroke-opacity: .5; }
+.tg-axis { stroke: var(--rule); stroke-width: 1; }
+.tg-area { fill-opacity: .8; }
+:root[data-shade="dark"] .tg-area { fill-opacity: .9; }
+.tg-gap { fill: none; stroke: var(--bg); stroke-width: 2.6; stroke-linejoin: round; }
+.tg-edge { fill: none; stroke-width: 1.3; stroke-linejoin: round; }
+.tg-label { fill: var(--muted); font-size: 11px; }
+.tg-band { fill: var(--text); fill-opacity: .1; pointer-events: none; }
+.tg-hover { fill: transparent; cursor: crosshair; }
+.fg-off { cursor: pointer; }
+.fg-arrow { fill: var(--accent); stroke: var(--bg); stroke-width: 1; }
+.fg-off:hover .fg-arrow { stroke: var(--text); }
+rect.hist-fares { fill: var(--revenue); stroke: none; }
+rect.hist-costs { fill: var(--expense); stroke: none; }
+.hist-rides { fill: var(--accent); stroke: none; }
+rect.now { fill-opacity: .45; }
+.hist-col { fill: var(--text); fill-opacity: 0; stroke: none; }
+.hist-col:hover { fill-opacity: .07; }
+.hist-x { display: flex; justify-content: space-between; margin-top: 2px; }
+/* T-2684: a label at the column each year starts in, over the history's dates */
+.hist-years { position: relative; height: 1.2em; margin-top: 2px; }
+.hist-years span { position: absolute; top: 0; padding-left: 3px; border-left: 1px solid currentColor; white-space: nowrap; }
+.hist-years span.late { transform: translateX(-100%); padding: 0 3px 0 0; border-left: 0; border-right: 1px solid currentColor; }
+/* T-264: holidays under the history, SkyBanner.tsx HOLIDAY_COLOUR; going out and coming back paler */
+.hist-hols { display: block; width: 100%; height: 4px; margin-top: 3px; }
+.hist-hol { fill: #ff5fa2; stroke: none; }
+.hist-hol.rush { fill: #ffafd0; }
+
+.stepper { display: inline-flex; vertical-align: middle; }
+.stepper .btn { height: 24px; min-width: 24px; width: 24px; padding: 0; }
+.stepper .v { min-width: 38px; height: 24px; display: grid; place-items: center;
+              border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+              font-variant-numeric: tabular-nums; }
+.stepper.wide .v { min-width: 52px; }
+.stepper button.v, .stepper input.v { font: inherit; color: var(--text); background: var(--bg); border-left: 0; border-right: 0; border-radius: 0; padding: 0 4px; box-sizing: border-box; margin: 0; }
+.stepper button.v { cursor: text; }
+.stepper button.v:hover { background: var(--shade); }
+.stepper input.v { width: 52px; min-width: 0; text-align: center; border-top-color: var(--accent); border-bottom-color: var(--accent); outline: 0; }
+/* T-1234: the fare rows, one grid so the steppers line up; no rules between them, no row wraps.
+   A stretch's end is a typed box alone, between its "0-" and its unit. */
+.rows.fare-rows { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-auto-rows: minmax(28px, auto);
+  align-items: center; column-gap: 6px; white-space: nowrap; }
+.rows.fare-rows > li { display: contents; }
+.fare-rows .fr-what { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.fare-rows .stepper.wide .v { min-width: 56px; }
+.fare-rows .fr-what .v { height: 24px; min-width: 36px; padding: 0 4px; box-sizing: border-box; margin: 0;
+  display: grid; place-items: center; font: inherit; font-variant-numeric: tabular-nums; color: var(--text);
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 0; }
+.fare-rows .fr-what button.v { cursor: text; }
+.fare-rows .fr-what button.v:hover { background: var(--shade); }
+.fare-rows .fr-what input.v { width: 44px; text-align: center; border-color: var(--accent); outline: 0; }
+/* T-2679: the reference country's 1.00x, where the other countries' stepper value sits */
+.fare-rows .fr-ref { justify-self: center; font-variant-numeric: tabular-nums; }
+
+/* stops strip, drawn in the line's colour */
+/* T-2623: the plain list's bar, dots and stretches are shifted half a pixel so they are painted
+   between device pixels as the related lines view's drawing is (its SVG is not snapped to the grid): the
+   same soft edges and the same ring weight in both views */
+.stops { list-style: none; margin: 0; padding: 0; --soft: 0.5px; }
+.stops li { position: relative; display: flex; align-items: center; gap: 6px; min-height: 25px; padding-left: 28px; }
+.stops li::before { content: ""; position: absolute; left: 7px; width: 6px; top: 0; bottom: 0; background: var(--c); transform: translateX(var(--soft)); }
+.stops li:first-child::before { top: 50%; }
+.stops li:last-child::before { bottom: 50%; }
+/* T-1886: the dot centred on the bar's middle (10px) by a transform, since a scaled border is
+   floored to whole pixels and an offset worked out from its width lands left of the bar */
+.stops li::after { content: ""; position: absolute; left: 10px; top: 50%; transform: translate(calc(-50% + var(--soft)), -50%); box-sizing: content-box;
+                   width: 8px; height: 8px; border-radius: 50%; background: #fff; border: 2px solid var(--net-ink); }
+.stops li.xfer::after { width: 10px; height: 10px; }
+/* T-3041: a stop served one way is filled on the loop's side only */
+.stops li.oneway::after { background: linear-gradient(90deg, var(--c) 50%, #fff 50%); }
+/* T-646: the stations a line passes, offered as stops (no dot), and those about to be added (faint dot) */
+.stops li.passed::after { display: none; }
+.stops li.adding { color: var(--muted); }
+.stops li.guess-out { display: none; }
+.stops li.adding::after { opacity: 0.45; }
+/* T-1894: while stops are edited, a stop's dot (or a passed station's row in related lines) is a click target */
+.stops .stop-hit { position: absolute; left: 0; top: 50%; width: 20px; height: 20px; margin-top: -10px; border-radius: 50%; cursor: pointer; z-index: 3; }
+.stops .stop-hit:hover { box-shadow: inset 0 0 0 2px var(--bad); }
+.stops .stop-hit.add:hover { box-shadow: inset 0 0 0 2px var(--text); }
+.stops.related-rows .stop-hit { left: calc(var(--spine) - 10px); }
+/* T-2275: a ferry line's ports moved by dragging their rows */
+.stops.ferry-ports.movable li { cursor: grab; user-select: none; }
+.stops.ferry-ports.dragging li { cursor: grabbing; }
+.stops.ferry-ports li.dragged { opacity: 0.5; }
+.stops.ferry-ports li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.stops.ferry-ports li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.stops.ferry-ports .n { flex: none; }
+/* T-2895: a line's stops moved the same way while they are edited; a loop's first and closing stop stay */
+.order li[data-stop]:not(.pinned) { cursor: grab; user-select: none; }
+.order.dragging li { cursor: grabbing; }
+.order li.dragged { opacity: 0.5; }
+.order li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.order li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.h .sort-stops { margin-left: 8px; font-weight: 400; }
+/* T-1464: a bus line's stops: a square at each end, a ring at a station, small rings for the street stops */
+.bus-stops { list-style: none; margin: 0; padding: 0; }
+.bus-stops li { display: flex; align-items: center; gap: 8px; min-height: 25px; }
+.bus-stops li.street { min-height: 22px; font-size: 12px; }
+.bus-stops .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bus-stops .n { width: 40px; text-align: right; flex: none; }
+.bus-stops .t { margin-left: 8px; }
+.bus-stops .bs-mk { flex: none; box-sizing: border-box; width: 12px; height: 12px; margin: 0; border: 2px solid var(--net-ink); border-radius: 50%; background: #fff; }
+.bus-stops .bs-mk.end { border: 2px solid var(--c); border-radius: 2px; }
+.bus-stops li.street .bs-mk { width: 7px; height: 7px; margin: 0 2.5px; border-width: 1.5px; border-color: var(--c); }
+.bus-stops .stop-more { flex: none; width: 10px; font-size: 12px; text-align: center; color: var(--muted); }
+/* T-1293: the schedule's copy and paste, small and muted beside the heading */
+.h .sched-copy { display: inline-flex; align-self: center; margin-left: 6px; font-weight: 400; }
+.sched-copy .btn { color: var(--muted); }
+.sched-copy .btn.mini svg { width: 14px; height: 14px; }
+.sched-copy .btn:hover:not(:disabled) { color: var(--text); }
+.stops .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stops .t { margin-left: 8px; }
+/* T-797: trains reverse at this stop; the map's reversal icon in small */
+.stops .rev-stop { display: inline-flex; vertical-align: -3px; margin-left: 6px; width: 16px; height: 16px; border-radius: 50%;
+                   background: #f2b705; color: #1a1a1a; }
+.stops .rev-stop svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.stops .stop-more { flex: none; width: 10px; font-size: 12px; text-align: center; color: var(--muted); }
+.stops .n { width: 40px; text-align: right; }
+/* flat junctions and crossings on the route (T-629): between the dot above and the next one */
+.stops .route-mark { position: absolute; left: 4px; top: calc(50% + var(--at) * 100%); width: 12px; height: 12px; margin-top: -6px; z-index: 1; transform: translateX(var(--soft)); }
+.stops .route-mark.junction::before { content: ""; position: absolute; left: 1px; top: 1px; width: 6px; height: 6px; background: #fff; border: 2px solid var(--net-ink); transform: rotate(45deg); }
+.stops .route-mark.crossing::before, .stops .route-mark.crossing::after { content: ""; position: absolute; left: 0; top: 4px; width: 12px; height: 4px; background: var(--net-ink); border-radius: 1px; box-shadow: 0 0 0 1px #fff; }
+.stops .route-mark.crossing::before { transform: rotate(45deg); }
+.stops .route-mark.crossing::after { transform: rotate(-45deg); }
+/* T-1168: the stops with the related lines; the drawing (--gw wide, the line at --spine) is one SVG
+   beside the rows, so the rows draw no bar or dot of their own */
+.h .related-toggle { align-self: center; margin-left: 6px; color: var(--muted); width: 22px; min-width: 22px; height: 22px; }
+.h .related-toggle svg { width: 19px; height: 19px; }
+.h .related-toggle:hover { color: var(--text); }
+.h .btn.related-toggle.on { background: var(--tint); color: var(--text); }
+.related { position: relative; }
+.related-draw { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 1; }
+.related-draw > * { pointer-events: visiblePainted; }
+.related-draw .link { cursor: pointer; }
+.related-draw .pill { fill: #fff; stroke: var(--net-ink); stroke-width: 2; }
+/* T-2602: the stations the line passes, fainter than muted: their names and their pills' rims */
+.related-draw .pill.passed { stroke-opacity: 0.25; }
+.stops.related-rows li.side .stop-name { color: color-mix(in srgb, var(--text) 36%, var(--bg)); }
+.related-bullet { position: absolute; z-index: 2; transform: translate(-50%, -50%); line-height: 0; }
+.stops.related-rows li { padding-left: calc(var(--gw) + 4px); }
+.stops.related-rows { --soft: 0px; }
+.stops.related-rows li::before, .stops.related-rows li::after { display: none; }
+.stops.related-rows .route-mark { left: calc(var(--spine) - 6px); z-index: 2; }
+/* T-1786: a row with more than two crossing lines is 1.5 rows tall, its bullets in two rows */
+.stops.related-rows li.tall { min-height: 38px; }
+.stops .stop-chips2 { flex: none; display: grid; grid-template-rows: 16px 16px; gap: 2px; justify-items: start; }
+.stop-chips2 > span { display: flex; gap: 2px; }
+/* T-1391: a stop row too tight for its name, time and bullets drops the time; a loop's bar goes on
+   past its first and last stops and curves round */
+.stops li[data-tight] .t { display: none; }
+.stops li.loop-end { min-height: 0; height: 12px; }
+.stops li.loop-end::after { display: none; }
+.stops li.loop-end::before { top: 0; bottom: 0; width: 8px; background: none; border: 6px solid var(--c); border-right: 0; }
+.stops li.loop-end.top::before { top: 2px; border-bottom: 0; border-top-left-radius: 11px; }
+.stops li.loop-end.bottom::before { bottom: 2px; border-top: 0; border-bottom-left-radius: 11px; }
+.stops.traffic li.loop-end::before { display: block; }
+/* T-3025: a turned line's loop, a bend at the side of the straight strip, leaving the station it turns at and
+   coming back in at the loop's last station; the strip is shifted right to make room for it */
+.stops.turned, .turned-rel { margin-left: 12px; }
+.stops.related-rows .arc { left: calc(var(--spine) - 17px); }
+.stops.related-rows .arc.start, .stops.related-rows .arc.end { width: 17px; }
+.stops.related-rows .dir { left: calc(var(--spine) - 16.5px); }
+.stops .arc { position: absolute; left: -7px; top: 0; bottom: 0; width: 0; border-left: 6px solid var(--c); pointer-events: none; }
+.stops .arc.start { top: calc(50% - 3px); width: 17px; border-top: 6px solid var(--c); border-top-left-radius: 12px; }
+.stops .arc.end { bottom: calc(50% - 3px); width: 17px; border-bottom: 6px solid var(--c); border-bottom-left-radius: 12px; }
+/* the loop is run one way, so its bend carries the map's white chevron, pointing back up to the station it leaves */
+.stops .dir { position: absolute; left: -6.5px; top: 2px; width: 5px; height: 5px; border-top: 2px solid #fff; border-left: 2px solid #fff; transform: rotate(45deg); pointer-events: none; z-index: 1; }
+/* T-1272: the Traffic view's diagram, each stretch as wide as its load (--w), in halves below a stop's
+   dot and above the next; a crowded stretch has the map's darkening at strength --f and red edges
+   at --e (the map's fullTrack colours, game/shadeTable.ts) */
+:root { --full-mark: #c0392b; }
+:root[data-shade="dark"] { --full-mark: #f0584f; }
+.stops.traffic li::before { display: none; }
+.stops .stretch { position: absolute; left: 2px; width: 16px; transform: translateX(var(--soft)); }
+.stops .stretch.down { top: 50%; bottom: 0; }
+.stops .stretch.up { top: 0; bottom: 50%; }
+.stops .stretch::before { content: ""; position: absolute; top: 0; bottom: 0; left: calc(8px - var(--w) / 2); width: var(--w); background: var(--c); }
+/* T-1886: round ends under each stop's dot, like a round line cap */
+.stops .stretch.down::before { top: calc(var(--w) / -2); border-radius: calc(var(--w) / 2) calc(var(--w) / 2) 0 0; }
+.stops .stretch.up::before { bottom: calc(var(--w) / -2); border-radius: 0 0 calc(var(--w) / 2) calc(var(--w) / 2); }
+.stops .stretch.full::before {
+  background: color-mix(in srgb, var(--c), #000 calc(var(--f) * 14%));
+}
+/* T-1284: the red edges are dashes with 1px of the panel's colour between them and the stretch, so they read on a red line */
+.stops .stretch.full::after {
+  --edge: color-mix(in srgb, var(--full-mark) calc(var(--e) * 100%), transparent);
+  --dash: repeating-linear-gradient(to bottom, var(--edge) 0 4px, transparent 4px 7px);
+  content: ""; position: absolute; top: 0; bottom: 0; left: calc(8px - var(--w) / 2 - 3px); width: calc(var(--w) + 6px);
+  background: var(--dash) left / 2px 100% no-repeat, var(--dash) right / 2px 100% no-repeat;
+}
+
+/* ---------- main: top bar, map, tools ---------- */
+
+#main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column;
+        container-type: inline-size; container-name: map-column; }
+#topbar {
+  flex: none; height: var(--bar-h); display: flex; align-items: center; gap: 14px; line-height: 1.2;
+  padding: 0 10px 0 16px; border-bottom: 1px solid var(--rule); white-space: nowrap;
+}
+/* T-349, T-1853, T-1865: the name, train share, cash and time are one size (16 px) and one weight (500);
+   the date 14 px; .sm is the small muted style (12 px, 400, muted). Every part is centred on the bar's
+   middle. */
+#topbar .lg { font-size: 16px; font-weight: 500; }
+#topbar .city, #topbar .cash { font-size: 16px; font-weight: 500; }
+#topbar .sm { font-size: 12px; font-weight: 400; color: var(--muted); }
+/* T-341, T-1108, T-1853: left to right the name, the cash, the mode bar and its train share, the clock
+   and the speed buttons. The clock and speed buttons have fixed widths and the bar takes the rest. The
+   name takes what it needs up to a cap, on two lines at most with an ellipsis (its whole name on
+   hover). The split is one row (bar, then the train share), centred in the bar (T-349). */
+.city { flex: none; width: max-content; max-width: 140px; white-space: normal; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.split { flex: 1; min-width: 0; display: flex; align-items: center; font-variant-numeric: tabular-nums; }
+.split-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 24px; }
+.split-row.updating .bar, .split-row.updating .pct { opacity: 0.6; }
+.bar-box { flex: 1; min-width: 60px; position: relative; display: block; height: 10px; }
+.pct { display: inline-block; width: 5ch; text-align: left; }
+/* T-1440: zoomed out the figure is the train trips a day ("11.8M trips/day") */
+.pct.trips { width: auto; }
+/* T-1437: a region's goals over its split bar, the star small under its tick; laid over the bar so
+   nothing moves. Reached ticks are the text colour, the rest muted; a wider transparent strip takes
+   the hover. */
+.goal-tick { position: absolute; top: -1px; bottom: -1px; width: 1px; margin-left: -0.5px; background: var(--muted); z-index: 1; }
+.goal-tick::before { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; right: -4px; }
+.goal-tick.reached { width: 2px; margin-left: -1px; background: var(--text); }
+.goal-star { position: absolute; top: 100%; left: 50%; width: 7px; height: 7px; margin-left: -3.5px; display: block; color: var(--muted); }
+.goal-star svg { display: block; width: 7px; height: 7px; }
+.goal-tick:not(.reached) .goal-star svg .solid { fill: none; stroke: currentColor; stroke-width: 2; }
+.goal-tick.reached .goal-star { color: var(--accent); }
+.goal-bar { position: relative; }
+.zone-trips.with-goals { padding-bottom: 12px; }
+/* T-2145: the real network's share, a pointer above the bar and a line through it */
+.real-mark { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--text); z-index: 1; }
+.real-mark::before { content: ""; position: absolute; bottom: 100%; left: -3px; border: 3.5px solid transparent; border-bottom: 0; border-top: 4px solid var(--text); }
+.real-mark::after { content: ""; position: absolute; top: -5px; bottom: 0; left: -4px; right: -4px; }
+.goals-reached { display: inline-flex; gap: 8px; }
+.goal-mark { display: inline-flex; align-items: center; gap: 2px; }
+.goal-mark svg { width: 12px; height: 12px; color: var(--accent); }
+/* T-349: the status is a small tag on the map's top row, right of the demand buttons (StatusTag.tsx), so
+   the top bar makes no room for it. T-180: in a narrow column the text ends in an ellipsis; the whole
+   text is its hover. */
+.status-tag { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px;
+  max-width: 360px; background: var(--bg); border: 1px solid var(--rule); white-space: nowrap;
+  font-size: 12px; font-weight: 400; line-height: 14px; color: var(--muted); }
+.map-top-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.slider.diagram-width { margin: 0; width: 84px; }
+.demand-busy { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.status-tag .load-bar.thin { height: 4px; margin-right: 0; }
+.bar { display: flex; width: 100%; height: 10px; border: 1px solid var(--rule); background: var(--bg); }
+.seg { display: block; height: 100%; }
+/* train, walking, driving: the commuter dot map's colours whatever the theme (T-084;
+   --mode-* are set from game/palette.ts MODE_COLOURS in main.ts) */
+.seg-train { background: var(--mode-train); }
+.seg-walk { background: var(--mode-walk); }
+.seg-drive { background: var(--mode-drive); }
+.seg-none { background: var(--mode-none); }
+.seg-other { background: var(--mode-other); }
+.sw { display: inline-block; width: 10px; height: 10px; flex: none; }
+/* T-305, T-1865: the cash moves as fares land, in tabular figures, in a box of fixed width
+   (4.7em: the widest it writes, "−$893.6M", the usual 7 characters leaving a little room) so the bar
+   before it does not change width as it changes. After the train share, before the clock. T-2798: in
+   another currency up to "−₩999,950" and a wider symbol. */
+.cash.cash-wide { width: 6em; }
+.cash { flex: none; width: 4.7em; font-variant-numeric: tabular-nums; }
+/* T-3020: the long words for million and billion ("−$893,6 Mio.", "$2,97 млрд") need a wider box */
+:root:lang(de) .cash, :root:lang(ru) .cash, :root:lang(tr) .cash, :root:lang(fr) .cash, :root:lang(es) .cash, :root:lang(pt) .cash { min-width: 5.8em; }
+:root:lang(ja) .cash, :root:lang(ko) .cash, :root:lang(zh) .cash { min-width: 5.2em; }
+/* T-832, T-861, T-1853, T-1868: the clock (the time and date on one line) sits right of the cash, behind a
+   thin divider, and left of the speed buttons, in a box of fixed width (the widest date, "Wed May 28", fits)
+   so nothing else moves day to day. The day and night picture is on the map (.map-sky). */
+.bar-rule { display: none; }
+.clock { flex: none; display: flex; align-items: center; height: 24px; padding-left: 14px; border-left: 1px solid var(--rule);
+  font-variant-numeric: tabular-nums; }
+.clock-text { flex: none; width: 132px; display: flex; align-items: baseline; gap: 6px; line-height: 20px; }
+/* the widest date of the year fits: 10月10日（金） and 10月10日 周五 */
+:root:lang(ja) .clock-text { width: 160px; }
+:root:lang(zh) .clock-text { width: 150px; }
+.clock .time.held { color: var(--muted); }
+.sky { position: relative; height: 21px; }
+/* T-1868: the day and night picture at the map's top right, under the bar. Its width is --sky-w: 250 px,
+   shrinking to 150 px as the left-hand controls take the room (the purpose filter goes below 460 px of map
+   column, the width then going back up to 250 px). The sums assume the default UI scale, 0.9. */
+#map { --sky-w: clamp(150px, calc(100cqw / var(--ui, 1) - 357px), 250px); }
+.map-sky { position: absolute; right: 10px; top: 10px; z-index: 4; width: var(--sky-w); }
+.sky-canvas { display: block; width: 100%; height: 21px; }
+.sky-hit, .band-hit { position: absolute; left: 0; right: 0; }
+.sky-hit { top: 0; height: 18px; }
+.band-hit { top: 18px; height: 6px; }
+/* T-862: today is a holiday in a country with the player's stations; SkyBanner.tsx HOLIDAY_COLOUR */
+.day-away { display: inline-flex; vertical-align: middle; }
+.holiday-dot { display: inline-block; width: 6px; height: 6px; margin: 0 5px 2px 0; border-radius: 50%; background: #ff5fa2; vertical-align: middle; }
+/* T-1476, T-1865: near a long holiday the dot is a button (the calendar icon's job), its hit area wider than the dot */
+.holiday-dot.coming { background: var(--yellow); }
+.holiday-dot.btn-dot { position: relative; padding: 0; border: 0; cursor: pointer; }
+.holiday-dot.btn-dot::before { content: ""; position: absolute; inset: -7px; }
+.holiday-dot.btn-dot.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--accent); }
+.save-notice { flex: none; padding: 6px 10px; border-bottom: 1px solid var(--accent);
+  background: var(--tint); display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.save-notice span { flex: 1; min-width: 0; }
+.save-notice button { flex: none; }
+
+#map { position: relative; flex: 1; min-height: 0; background: var(--map-land); }
+/* T-231: the demand buttons and, under them, the demand stopped alert */
+.map-top-left { position: absolute; left: 10px; top: 10px; z-index: 4; max-width: calc(100% - 20px);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; pointer-events: none; }
+.map-top-left > * { pointer-events: auto; }
+/* T-1868: the top row leaves the day and night picture's corner free */
+.map-top-row { max-width: calc(100cqw / var(--ui, 1) - var(--sky-w) - 30px); }
+.map-find { display: flex; align-items: center; gap: 6px; max-width: 100%; }
+.demand-selector { display: flex; flex-wrap: wrap; max-width: 100%; }
+/* T-2657: demand stopped for good, top centre above the other bars; the error is the small line under it */
+.demand-stopped-note { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 6; zoom: var(--ui, 1);
+  width: max-content; max-width: calc(100% - 20px); padding: 8px 10px; background: var(--bg); border: 1px solid var(--bad);
+  color: var(--text); font-size: 13px; }
+@container map-column (max-width: 1350px) { .demand-stopped-note { top: 46px; } }
+@container map-column (max-width: 1000px) { .demand-stopped-note { top: 80px; } }
+@container map-column (max-width: 680px) { .demand-stopped-note { top: 148px; } }
+/* T-2802: low on the map and clear of the tutorial's card; taps go through the words, only the close button takes them */
+.no-market-note { position: absolute; left: 8px; right: 8px; bottom: 26px; z-index: 5; zoom: var(--ui, 1); display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 4px 4px 4px 10px; background: var(--bg); border: 1px solid var(--accent); color: var(--text); font-size: 13px; pointer-events: none; }
+.no-market-note .btn { flex: none; pointer-events: auto; }
+.dsn-row { display: flex; align-items: center; gap: 10px; }
+.dsn-row span { min-width: 0; }
+.dsn-row .btn { flex: none; border-color: var(--bad); color: var(--bad); }
+.dsn-detail { margin-top: 4px; max-width: 460px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.demand-selector .btn { font-size: 12px; padding: 4px 8px; }
+.demand-selector .btn + .btn, .demand-selector .hint-cell + .btn { margin-left: -1px; }
+/* T-1137: a hint of what each row is for, an icon cell before its buttons: a selected demand bubble
+   (the default ramp's middle purple, lightened) and the track */
+.demand-selector .hint-cell { flex: none; display: grid; place-items: center; width: 28px; height: 28px;
+  border: 1px solid var(--rule); background: var(--bg); color: var(--text); }
+/* T-1835: no outline, a lighter purple */
+.hint-cell .bubble { fill: color-mix(in oklab, color-mix(in oklab, #ff4d4d, #4d4dff) 62%, #fff); stroke: none; }
+/* T-1851: the track row's icon has a yellow line along its lower right; the station row's has a small
+   blue station circle on top (the entries blue of map/stationCircles.ts) */
+.hint-cell .yline { stroke: var(--yellow); stroke-width: 1.8; }
+.hint-cell .udot { fill: color-mix(in oklab, #2456e0 45%, transparent); stroke: #2456e0; stroke-width: 1.2; }
+:root[data-shade="dark"] .hint-cell .udot { fill: color-mix(in oklab, #8aa6ff 45%, transparent); stroke: #8aa6ff; }
+/* T-1448: the icon cell is a button folding its row down to it */
+.demand-selector button.hint-cell { padding: 0; font: inherit; cursor: pointer; }
+.demand-selector button.hint-cell:hover { background: var(--shade); }
+/* T-158: one trip purpose on the map; a swatch in its purpose colour while one is chosen */
+.purpose-filter { display: flex; align-items: center; gap: 5px; height: 28px; margin-left: 6px;
+  padding: 0 0 0 6px; border: 1px solid var(--rule); background: var(--bg); font-size: 12px; }
+.slider .purpose-filter { margin-left: 0; }
+.purpose-filter.on { border-color: var(--accent); background: var(--tint); }
+.purpose-filter select { height: 100%; padding: 0 4px 0 0; border: 0; background: transparent; cursor: pointer; outline: none; }
+/* T-169: the browser's keyboard ring, round the whole control (swatch included); none after a click */
+.purpose-filter:not(.mouse):has(select:focus-visible) { outline: auto 1px; outline: -webkit-focus-ring-color auto 1px; }
+/* T-149, T-172: shown only when demand could not load; it covers everything until a choice. */
+.loading-screen { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent); }
+.loading-box { background: var(--bg); border: 1px solid var(--rule); padding: 14px 18px; max-width: 420px; cursor: default; }
+.loading-box p + p { margin-top: 2px; }
+.loading-box.failed { width: 400px; max-width: 100%; padding: 18px 22px 16px; text-align: center; }
+.loading-box.failed .big { text-wrap: balance; line-height: 1.35; }
+.loading-box.failed .load-why { max-height: 4.5em; overflow-y: auto; }
+.loading-box.failed .loading-actions { justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.loading-box .load-why { margin-top: 6px; overflow-wrap: anywhere; user-select: text; }
+.loading-actions { display: flex; gap: 8px; margin-top: 12px; }
+/* T-180: while a loaded game's clock waits for demand, a card in the middle of the map. The map
+   under it keeps every pointer event. */
+.loading-card-wrap { position: absolute; left: 0; right: 0; top: var(--bar-h); bottom: 0; z-index: 6;
+  display: grid; place-items: center; padding: 16px; pointer-events: none; }
+.loading-card { background: var(--bg); border: 1px solid var(--rule); padding: 14px 20px;
+  min-width: min(260px, 100%); max-width: 100%; text-align: center; }
+.loading-card p + p { margin-top: 2px; }
+/* T-1479: the share done at the bar's left end, the time left at its right */
+.loading-card .load-left { display: flex; justify-content: space-between; gap: 12px; margin-top: 0; }
+/* T-677: the start menu, over the bare map until the player picks a game; the game's own chrome
+   waits under it */
+.start-menu { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 16px;
+  background: color-mix(in srgb, var(--bg) 45%, transparent); }
+.start-box { background: var(--bg); border: 1px solid var(--rule); padding: 18px 20px 20px; min-width: min(240px, 100%);
+  max-height: calc(100vh - 32px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; zoom: var(--ui, 1); }
+/* T-1567: the logo over the box, sized by StartLogo.tsx (`?logo=0`: none) */
+.start-menu.with-logo { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; box-sizing: border-box; }
+.with-logo .start-box { min-height: 0; flex: 0 1 auto; box-sizing: border-box; max-width: 100%; }
+.start-logo { display: block; flex: none; pointer-events: none; max-width: 100%; }
+/* the build number, bottom left, so a player or Anita can tell which build is up */
+.start-version { position: absolute; left: 12px; bottom: 8px; margin: 0; zoom: var(--ui, 1); }
+/* left with the build: the map's attribution opens at the bottom right behind the menu */
+.start-about { margin-left: 16px; color: inherit; }
+.start-about:hover { color: var(--text); }
+a.btn { text-decoration: none; }
+.start-box:has(.start-saves) { width: min(540px, 100%); }
+.start-box h1 { margin: 0; }
+/* T-2753: the language picker (and the account button) at the right of the card's first row */
+.start-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.start-top, .start-top .lang-row { display: flex; align-items: center; gap: 6px; margin: 0 0 0 auto; }
+.start-top:empty { display: none; }
+.start-top .acct-start { position: static; margin-left: 2px; }
+.start-top .cm-start { margin-left: 2px; }
+.start-new { align-self: flex-start; border-color: var(--accent); }
+.start-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.start-head { font-size: 14px; font-weight: 700; margin: 6px 0 0; }
+/* T-2810: the newest update, above the map attribution; the changelog is a Modal */
+.start-update { position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: max(32px, env(safe-area-inset-bottom)); z-index: 1;
+  display: flex; align-items: center; gap: 4px; max-width: min(400px, calc(100vw - 24px)); box-sizing: border-box;
+  padding: 3px 3px 3px 7px; border: 1px solid var(--accent); background: var(--bg); color: var(--muted); font-size: 12px; line-height: 1.4; }
+.start-update-line { flex: 1; min-width: 0; }
+.start-update .btn { flex: none; height: 24px; padding: 0 6px; color: inherit; font-size: inherit; }
+.start-update .btn.icon { width: 24px; min-width: 24px; padding: 0; }
+.changelog-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 6px; font-size: 14px; }
+.changelog-head span { font-weight: 400; }
+section + section > .changelog-head { margin-top: 16px; }
+.changelog-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.changelog-list .nerf { color: var(--bad); }
+.start-saves { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.start-save { display: flex; gap: 12px; width: 100%; padding: 8px; text-align: left; font: inherit; color: inherit;
+  background: var(--bg); border: 1px solid var(--rule); cursor: pointer; }
+.start-save:hover, .start-save:focus-visible { border-color: var(--accent); background: var(--tint); }
+/* T-1612: the bin sits on the card's bottom right, where the saves panel's buttons are */
+.start-slot { position: relative; }
+.start-delete { position: absolute; right: 8px; bottom: 8px; }
+.start-saves .pane-foot { justify-content: flex-start; margin-top: 6px; }
+.start-save .save-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* T-728: the new game sheet, in the start menu's box or the saves panel */
+.new-game-box { width: min(440px, 100%); }
+/* T-2748: the new game sheet's box keeps its top (NewGame.tsx usePinnedTop sets the padding) */
+.start-menu.pinned { align-items: start; overflow-y: auto; }
+.start-menu.with-logo.pinned { align-items: center; justify-content: flex-start; }
+.new-game { display: flex; flex-direction: column; gap: 12px; }
+.new-game-mode { align-self: flex-start; }
+.new-game-where { display: flex; flex-direction: column; gap: 6px; }
+.new-game-cities { display: flex; flex-wrap: wrap; gap: 6px; }
+.new-game-map { align-self: flex-start; }
+/* T-3225: the sandbox's list of real networks, its label before it */
+.new-game-real { display: flex; align-items: center; gap: 8px; }
+.new-game-real .purpose-filter { margin-left: 0; min-width: 9em; font-size: inherit; }
+.new-game-real select { width: 100%; }
+/* T-3297: the list after a side switch, each row a click from its place */
+.side-sites { list-style: none; margin: 2px 0 6px; padding: 0; }
+.side-sites .btn.text { width: 100%; justify-content: flex-start; text-align: left; gap: 6px; }
+.new-game-find { width: 100%; min-width: 0; padding: 4px 6px; border: 1px solid var(--rule); background: var(--bg); color: var(--text); font: inherit; }
+.new-game-hits { list-style: none; margin: 0; padding: 0; border: 1px solid var(--rule); }
+.new-game-hits li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 3px 8px; cursor: pointer; }
+.new-game-hits li.on, .new-game-hits li:hover { background: var(--tint); }
+/* T-1215: Start bigger and centred, Back to its left */
+.new-game-foot { margin-top: 4px; display: grid; grid-template-columns: 1fr auto 1fr; }
+.new-game-foot > :not(.new-game-start) { grid-column: 1; grid-row: 1; justify-self: start; }
+.new-game-start { grid-column: 2; grid-row: 1; height: 36px; padding: 0 28px; font-weight: 700; background: var(--tint); }
+.save-sandbox { margin-left: 6px; padding: 0 5px; border: 1px solid var(--rule); font-weight: 400; color: var(--muted); }
+/* T-988: a game only on the account (cloud) or only in this browser (crossed cloud), after its name */
+.save-cloud { display: inline-flex; vertical-align: -2px; margin-left: 6px; color: var(--muted); }
+.save-cloud svg { width: 15px; height: 15px; }
+button.save-add { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+button.save-add:hover { color: var(--text); }
+.cash.sandbox { color: var(--muted); }
+.game-mode { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* T-2737: the rows' buttons apart */
+.game-mode + .game-mode { margin-top: 6px; }
+/* T-927: the dock and top bar take no room either, so the world map fills the page behind the menu */
+.choosing #dock-root, .choosing #topbar-root, .choosing #tools-root { display: none; }
+.choosing .map-top-left, .choosing .map-sky, .choosing .blueprint-bar, .choosing .tool-bar, .choosing .mode-aura, .choosing .maplibregl-ctrl-bottom-right { visibility: hidden; }
+/* T-243: the load's progress as a filling bar (its percentage on hover); the fill jumps, no transition */
+.load-bar { display: block; height: 8px; margin: 8px 0 6px; border: 1px solid var(--rule); background: var(--bg); pointer-events: auto; }
+.load-fill { display: block; height: 100%; background: var(--accent); }
+.load-bar.thin { flex: 0 0 64px; height: 6px; margin: 0; }
+/* T-343: a bar over each zone still loading (map/zoneLoading.ts), centred on its point */
+.zone-loads { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.zone-load { position: absolute; left: 0; top: 0; }
+.zone-load .load-bar { --w: calc(var(--zl-w, 96) * 1px / var(--ui, 1)); width: var(--w); height: 6px; margin: -4px 0 0 calc(var(--w) / -2); zoom: var(--ui, 1); }
+.load-bar.quiet { pointer-events: none; }
+/* T-975, T-1006, T-1046: a realm not shown, a circle like an unopened zone's dot floating on the shade
+   (its grey rim, palette.ts UNBUILT_RIM, T-2391) */
+.realm-buttons { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.realm-button { position: absolute; left: 0; top: 0; pointer-events: auto; }
+.realm-button button { display: block; box-sizing: border-box; width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  border: 1px solid #8c8c8c; background: #fff; cursor: pointer; }
+.realm-button button:hover { background: #d9d9d9; }
+/* T-1298: toned down in dark, a mid grey with a dark rim */
+:root[data-shade="dark"] .realm-button button { background: #8a857f; border-color: #141517; }
+:root[data-shade="dark"] .realm-button button:hover { background: #a39e98; }
+/* MapLibre sets Helvetica on its container. Map UI must use the same font as the dock. */
+#map, #map .maplibregl-ctrl { font-family: var(--font); }
+#map canvas.overlay { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 1; }
+/* the demand views' canvas (T-084, T-097): over the network and its capacity markers (T-099),
+   under the station names and the drawing tool's marks, which come later in the map at z 2 */
+#map canvas.overlay.demand { z-index: 2; }
+/* T-1448: the station ridership circles, over the bubbles (later in the map, the same z) */
+#map canvas.overlay.stations { z-index: 2; }
+/* T-1435: where people drive, between the bubbles and the circles (the same z) */
+#map .maplibregl-control-container { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.stn-labels { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+.stn-label-plane { position: absolute; inset: 0; }
+.stn-label { position: absolute; left: 0; top: 0; font-size: 12px; color: var(--map-ink); white-space: nowrap;
+             text-shadow: 0 0 2px var(--map-land), 0 0 2px var(--map-land), 0 0 3px var(--map-land); }
+/* T-2219: a station building's name on its floor, which is light in both themes */
+.stn-label.bld.inside { font-size: calc(14px * var(--ui, 1)); font-weight: 700; color: #2b2926; text-shadow: 0 0 2px #f9f7f3, 0 0 2px #f9f7f3, 0 0 3px #f9f7f3; }
+
+#tools {
+  position: absolute; left: 10px; bottom: 10px; z-index: 3; max-width: calc(100% - 20px);
+}
+.pane.build-pane { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+/* T-2282: with the track options on the map, the blueprint follows the tools and takes the rest of the pane */
+.build-options { flex: none; padding: 10px 14px 12px; }
+.blueprint-controls { flex: none; padding: 8px 14px; border-top: 1px solid var(--rule); }
+.blueprint-panel { margin-top: 14px; }
+.blueprint-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.blueprint-head .num.bad { color: var(--bad); }
+.blueprint-head .bp-total { display: inline-flex; align-items: baseline; gap: 6px; }
+.bp-total .off-cost { user-select: none; }
+.blueprint-breakdown summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.blueprint-category { margin-top: 8px; }
+/* T-2269: the breakdown under the blueprint total scrolls on its own; switched-off rows grey */
+.blueprint-controls { display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; }
+.blueprint-controls > * { flex: none; }
+.blueprint-controls > .blueprint-breakdown { flex: 0 1 auto; min-height: 0; overflow-y: auto; margin: 0 -14px 8px; padding: 0 14px; }
+.blueprint-controls .blueprint-breakdown summary { margin-top: 2px; }
+.bp-part { margin-top: 2px; }
+/* T-2339: the heading a step bigger and heavier than the rows, which are 12 px, the parts' names no longer bold */
+.blueprint-controls .blueprint-breakdown > summary { font-size: 13px; font-weight: 600; color: var(--text); }
+.bp-breakdown-list { font-size: 12px; }
+.bp-breakdown-list .blueprint-category .b { font-weight: 500; }
+.blueprint-items > li.bp-part-head, .blueprint-items > li.bp-sub { align-items: center; gap: 6px; padding: 2px 6px; }
+.bp-part-head .chevron { margin: 0 -4px 0 -6px; }
+.bp-part-head .chevron.open svg { transform: rotate(90deg); }
+.bp-fold-gap { flex: none; width: 16px; margin-left: -6px; }
+.blueprint-items > li.bp-sub { padding-left: 50px; }
+.blueprint-items > li.bp-fixed { cursor: default; }
+.bp-part-head .grow, .bp-sub .grow { white-space: normal; }
+.blueprint-items > li.bp-off, .blueprint-items > li.bp-off .val { color: var(--muted); }
+.bp-by-kind summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 10px; }
+/* T-1159: the price's cost multiplier on `costTint`'s colour (map/trackTagRows.ts), as in the track tool's tag */
+.cost-mult.tinted { padding: 0 3px; border-radius: 2px; color: var(--text); }
+.blueprint-items > li { padding: 6px 0; align-items: flex-start; }
+.blueprint-items .what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.blueprint-items .val { flex: none; white-space: nowrap; }
+.blueprint-construct { width: 100%; }
+.blueprint-pick { margin-top: 14px; }
+/* T-353: the Select tool's bar at the map's top centre, level with the demand buttons. Lower on narrower
+   maps, where the demand buttons with the status tag (T-349) and the search box take the row. */
+.blueprint-bar, .tool-bar { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 6px 8px;
+  padding: 6px 8px 6px 12px; background: var(--bg); border: 1px solid var(--rule); white-space: nowrap;
+  /* T-841: 260 px kept clear each side (the tool panel, the debug panel); a narrower map wraps the bar's groups onto more rows */
+  flex-wrap: wrap; justify-content: center; width: max-content; max-width: max(300px, calc(100% - 600px)); }
+.blueprint-bar .count { min-width: 58px; }
+.blueprint-bar .btn.lv { min-width: 27px; }
+@container map-column (max-width: 1350px) { .blueprint-bar, .tool-bar { top: 46px; } }
+@container map-column (max-width: 1000px) { .blueprint-bar, .tool-bar { top: 80px; } }
+@container map-column (max-width: 680px) { .blueprint-bar, .tool-bar { top: 148px; } }
+/* T-2282: the track and station tools' bars in the selection bar's box and place; the track bar's two
+   rows, the level buttons as the Build tab had them */
+/* T-2600: the bars' text at the map controls' 12 px, the level numbers bigger (T-2522 had all at 14) */
+.tool-bar, .tool-bar-pop { font: 12px/1.45 var(--font); }
+.tool-bar .btn.lv, .tool-bar-pop .btn.lv { font-size: 15px; }
+.tool-bar { flex-direction: column; align-items: stretch; padding: 6px 10px; border-top: 2px solid var(--mode); } /* T-2446: the mode's colour, 2 px */
+.tool-bar .tb-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.tool-bar .tb-speed, .tool-bar-pop .tb-speed { display: inline-flex; align-items: center; gap: 8px; }
+/* T-3169: the Advanced expander at the bottom right; its row, the two target speeds, right-aligned under it */
+.tool-bar .btn.tb-advanced { margin-left: auto; gap: 4px; padding: 0 6px 0 4px; }
+.tool-bar .btn.tb-advanced svg { width: 12px; height: 12px; }
+.tool-bar .btn.tb-advanced.open svg { transform: rotate(90deg); }
+.tool-bar .tb-adv-row { justify-content: flex-end; column-gap: 16px; }
+.tool-bar .price { margin: 0; }
+/* T-2664: Regular / High speed sat about 1 px high in their buttons (descenders count in the centring); the level digits are fine */
+.tool-bar .group .btn:not(.lv) { padding-top: 2px; }
+.tool-bar .stepper.wide .v { min-width: 72px; }
+.tool-bar .btn.icon svg { width: 19px; height: 19px; }
+.tool-bar .tb-narrow, .tool-bar-pop { display: none; }
+/* T-2284: the click mode's colour round the map, full at the edge and gone 8 px in; nothing at the
+   map's edges sits within it (the tool notes, the attribution, the phone bars are 10 px in) */
+.mode-aura { position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  background: linear-gradient(to right, var(--mode), transparent 8px), linear-gradient(to left, var(--mode), transparent 8px),
+    linear-gradient(to bottom, var(--mode), transparent 8px), linear-gradient(to top, var(--mode), transparent 8px); }
+.mode-sq { display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: var(--muted); vertical-align: -1px; }
+#tool-notes .mode-stop { margin: -4px -6px -4px 0; }
+.bp-box { position: absolute; z-index: 3; pointer-events: none; border: 1.5px dashed var(--map-ink); background: color-mix(in srgb, var(--map-ink) 10%, transparent); }
+/* T-1837: the three toggles after the track type share one line, wrapping together */
+.build-toggles { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+/* T-478: each level button carries its level's track colour (--lc, palette.ts), the chosen one in full */
+.btn.lv { min-width: 32px; padding: 0 4px; font-variant-numeric: tabular-nums;
+          background: color-mix(in srgb, var(--lc) 30%, var(--bg)); border-color: color-mix(in srgb, var(--lc) 60%, var(--bg)); }
+.btn.lv:hover { background: color-mix(in srgb, var(--lc) 48%, var(--bg)); }
+.btn.lv.on { background: var(--lc); color: var(--lk); border-color: var(--net-ink); box-shadow: inset 0 0 0 1px var(--net-ink); }
+:root[data-shade="dark"] .btn.lv.on { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+/* the four tools, two by two (T-1128) */
+.tool-pick { display: grid; grid-template-columns: 1fr 1fr; }
+.group.tool-pick > .btn:nth-child(n+3) { margin-top: -1px; }
+.group.tool-pick > .btn:nth-child(odd) { margin-left: 0; }
+#tool-notes .bus-acts { display: flex; gap: 4px; }
+.pane .price { margin-top: 4px; }
+#tool-notes { max-width: 640px; padding: 6px 10px; background: var(--bg); width: max-content; border: 1px solid var(--rule); }
+#tool-notes p + p { margin-top: 4px; }
+.tool-pick > .btn { padding: 0 6px; gap: 4px; }
+/* T-1802: the construct icons a tad bigger than the 14 px text-button glyph and the 16 px icon-button one */
+.tool-pick > .btn svg { width: 17px; height: 17px; }
+.btn.icon.new-bus svg, .btn.icon.new-ferry svg { width: 19px; height: 19px; }
+.tool-pick .key { margin-left: 2px; }
+#tool-notes .bad, .tool-tag.bad, .tool-tag .bad { color: var(--bad); }
+
+/* drawing tool markers on the map */
+.tool-marks { position: absolute; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+.tool-marks > div { position: absolute; left: 0; top: 0; white-space: nowrap; }
+.pi-mark { width: 9px; height: 9px; margin: -5px 0 0 -5px; background: #fff; border: 2px solid var(--net-ink); z-index: 1; }
+/* T-1485: a hollow ring in the accent, the snap ring's colour, so a loose end never reads as a station */
+.end-mark { width: 10px; height: 10px; margin: -5px 0 0 -5px; border: 2px solid var(--accent); border-radius: 50%; z-index: 1; }
+/* T-1811: the track tool's square at a blueprint loose end, in the ring's colour */
+.pi-mark.loose { border-color: var(--accent); }
+.pi-label, .tool-tag { font-size: 12px; color: var(--map-ink); background: color-mix(in srgb, var(--map-land) 88%, transparent);
+                       padding: 0 4px; border: 1px solid var(--rule); }
+.tool-tag { max-width: 340px; white-space: normal !important; padding: 3px 6px; }
+/* T-1817: a line's bullet in a hover's text */
+.tool-tag .tip-chip { vertical-align: -3px; margin: 0 1px; }
+/* T-1926: a strip of cells in a hover; width 0 with a full minimum keeps it from widening the tag */
+.tool-tag .tip-strip { display: flex; gap: 1px; width: 0; min-width: 100%; height: 5px; margin: 3px 0; }
+.tool-tag .tip-strip i { flex: 1 1 0; min-width: 0; }
+/* T-2772: a name at each end of the strip above it; width 0 with a full minimum keeps it from widening the tag */
+.tool-tag .tip-ends { display: flex; justify-content: space-between; gap: 8px; width: 0; min-width: 100%; margin-top: -1px; font-size: 11px;
+  color: color-mix(in srgb, var(--map-ink) 60%, transparent); }
+.tool-tag .tip-ends span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-tag .tip-ends span:last-child { text-align: right; }
+/* T-2334: a line's stretches between station dots; `dense`, too many for a dot at each, keeps the end ones */
+.tool-tag .tip-strip.stops { max-width: 100%; height: 7px; align-items: center; margin: 4px 0; }
+.tool-tag .tip-strip.stops i { height: 5px; }
+.tool-tag .tip-strip.stops b { flex: none; width: 7px; height: 7px; box-sizing: border-box; border-radius: 50%;
+  background: var(--map-land); border: 1.5px solid var(--map-ink); }
+.tool-tag .tip-strip.stops.dense i { height: 3px; border-radius: 1.5px; }
+/* T-2365: a small table in a hover (`tipGrid`): the first column left, figures right, strips a fixed width */
+/* T-2443: a table is nowrap, so its tag grows to the table rather than letting figures run out of the box */
+.tool-tag:has(.tip-grid) { max-width: none; }
+.tool-tag .tip-grid { display: grid; column-gap: 10px; row-gap: 1px; align-items: center; margin: 2px 0; }
+.tool-tag .tip-grid > div { white-space: nowrap; }
+.tool-tag .tip-grid > .num { text-align: right; }
+.tool-tag .tip-grid > .tip-strip { width: auto; min-width: 130px; height: 7px; margin: 0; }
+.tool-tag .tip-grid > .tip-gap { height: 4px; }
+.tool-tag .tip-swatch { display: inline-block; width: 8px; height: 8px; margin-right: 4px; vertical-align: 0; }
+/* T-2271: a count's size on a log scale, a tick at each power of ten (the station tool's trips near) */
+.tool-tag .size-bar { position: relative; width: 0; min-width: 100%; height: 4px; margin: 3px 0 2px;
+  background: color-mix(in srgb, var(--map-ink) 14%, transparent); }
+.tool-tag .size-bar i { display: block; height: 100%; background: color-mix(in srgb, var(--map-ink) 62%, transparent); }
+.tool-tag .size-bar::after { content: ""; position: absolute; inset: 0;
+  background: repeating-linear-gradient(to right, transparent 0 calc(33.333% - 1px), var(--map-land) calc(33.333% - 1px) 33.333%); }
+/* T-1495: a coloured span in a tag stops 2 px short at the bottom, so the spans of rows below one another leave a gap
+   (its colour is the --chip-bg that `chip` in map/trackTagRows.ts sets) */
+.tag-chip { background: linear-gradient(var(--chip-bg), var(--chip-bg)) no-repeat 0 0 / 100% calc(100% - 2px); }
+/* T-210: the same tag for the panels and controls (ui/tip.ts), over everything, never in the way */
+.ui-tag { position: fixed; left: 0; top: 0; right: auto; bottom: auto; margin: 0; height: auto; overflow: visible; z-index: 1000; pointer-events: none; width: max-content; }
+/* T-2977: a curve's corner is a hollow diamond, so it never reads as a node's square; the element is the hit area,
+   the pseudo-element the diamond (the element's own transform places it) */
+.pi-mark.drag { width: 14px; height: 14px; margin: -7px 0 0 -7px; background: none; border: 0; pointer-events: auto; cursor: grab; }
+.pi-mark.drag::before { content: ""; position: absolute; inset: 3px; border: 2px solid var(--net-ink); transform: rotate(45deg); }
+/* T-474: while a point is dragged, wherever the pointer goes */
+.grabbing, .grabbing * { cursor: grabbing !important; }
+.pi-mark.drag:hover::before { background: var(--tint); }
+.snap-ring { width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid var(--accent); border-radius: 50%; }
+/* T-1721: the track tool's point: branching off track, joining it, or running beside it */
+.snap-ring.branch, .snap-ring.join { width: 19px; height: 19px; margin: -9.5px 0 0 -9.5px; border-color: var(--bg); }
+.snap-ring.branch { background: var(--bad); }
+.snap-ring.join { background: var(--yellow); }
+/* T-3204: both tracks of a double's loose end merged into the single track that carries on */
+.snap-ring.join.merge { background: var(--warn); }
+.snap-ring.beside { width: 30px; height: 30px; margin: -15px 0 0 -15px; border-color: var(--beside); }
+.beside-band { position: absolute; left: 0; top: 0; pointer-events: none; }
+:root { --beside: #3d82d6; }
+:root[data-shade="dark"] { --beside: #79b3f0; }
+/* T-1260: a held finger shows a control's tag (ui/tip.ts), never the browser's callout or a text selection */
+@media (pointer: coarse) { button, [data-tip] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; } }
+/* T-1259: a phone has no keys to hint at */
+@media (hover: none) and (pointer: coarse) { .btn .key { display: none; } }
+/* T-1260: every finger gesture on the map is the game's (a pan where the map pans), so the Select
+   tool's held press and the touch handle keep their pointer events */
+#map .maplibregl-canvas-container { touch-action: none; }
+/* T-1260: the touch control bar by the point being placed, 44 px buttons; the handle that drags that point */
+.touch-bar-host { position: fixed; left: 0; top: 0; z-index: 30; width: max-content; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.touch-bar { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.touch-row { display: flex; gap: 6px; padding: 4px; background: var(--bg); border: 1px solid var(--rule); box-shadow: 0 1px 6px rgb(0 0 0 / 22%); }
+.btn.icon.tb { width: 44px; height: 44px; min-width: 44px; }
+.btn.icon.tb svg { width: 22px; height: 22px; }
+.btn.icon.tb.ok:not(:disabled) { color: var(--good); border-color: var(--good); }
+.btn.icon.tb.back { color: var(--yellow); border-color: var(--yellow); }
+.btn.icon.tb.stop { color: var(--bad); border-color: var(--bad); }
+.touch-handle { position: absolute; left: 0; top: 0; z-index: 5; width: 44px; height: 44px; margin: -22px 0 0 -22px; touch-action: none; }
+.touch-handle::after { content: ""; position: absolute; left: 15px; top: 15px; width: 10px; height: 10px; border-radius: 50%;
+  background: #fff; border: 2px solid var(--net-ink); }
+.stn-label.plan { opacity: 0.6; }
+.track-modes .group { display: grid; grid-template-columns: 1fr 1fr; }
+.track-modes .btn { white-space: normal; height: auto; min-height: 40px; line-height: 1.35; padding: 4px 6px; }
+.cap-marks { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.cap-plane, .mark-plane { position: absolute; inset: 0; }
+/* T-1772: a clock dot (map/capacityMarkers.ts draws it, 16 px); station names (z 2) draw over it */
+.cap-mark { position: absolute; left: 0; top: 0; width: 16px; height: 16px; border-radius: 50%; pointer-events: auto; cursor: default; }
+.cap-mark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.cap-mark.link { cursor: pointer; }
+/* T-224: while a tool is on, presses and moves on a dot reach the map underneath */
+.cap-marks.pass .cap-mark { pointer-events: none; }
+
+/* stop editing (T-233, map/stopMarkers.ts): a toggle marker sits on every station; T-2271: the
+   bubbles stay, faint and beneath the network, and their tags, the trip route and the capacity tags
+   go. Markers take no pointer events; the map's own clicks pick them. */
+.stop-editing #map canvas.overlay.trip, .stop-editing .cap-marks,
+.stop-editing .demand-tag, .stop-editing .demand-box { display: none !important; }
+.stop-editing #map canvas.overlay.demand, .stop-editing .intercity-labels, .stop-editing .airport-marks,
+.stop-editing .attraction-marks { z-index: 0; opacity: 0.35; }
+.stop-marks { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; --c: #888; --ms: 20px; }
+.stop-mark { position: absolute; left: 0; top: 0; box-sizing: border-box; width: var(--ms); height: var(--ms);
+             margin: calc(var(--ms) / -2) 0 0 calc(var(--ms) / -2); border-radius: 50%;
+             background: #fff; border: 3px solid var(--c); box-shadow: 0 0 0 1px var(--net-ink); z-index: 2; }
+.stop-mark.on { background: var(--c); border: 2px solid #fff; z-index: 3; }
+/* reachable stations are drawn smaller than the line's own stops (T-239); sizes as FAR_SCALE and
+   NEAR_SCALE in stopMarkers.ts */
+.stop-mark.route { width: calc(var(--ms) * 0.8); height: calc(var(--ms) * 0.8);
+             margin: calc(var(--ms) * -0.4) 0 0 calc(var(--ms) * -0.4);
+             border: 2px solid var(--mk-route-ring); box-shadow: none; }
+.stop-mark.reroute, .stop-mark.cut { width: calc(var(--ms) * 0.65); height: calc(var(--ms) * 0.65);
+             margin: calc(var(--ms) * -0.325) 0 0 calc(var(--ms) * -0.325); background: var(--mk-reroute-fill); border: 2px solid var(--mk-reroute-ring);
+             box-shadow: none; opacity: 0.8; z-index: 1; }
+.stop-mark.cut { background: var(--mk-cut-fill); border-color: var(--mk-cut-ring); opacity: 0.6; z-index: 0; }
+/* T-797: adding it makes trains reverse there; grey like a reroute, with a U-turn inside */
+.stop-mark.reverse { width: calc(var(--ms) * 0.65); height: calc(var(--ms) * 0.65);
+             margin: calc(var(--ms) * -0.325) 0 0 calc(var(--ms) * -0.325); background: var(--mk-reroute-fill);
+             border: 2px dashed var(--mk-reroute-ring); box-shadow: none; opacity: 0.85; z-index: 1; }
+/* reversal icons (T-797, T-1772, map/reversalMarks.ts): the built flat junction badge's look (casing
+   fill, thin ring and glyph), amber, floating above the station; --rs is the diameter, set by zoom */
+.rev-marks { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; --rs: 15px; --rev-ink: #c98a00; }
+:root[data-shade="dark"] .rev-marks { --rev-ink: #e8b020; }
+.rev-mark { position: absolute; left: 0; top: 0; width: var(--rs); height: var(--rs); margin: calc(-1 * var(--rs) - 9px) 0 0 calc(var(--rs) / -2);
+            box-sizing: border-box; border-radius: 50%; background: var(--map-casing, #fff); color: var(--rev-ink);
+            border: 1px solid var(--rev-ink); opacity: 0.9; pointer-events: auto; cursor: default; }
+.rev-mark svg { display: block; width: 100%; height: 100%; }
+.rev-mark::after { content: ""; position: absolute; left: 50%; top: 100%; margin: 1px 0 0 -0.5px; width: 1px; height: 6px; background: var(--rev-ink); }
+.rev-marks.pass .rev-mark { pointer-events: none; }
+.rev-tag { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; white-space: nowrap; }
+.stop-edit-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.stop-tag { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; white-space: nowrap !important; }
+
+/* inspector extras */
+.swatch.on { border-color: var(--accent); }
+/* T-672: the colour picker, after languagedots' swatch editor */
+.cpick { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.cpick-area, .cpick-hue { position: relative; border: 1px solid var(--rule); cursor: crosshair; touch-action: none; user-select: none; }
+.cpick-area { height: 112px; background: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, var(--hue)); }
+.cpick-hue { height: 14px; background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); }
+.cpick-area:focus-visible, .cpick-hue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cpick-dot { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid #fff;
+             box-shadow: 0 0 0 1px #0007; pointer-events: none; }
+.cpick-hue .cpick-dot { top: 50%; }
+.cpick-row { display: flex; align-items: center; gap: 8px; }
+.cpick-now { width: 28px; height: 28px; border: 1px solid var(--rule); flex: none; }
+.cpick-hex { width: 88px; min-width: 0; padding: 3px 5px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px;
+             color: var(--text); background: var(--bg); border: 1px solid var(--rule); border-radius: 0; }
+.cpick-hex:focus { border-color: var(--accent); outline: 0; }
+.cpick-presets { display: grid; grid-template-columns: repeat(auto-fill, 24px); gap: 4px; }
+.cpick-presets .swatch { width: 24px; height: 24px; }
+.callout { margin-top: 10px; padding: 8px 10px; background: var(--tint); border: 1px solid var(--accent);
+           display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.callout.bad { background: var(--shade); border-color: var(--rule); }
+/* T-748: alerts are a plain list, a red or yellow exclamation point to each */
+.alerts { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.alert { display: flex; gap: 8px; align-items: flex-start; }
+.alert-mark { flex: none; display: inline-flex; margin-top: 1px; }
+.alert-mark svg { width: 16px; height: 16px; }
+.alert.bad .alert-mark { color: var(--bad); }
+.alert-body { min-width: 0; flex: 1; }
+.alert-body .detail { margin-top: 2px; color: var(--muted); }
+.btn.icon.mini { width: 20px; min-width: 20px; height: 20px; border: 0; background: transparent; }
+.btn.icon.mini svg { width: 12px; height: 12px; }
+.stop-name { cursor: pointer; }
+.stop-name:hover { text-decoration: underline; }
+.blueprint-corners { margin-top: 8px; }
+.blueprint-corners .add-corner { width: 100%; font-size: 12px; }
+.corner { min-width: 0; margin: 6px 0; padding: 6px; border: 1px solid var(--rule); }
+.corner legend { font-size: 12px; padding: 0 4px; }
+.corner-row { display: flex; gap: 6px; align-items: center; }
+.corner-row + .corner-row { margin-top: 6px; }
+.corner-row .grow { flex: 1; min-width: 0; }
+
+/* Station and commuter inspectors' marks. */
+.mk { width: 10px; height: 10px; border-radius: 50%; flex: none; display: inline-block; }
+.h .mk { margin-right: 6px; align-self: center; }
+/* T-097: the tag by the pointer over a bubble, and the box of a long press and drag */
+/* T-448: a plane badge on each airport bubble */
+.airport-marks { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.airport-mark { position: absolute; left: 0; top: 0; width: 14px; height: 14px; margin: -7px 0 0 -7px; display: grid; place-items: center; }
+.airport-mark svg { width: 14px; height: 14px; fill: #000; stroke: rgba(255, 255, 255, 0.85); stroke-width: 0.8; paint-order: stroke; }
+.attraction-marks { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.attraction-mark { position: absolute; left: 0; top: 0; width: 12px; height: 12px; margin: -6px 0 0 -6px; display: grid; place-items: center; }
+.attraction-mark svg { width: 12px; height: 12px; fill: var(--map-ink); stroke: var(--map-land); stroke-width: 1.6; paint-order: stroke; }
+.demand-tag { position: absolute; left: 0; top: 0; z-index: 4; pointer-events: none; white-space: nowrap !important; }
+/* T-305: the network tag wraps at 320 px (a complex's line list is long); a short tag is as wide as its text */
+.track-tag { width: max-content; max-width: 320px; white-space: normal !important; }
+/* T-526: the track hover and a build tool's tag are never under a bubble's tag; with a build tool
+   on, the demand views are drawn beneath the network */
+.track-tag, .build-tag { z-index: 5; }
+.build-tag { position: absolute; left: 0; top: 0; pointer-events: none; }
+.building #map canvas.overlay.demand, .building #map canvas.overlay.stations, .building .airport-marks, .building .attraction-marks, .building .intercity-labels { z-index: 0; }
+/* T-732: what else is under a resting pointer, under the hover tag; its entries take clicks */
+.rest-list { z-index: 6; pointer-events: auto; padding: 1px 0; }
+.rest-entry { display: flex; gap: 5px; align-items: center; padding: 1px 4px; cursor: pointer; }
+.rest-entry:hover { background: var(--tint); }
+/* a station's mark in the list, a small platform box */
+.rest-stn { flex: none; box-sizing: border-box; width: 16px; height: 10px;
+            background: #fff; border: 2px solid var(--net-ink); border-radius: 2px; }
+/* a demand bubble's mark: a circle, as wide as a line bullet */
+.rest-bub { flex: none; box-sizing: border-box; width: 12px; height: 12px; margin: 0 2px; border-radius: 50%;
+            border: 1.5px solid var(--map-ink); background: color-mix(in srgb, var(--map-ink) 15%, transparent); }
+.tag-facts { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; }
+/* a ridership circle's two parts in its tag (T-1448), each after a dot in its map colour */
+.tag-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.tag-fact { display: inline-flex; flex: none; gap: 3px; align-items: center; white-space: nowrap; }
+.tag-fact.purpose-row { gap: 6px; }
+.tag-lines { display: flex; flex-wrap: wrap; gap: 2px; }
+.bullet-heading { display: inline-flex; align-items: center; gap: 1px; }
+.heading-chevron { display: inline-flex; width: 16px; height: 16px; flex: none; transform-origin: 50% 50%; }
+.stop-mark > .heading-chevron { position: absolute; left: 50%; top: 50%; margin: -8px 0 0 -8px; pointer-events: none;
+  color: var(--map-chev) !important; filter: drop-shadow(0 0 1px var(--map-chev-halo)); }
+/* T-3124: on the map the chevron lies on the line's own colour, so it is white (light) or near-black (dark); the hover's stays the line's colour */
+:root { --map-chev: #fff; --map-chev-halo: rgba(0, 0, 0, .45); }
+:root[data-shade="dark"] { --map-chev: #15171a; --map-chev-halo: rgba(255, 255, 255, .4); }
+.tag-icon { width: calc(12px * var(--ui, 1)); height: calc(12px * var(--ui, 1)); flex: none; }
+.mode-bar { display: flex; height: 3px; margin: 2px 0 3px; }
+.mode-bar i { display: block; height: 100%; }
+.demand-box { position: absolute; z-index: 4; pointer-events: none; border: 1px solid var(--map-ink);
+              background: color-mix(in srgb, var(--map-ink) 8%, transparent); }
+.demand-box.armed { box-sizing: border-box; border: 2px solid var(--map-ink); border-radius: 50%; }
+.intercity-labels { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
+.intercity-label { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 12px;
+  padding: 0 2px; color: var(--map-ink);
+  text-shadow: 0 0 2px var(--map-land), 0 0 2px var(--map-land), 0 0 3px var(--map-land); }
+
+#debug {
+  position: absolute; right: 0; top: var(--bar-h); z-index: 3; margin: 0;
+  padding: 6px 8px; background: var(--bg); border-left: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+  font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre;
+}
+
+.maplibregl-ctrl-attrib, .maplibregl-ctrl-attrib-button { border-radius: 0 !important; }
+:root[data-shade="dark"] .maplibregl-ctrl-attrib { background: var(--bg) !important; color: var(--muted); }
+:root[data-shade="dark"] .maplibregl-ctrl-attrib a { color: var(--muted); }
+:root[data-shade="dark"] .maplibregl-ctrl-attrib-button { filter: invert(1); }
+.maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin: 0 10px 10px 0 !important; }
+/* T-2571: with the trouble button in the corner the attribution sits just left of it, on its baseline */
+#map:has(.trouble) .maplibregl-ctrl-bottom-right .maplibregl-ctrl { margin-right: calc(18px + var(--trouble-px, 56px)) !important; }
+
+/* The dock is resizable, so adapt to the map column rather than the browser width. */
+@container map-column (max-width: 1000px) {
+  #topbar { gap: 10px; }
+}
+@container map-column (max-width: 760px) {
+  .city { max-width: 124px; }
+}
+/* T-349, T-1853, T-1865, T-1868, T-1883 (Anita's sketch): below 700 px the bar takes two rows. The first has
+   the name, the cash and the time and date at the row's end; the second the mode bar with the train share
+   under the name and cash, then the speed buttons under the clock. The thin divider (.bar-rule) spans both
+   rows, left of the clock and the speed buttons. The first row sits 4 px lower; the space under it is 3 px
+   less than the old 3 px gap (a 1 px row gap and a -1 px margin on the first row's items); the name and the
+   bar are 2 px further from the left edge. */
+@container map-column (max-width: 700px) {
+  #topbar { height: auto; padding: 8px 10px 4px 12px;
+    display: grid; grid-template-columns: minmax(min-content, max-content) 1fr auto auto auto;
+    grid-template-areas: "city . cash rule clock" "split split split rule speed"; gap: 1px 10px; }
+  #topbar .city { grid-area: city; width: auto; max-width: 150px; min-width: 0; overflow-wrap: break-word; margin-bottom: -1px; }
+  #topbar .cash { grid-area: cash; margin-bottom: -1px; }
+  #topbar .bar-rule { display: block; grid-area: rule; align-self: stretch; width: 1px; background: var(--rule); }
+  #topbar .clock { grid-area: clock; justify-self: end; max-width: 100%; height: auto; padding-left: 0; border-left: 0; margin-bottom: -1px; }
+  /* T-1893: the time and date end at the same right edge as the speed buttons under them */
+  #topbar .clock-text { justify-content: flex-end; }
+  #topbar .split { grid-area: split; }
+  #topbar .speed { grid-area: speed; justify-self: end; }
+}
+/* below 300 px the clock takes a row of its own, the divider going */
+@container map-column (max-width: 300px) {
+  #topbar { grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "city cash" "split split" "clock speed"; }
+  #topbar .bar-rule { display: none; }
+  #topbar .clock { justify-self: start; }
+  #topbar .clock-text { justify-content: flex-start; }
+}
+
+/* ---------- shorter screens ---------- */
+
+@media (max-height: 820px) {
+  .stops li { min-height: 24px; }
+}
+
+/* T-951: a phone held upright. The dock goes under the map instead of beside it, so the map keeps the
+   full width and the container queries above see a 400 px column, not a 125 px strip. Same parts, the
+   dock's tab row now spanning the screen; the tabs' own drag handle for width gives way to the divider. */
+@media (max-width: 600px) and (min-height: 560px) {
+  #game { flex-direction: column; }
+  #main { order: 1; flex: 1 1 0; min-height: 0; }
+  #dock { order: 2; width: 100%; height: calc(var(--phone-h, 40dvh) / var(--ui, 1)); border-right: 0; border-top: 1px solid var(--rule); }
+  .dock-resize { display: none; }
+  /* T-1884: the strip above the tabs drags the dock's height; its touch target reaches 8 px over the map */
+  .dock-grab { display: block; grid-column: 1 / -1; position: relative; height: 9px; background: var(--shade); cursor: row-resize; touch-action: none; }
+  .dock-grab::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: 0; }
+  .dock-grab::after { content: ""; position: absolute; left: calc(50% - 16px); top: 3px; width: 32px; height: 3px; border-radius: 2px; background: var(--rule); }
+  .dock-grab:hover::after, .dock-grab.on::after { background: var(--accent); }
+  /* T-2548: no room for the purpose picker beside the demand row; it is in the settings tab */
+  .demand-selector .purpose-filter { display: none; }
+  #tools { right: 10px; }
+  #tool-notes { width: auto; max-width: none; }
+  .help-panel { left: 0; width: 100%; max-height: calc(100% - 48px); border-left: 0; border-right: 0; }
+  /* T-2603: the timetable chart just above the dock, scrolling sideways when wider than the screen */
+  .marey { left: 0; right: 0; bottom: calc(100% + 1px); max-width: none; border-left: 0; border-right: 0; }
+  /* T-1259, T-1852, T-1885: under the tab row the tab area takes the dock's whole height, the inspector
+     always beside it (40% and 60% until the divider is dragged); a tab wider than its share scrolls */
+  #dock { display: grid; grid-template-columns: minmax(0, var(--pane-w, 40%)) 0 minmax(0, 1fr); grid-template-rows: auto auto minmax(0, 1fr); }
+  #dock > .tabs { grid-column: 1 / -1; }
+  .pane { height: auto; max-height: none; min-height: 0; padding: 10px 10px 12px; overflow-x: auto; }
+  .pane-resize { width: 13px; height: auto; margin: 0 -6px; cursor: col-resize; touch-action: none; }
+  #inspector { min-width: 0; padding: 10px 8px 16px; border-top: 0; border-left: 1px solid var(--rule); }
+  #inspector table.sched th:not(:first-child), #inspector table.sched td:not(:first-child) { padding-left: 4px; }
+  #dock .pane { container: pane / inline-size; }
+  #dock .blueprint-construct { white-space: normal; height: auto; min-height: 28px; }
+}
+
+/* T-1259: the tab area beside the inspector on a phone: the tools by their icons (names in the
+   hovers), and no Near column in the lines list */
+@container pane (max-width: 200px) {
+  .tool-pick .tool-label { display: none; }
+  .lines-box .w-near, .lines-box .sort-btn.near-off { display: none; }
+  .pane .group { flex-wrap: wrap; }
+  .game-mode { flex-wrap: wrap; }
+  .game-mode .btn.text { white-space: normal; height: auto; min-height: 28px; }
+  .slider .slider-pct { width: 5ch; }
+  .slider .purpose-filter, .slider .purpose-filter select { min-width: 0; max-width: 100%; }
+  /* T-1885: the money ledger in a narrow column: each row's name on its own line, yesterday and
+     today under it */
+  table.ledger { display: block; }
+  table.ledger tr { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8px; }
+  table.ledger tr + tr { margin-top: 4px; }
+  table.ledger th:first-child, table.ledger td:first-child { grid-column: 1 / -1; }
+  table.ledger td:first-child { padding-bottom: 0; }
+  table.ledger th:first-child { padding-bottom: 4px; }
+  .group.scope .btn { max-width: 84px; }
+  /* and the fare rows the same way: the name, then its stepper */
+  .rows.fare-rows { grid-template-columns: auto minmax(0, 1fr); }
+  .fare-rows .fr-what { grid-column: 1 / -1; }
+  .fare-rows .stepper.wide .v { min-width: 44px; }
+}
+
+/* Browser save slots (T-068). */
+.save-slots { list-style: none; padding: 0; margin: 8px 0; }
+.save-slots > li { padding: 8px; margin: 0 0 6px; border: 1px solid var(--rule); }
+/* T-241: the game being played is marked with the accent, the others have an Open button */
+.save-slots > li.on { border-color: var(--accent); background: var(--tint); }
+/* T-251: the saved games in a centred panel, like the confirmation dialog */
+.saves-panel { width: min(540px, calc(100vw - 40px)); max-height: calc(100vh - 60px); padding: 0; border: 1px solid var(--rule);
+  background: var(--bg); color: var(--text); overflow: hidden; }
+.saves-panel[open] { display: flex; flex-direction: column; }
+.saves-panel::backdrop { background: rgb(0 0 0 / 28%); }
+/* T-3132: the panels mounted outside the dock (account, leaderboards, Community, Share) take the UI scale as the dock's do */
+#account-root .saves-panel { zoom: var(--ui, 1); }
+.saves-inner { padding: 16px 20px 20px; overflow-y: auto; min-height: 0; }
+.saves-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.saves-head h2 { font-size: 18px; margin: 0; flex: 1; }
+/* T-2850: the close button with the main menu button under it */
+.save-main-menu { margin-left: auto; }
+/* T-1395: where the games are kept, beside Close */
+.save-head-mark { display: inline-grid; place-items: center; width: 28px; height: 28px; color: var(--muted); }
+.btn.save-head-mark { border-color: transparent; background: transparent; }
+.btn.save-head-mark:hover { color: var(--text); }
+.save-head-mark svg { width: 16px; height: 16px; }
+.save-card { display: flex; gap: 14px; align-items: stretch; }
+.save-thumb { flex: none; width: 204px; height: 136px; position: relative; overflow: hidden; background: var(--map-land); border: 1px solid var(--rule); }
+.save-thumb img { display: block; width: 100%; height: 100%; }
+/* T-894: a city's name over its panel, in the ink and land of the theme the picture was drawn in */
+.thumb-label { position: absolute; padding: 3px 6px; pointer-events: auto; font-size: 12px; line-height: 1.25;
+  color: var(--thumb-ink); text-shadow: 0 0 2px var(--thumb-land), 0 0 2px var(--thumb-land), 0 0 3px var(--thumb-land);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thumb-city { font-weight: 700; overflow: hidden; text-overflow: ellipsis; }
+.thumb-figure { color: color-mix(in srgb, var(--thumb-ink) 70%, var(--thumb-land)); }
+.save-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.save-actions { display: flex; gap: 6px; margin-top: auto; padding-top: 8px; justify-content: flex-end; }
+.save-thumb.empty { display: grid; place-items: center; text-align: center; padding: 4px; }
+/* a phone: the picture above the facts, at its own 3:2 */
+@media (max-width: 520px) {
+  .save-card { flex-direction: column; gap: 8px; }
+  .save-card .save-thumb { width: 100%; height: auto; aspect-ratio: 3 / 2; }
+}
+.save-slot-title { display: flex; gap: 8px; justify-content: space-between; align-items: baseline; overflow-wrap: anywhere; }
+.save-playing { flex: none; padding: 0 5px; color: var(--bg); background: var(--accent); }
+.save-slots .pane-foot { margin-top: 6px; }
+.save-actions .save-open, .save-files .save-new { border-color: var(--accent); }
+.save-actions { align-items: center; }
+.save-name { cursor: text; }
+.save-pen { display: inline-grid; place-items: center; margin-left: 6px; padding: 0; border: 0; background: none; color: var(--muted); cursor: pointer; vertical-align: -2px; }
+.save-pen:hover { color: var(--text); }
+.save-pen svg { width: 14px; height: 14px; }
+.save-name-field { flex: 1; min-width: 0; padding: 1px 5px; font: inherit; font-weight: bold; border: 1px solid var(--rule); background: var(--bg); color: inherit; }
+.save-files { display: flex; flex-wrap: wrap; gap: 8px; }
+.save-when { display: flex; align-items: center; }
+.save-account.warn { color: var(--warn); }
+/* T-2037: a game's other versions, a line at the bottom of its card that opens to list them */
+.save-versions { margin-top: 6px; }
+.save-versions-line { display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; border: 0; background: none;
+  color: var(--muted); font-family: inherit; cursor: pointer; }
+/* the saves panel's card foot: the versions line at the left, the card's buttons at the right on the same row */
+.save-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.save-foot .save-actions { margin: 0 0 0 auto; padding: 0; }
+.save-versions-line:hover, .save-versions-line:focus-visible { color: var(--text); }
+.save-versions-line svg { width: 12px; height: 12px; }
+.save-versions-line.open svg { transform: rotate(90deg); }
+.save-version-list { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.save-version { display: flex; gap: 6px; align-items: center; }
+.save-version > span { flex: 1; min-width: 0; display: flex; align-items: center; }
+.save-version-list .pane-foot { margin-top: 6px; }
+.start-saves li.has-versions .start-save { border-bottom: 0; }
+.start-saves .save-versions { margin: 0; padding: 0 8px 6px; border: 1px solid var(--rule); border-top: 0; background: var(--bg); }
+.purpose-scope { display: flex; gap: 6px; margin: 8px 0; }
+.purpose-scope button { background: transparent; border: 1px solid currentColor; border-radius: 4px; padding: 4px 8px; color: inherit; opacity: .65; cursor: pointer; }
+.purpose-scope button.on { opacity: 1; background: #8882; }
+.purpose-item { padding: 8px 0; }
+.purpose-heading { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 4px; }
+/* T-193: one chart a purpose, departures toward the destination up from the baseline and home down */
+.purpose-mirror { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0 5px; }
+.purpose-mirror .slot { display: flex; flex-direction: column; }
+.purpose-mirror .up, .purpose-mirror .down { display: flex; height: 18px; background: #8881; }
+.purpose-mirror .up { align-items: flex-end; border-bottom: 1px solid var(--text); }
+.purpose-mirror .down { align-items: flex-start; }
+.purpose-mirror i { display: block; width: 100%; min-height: 0; }
+.purpose-axis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; font-size: 10px; opacity: .7; margin-top: 3px; text-align: center; }
+
+/* faded text, not opacity: the selector has no background of its own (T-192), so an opacity fade
+   would let the map show through the buttons */
+.demand-selector .demand-pending { color: color-mix(in srgb, var(--text) 40%, var(--bg)); cursor: wait; }
+/* Focused-city demand and purpose charts (T-143). */
+.purpose-summary { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+.purpose-pie { width: 88px; height: 88px; flex: 0 0 88px; }
+.purpose-legend { list-style: none; padding: 0; margin: 0; flex: 1; min-width: 0; font-size: 12px; }
+.purpose-legend li { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+.purpose-legend li span { flex: 1; min-width: 0; }
+.purpose-legend b { font-variant-numeric: tabular-nums; }
+/* T-165: riders by purpose under a line's riders or a station's boardings; the purpose the map
+   shows is ringed in the bar and bold in the key */
+.rows > li.purpose-split { display: block; padding: 6px 0 4px; }
+/* T-600: a selected zone's figure with its mode bar under it */
+.rows > li.zone-trips { display: block; padding: 6px 0 6px; }
+.zone-trips .line { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.split-bar { width: 100%; max-width: none; height: 8px; }
+/* T-2664: the line panel's riders block sits tighter: less above Riders, less between it and the bar, a thinner bar */
+.line-day > .h.divided { padding-top: 5px; }
+.line-day .rows > li.purpose-split { padding: 1px 0 4px; }
+.line-day .split-bar { height: 5px; }
+.split-bar .seg.shown { outline: 2px solid var(--text); outline-offset: 0; position: relative; z-index: 1; }
+.split-key { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-wrap: wrap; column-gap: 12px; font-size: 12px; }
+.split-key li { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.split-key .mode-icon { display: inline-flex; }
+
+/* T-144: platform placement preview, aligned with its track. */
+/* T-189: the placement ghost is the platform's outline, curved with the track (map/tools.ts) */
+/* T-311: blue where a click would place the station, red where it would be refused; fixed colours,
+   not the theme accent, so the two always read as yes and no on the basemap and over track */
+.station-ghost { position: absolute; left: 0; top: 0; overflow: visible; opacity: .92; filter: drop-shadow(0 0 1.5px #fff); }
+.station-ghost path { stroke-width: 2px; stroke-linejoin: round; }
+/* T-312: 1 km and 2 km round the station being placed */
+.station-rings { position: absolute; left: 0; top: 0; overflow: visible; }
+.station-rings circle { fill: none; stroke: var(--map-ink); stroke-opacity: .35; stroke-width: 1px; }
+.station-rings text { fill: var(--map-ink); fill-opacity: .6; font-size: calc(11px * var(--ui, 1)); text-anchor: middle; paint-order: stroke; stroke: var(--map-land); stroke-width: 3px; stroke-opacity: .8; }
+.curve-circle { position: absolute; left: 0; top: 0; overflow: visible; }
+.curve-circle circle { fill: none; stroke: var(--map-ink); stroke-opacity: .35; stroke-width: 1px; }
+.curve-circle.bad circle { stroke: #d42a2a; stroke-opacity: .7; }
+.curve-circle line { stroke: var(--map-ink); stroke-opacity: .35; stroke-width: 1px; stroke-dasharray: 1 3; }
+.curve-circle.bad line { stroke: #d42a2a; stroke-opacity: .7; }
+.station-ghost.ok path { fill: #2f6fe0a6; stroke: #1c4fb8; }
+.station-ghost.bad path { fill: #e03c3ca6; stroke: #b91f1f; }
+
+/* T-148, T-1868: the search box under the station ridership row at the map's upper left (in .map-top-left, so
+   zoomed with it); its results open over the map below it */
+.map-search { position: relative; width: 250px; max-width: 100%; }
+.map-search input { display: block; width: 100%; height: 28px; padding: 0 8px; border: 1px solid var(--rule);
+  border-radius: 0; background: var(--bg); font-size: 12px; outline: none; }
+.map-search input:focus { border-color: var(--accent); }
+/* T-211: collapsed to a magnifying glass at the box's right end */
+.map-search.closed { width: auto; }
+.map-search-results { position: absolute; left: 0; right: 0; top: 100%; z-index: 5; list-style: none; margin: -1px 0 0; padding: 0; border: 1px solid var(--rule); background: var(--bg); }
+.map-search-results li { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 2px 8px; cursor: pointer; }
+.map-search-results li.on { background: var(--tint); }
+.map-search-results li.none { cursor: default; }
+.map-search-results .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-mark { width: 10px; height: 10px; margin: 0 3px; flex: none; border-radius: 50%; background: #fff; border: 2px solid var(--net-ink); }
+.search-mark.city { border-radius: 0; background: var(--muted); border-color: var(--muted); }
+.search-mark.place { background: none; border-color: var(--muted); }
+/* T-1822: the tutorial card, a flat post-it under the search button. Under the search results (z-index 4)
+   when they open. */
+.guide { position: absolute; right: 10px; top: 46px; z-index: 3; width: 240px; max-width: calc(100% - 20px);
+  padding: 8px 10px 10px; background: color-mix(in srgb, var(--yellow) 24%, var(--bg)); color: var(--text);
+  zoom: var(--ui, 1); }
+:root[data-shade="dark"] .guide { background: color-mix(in srgb, var(--yellow) 14%, var(--bg)); }
+.choosing .guide { visibility: hidden; }
+.guide-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.guide-title { padding: 0; border: 0; background: none; font-size: 14px; font-weight: 700; text-align: left; cursor: default; }
+.guide-x { width: 22px; min-width: 22px; height: 22px; margin: -2px -4px 0 0; border-color: transparent; background: none; }
+.guide-x:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.guide-x svg { width: 12px; height: 12px; }
+.guide-steps { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 5px; font-size: 12px; }
+.guide-steps li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: start; gap: 8px; line-height: 1.3; }
+.guide-steps li.later { color: var(--muted); }
+.guide-box { width: 12px; height: 12px; margin-top: 1px; border: 1px solid currentColor; }
+.guide-box svg { width: 10px; height: 10px; margin: -0.5px; stroke-width: 2.2; }
+.guide-count { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.guide-end { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; font-size: 12px; }
+.guide-end .btn { height: 24px; background: none; border-color: currentColor; }
+.guide-end .btn:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+/* T-1832, T-1868: the "Saved only in this browser" dot, 10 px yellow in a 20 px hit area just right of the
+   search glass; hidden while the search box is open. */
+.keep-dot { position: relative; flex: none; width: 20px; height: 20px; padding: 0; border: 0; background: none; cursor: pointer; }
+.keep-dot::before { content: ""; position: absolute; left: 5px; top: 5px; width: 10px; height: 10px; border-radius: 50%;
+  background: #f2c200; box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 35%, transparent); }
+.keep-dot:hover::before { box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 55%, transparent); }
+.map-find:has(.map-search:not(.closed)) .keep-dot { display: none; }
+.choosing .keep-dot { visibility: hidden; }
+/* a phone held upright (T-951): the heading and the step in hand, all six after a tap on the heading */
+@media (max-width: 600px) and (min-height: 560px) {
+  .guide { width: 184px; }
+  .guide-title { cursor: pointer; }
+  .guide:not(.open) .guide-steps li:not(.now) { display: none; }
+  .guide:not(.open) .guide-steps:not(:has(.now)) li:last-child { display: grid; }
+}
+/* T-1433: the trouble list in the map's lower right corner, as far in from the bottom as from the right (T-2571); quiet when shut */
+.trouble { position: absolute; right: 10px; bottom: 10px; z-index: 4; zoom: var(--ui, 1);
+  display: flex; flex-direction: column; align-items: flex-end; max-width: calc(100% - 20px); }
+.choosing .trouble { visibility: hidden; }
+/* T-3268: zoom buttons stacked at the map's right edge, halfway down, clear of the corners' sky, trouble list and attribution */
+.map-zoom { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); z-index: 3; zoom: var(--ui, 1);
+  display: flex; flex-direction: column; gap: 4px; }
+.choosing .map-zoom { visibility: hidden; }
+/* T-2125: what the last edit did, under the view rows at the upper left: text on the map with a halo,
+   no box, each figure after a green up or red down arrow; the passing note (the feedback's "sent", T-2166) in the same look */
+.edit-note { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; font-size: 12px; color: var(--text);
+  font-variant-numeric: tabular-nums; white-space: nowrap; text-shadow: 0 0 2px var(--bg), 0 0 3px var(--bg), 0 0 3px var(--bg), 0 0 4px var(--bg); }
+.edit-row { display: flex; align-items: center; gap: 4px; width: fit-content; }
+.edit-row.money-neg { color: var(--bad); }
+.edit-row.estimating { color: var(--muted); }
+.edit-row.estimating .edit-arrow { stroke: var(--muted); }
+/* T-2390: the bullets of the lines whose riders moved most */
+.edit-lines { gap: 3px; margin-top: 1px; text-shadow: none; }
+.edit-arrow { width: 12px; height: 12px; flex: none; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+  filter: drop-shadow(0 0 1px var(--bg)) drop-shadow(0 0 1.5px var(--bg)) drop-shadow(0 0 2px var(--bg)); }
+.edit-arrow.up { stroke: var(--good); }
+.edit-arrow.down { stroke: var(--bad); }
+.trouble-btn { grid-auto-flow: column; gap: 5px; color: var(--warn); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.trouble-btn svg { width: 20px; height: 20px; stroke-width: 1.8; }
+.trouble-fig.bad { color: var(--bad); }
+.rows.pick.trouble-list { width: 300px; max-width: 100%; max-height: min(260px, 50vh); overflow-y: auto; margin: 0 0 -1px;
+  padding: 2px 6px; border: 1px solid var(--rule); background: var(--bg); font-size: 12px; }
+.rows.pick.trouble-list > li { margin: 0 -6px; }
+.trouble-list .val { display: inline-flex; align-items: center; }
+.trouble-fig { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); }
+.trouble-fig svg, .trouble-mark svg { width: 14px; height: 14px; }
+.trouble-mark { display: inline-flex; flex: none; }
+.trouble-mark.near { color: #d0601c; }
+.trouble-mark.over { color: #c0392b; }
+.trouble-tag { padding: 0 4px; color: #fff; }
+.trouble-tag.near { background: #d0601c; }
+.trouble-tag.over { background: #c0392b; }
+.trouble-rev { display: inline-grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: 50%;
+  background: #f2b705; color: #1a1a1a; }
+.trouble-rev svg { width: 13px; height: 13px; stroke-width: 2; }
+.trouble-chips { display: inline-flex; gap: 2px; }
+/* T-349, T-1704, T-1868, T-2202: this narrow, the status tags go under the day and night picture at the
+   top right (TopBar.tsx MapSky), right-aligned and as wide as their text, so no row is kept for them, and
+   the Select bar sits under the rows (the find button's row included) */
+.sky-status { display: none; }
+@container map-column (max-width: 520px) {
+  .map-top-row .status-tag { display: none; }
+  .sky-status { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin-top: 4px; }
+  .sky-status .status-tag { width: max-content; max-width: calc(100cqw - 20px); }
+  #map:has(.sky-status .status-tag) .guide { top: 66px; }
+  .blueprint-bar { top: 178px; }
+}
+/* T-1868: with no room for the picture beside the demand row, the purpose filter goes first */
+@container map-column (max-width: 460px) {
+  #map { --sky-w: clamp(100px, calc(100cqw / var(--ui, 1) - 250px), 250px); }
+  .demand-selector .purpose-filter { display: none; }
+}
+/* T-1263: on a phone the Select tool's bar sits on the map's bottom edge in one row that fits a 390 px
+   screen and scrolls sideways only below about 360 px; the count has the tool's icon, the elevation is
+   one button that opens the seven above the bar (as the touch bar's does), the actions are icons
+   (names in the hovers); the tool notes sit right above it */
+.blueprint-bar .bp-level, .blueprint-bar .bp-ico, .blueprint-bar .bp-short, .blueprint-levels { display: none; }
+@media (max-width: 600px) and (min-height: 560px) {
+  /* T-2284: 10 px in from the map's edges, clear of the mode aura */
+  .blueprint-bar, .tool-bar { top: auto; bottom: 10px; left: 10px; right: 10px; transform: none; z-index: 2; width: auto; max-width: none;
+    flex-wrap: nowrap; justify-content: flex-start; gap: 4px; overflow-x: auto; scrollbar-width: none; padding: 4px 6px; }
+  /* T-2282: the track bar in one row; the level, track type and target speed one button each, opening their choices above it */
+  .tool-bar { flex-direction: row; align-items: center; }
+  .tool-bar .tb-row { display: contents; }
+  .tool-bar .tb-row > *, .tool-bar .build-toggles { flex: none; }
+  .tool-bar .tb-wide { display: none; }
+  .tool-bar .btn.tb-narrow { display: inline-grid; place-items: center; }
+  .tool-bar .btn, .tool-bar .btn.icon { height: calc(36px / var(--ui, 1)); min-width: calc(36px / var(--ui, 1)); }
+  .tool-bar .btn.tb-type, .tool-bar .btn.tb-speed-btn { padding: 0 8px; }
+  .tool-bar .build-toggles { gap: 4px; }
+  .tool-bar .tb-level { order: 0; }
+  .tool-bar .tb-type, .tool-bar .tb-count { order: 1; }
+  .tool-bar .tb-ramp { order: 2; }
+  .tool-bar .build-toggles { order: 3; }
+  .tool-bar .tb-speed-btn { order: 4; }
+  .station-bar { gap: 8px; padding-left: 10px; }
+  .tool-bar-pop { display: block; position: absolute; left: 50%; bottom: calc(36px / var(--ui, 1) + 26px); transform: translateX(-50%); z-index: 4; white-space: nowrap; }
+  .tool-bar-pop .btn { height: calc(36px / var(--ui, 1)); }
+  .tool-bar-pop.tb-pop-speeds { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--rule); }
+  .tool-bar-pop .btn.lv { min-width: calc(40px / var(--ui, 1)); }
+  /* the tool notes (the mode's descriptor first) right above a bar */
+  #main:has(.tool-bar, .blueprint-bar) #tools { bottom: calc(36px / var(--ui, 1) + 26px); }
+  #main:has(.tool-bar-pop, .blueprint-levels) #tools { visibility: hidden; }
+  .blueprint-bar > * { flex: none; }
+  .blueprint-bar .bp-label { display: none; }
+  .blueprint-bar .bp-short { display: inline; }
+  .blueprint-bar .count { min-width: 0; display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; }
+  .blueprint-bar .bp-ico { display: inline-flex; }
+  .blueprint-bar .bp-levels { display: none; }
+  .blueprint-bar .btn, .blueprint-bar .btn.bp-level { height: calc(36px / var(--ui, 1)); min-width: calc(36px / var(--ui, 1)); padding: 0; }
+  .blueprint-bar .btn.bp-level { display: inline-grid; }
+  .blueprint-levels .btn.lv { min-width: calc(40px / var(--ui, 1)); }
+  .blueprint-levels { display: block; position: absolute; left: 50%; bottom: calc(36px / var(--ui, 1) + 26px); transform: translateX(-50%); z-index: 4; }
+}
+
+/* T-195: the trip explorer's inspector and its canvas over the demand views' */
+#map canvas.overlay.trip { z-index: 2; }
+.trip-modes .trip-bar { width: 100%; max-width: none; height: 10px; margin: 6px 0 2px; }
+.trip-legs > li { min-height: 26px; }
+/* T-870: an other route opened under its row */
+.rows.pick > li.trip-alt-row { display: block; cursor: default; background: var(--tint); padding: 0 6px 4px 18px; }
+.rows.pick > li.rest { cursor: default; }
+.rows.pick > li.rest:hover { background: none; }
+.trip-hbar { width: 60px; flex: none; display: flex; align-items: center; }
+/* T-924: the data sources at the foot of Settings */
+
+/* T-247: the UI scale (Settings, --ui from game/ui.ts). Panels are zoomed whole (every size here is
+   px); the map's own DOM tags keep their placement and only their text is sized, since their
+   positions come from the map. The WebGL map is never scaled. Dock.tsx divides its drags by it. */
+#dock, #topbar, .save-notice, #tools, .map-top-left, .map-sky, .blueprint-bar, .blueprint-levels, .tool-bar, .tool-bar-pop, .loading-card, .loading-box, #debug { zoom: var(--ui, 1); }
+.loading-card-wrap { top: calc(var(--bar-h) * var(--ui, 1)); }
+.stn-label, .pi-label, .tool-tag, .intercity-label { font-size: calc(12px * var(--ui, 1)); }
+
+/* T-1491: F2 hides the interface for screenshots (ui/hideUi.ts); the map, network, bubbles, labels and hover tags stay */
+html.ui-hidden :is(.marey, #dock, #topbar, #tools, #tool-notes, #debug, .save-notice, .map-top-left, .map-search, .blueprint-bar, .blueprint-levels, .tool-bar, .tool-bar-pop, .mode-aura, .trouble, .map-zoom, .guide, .keep-dot, .help-panel, .touch-bar-host, .loading-card-wrap, .map-sky, #map .maplibregl-control-container) { display: none !important; }
+/* T-1548: the reminder at the top centre while the mouse moves (ui/hideUi.ts); no transition */
+.ui-hint { display: none; position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 1000; pointer-events: none;
+  font-size: 12px; color: var(--map-ink); background: color-mix(in srgb, var(--map-land) 88%, transparent);
+  padding: 3px 8px; border: 1px solid var(--rule); white-space: nowrap; }
+html.ui-hidden .ui-hint.on { display: block; }
+
+/* T-2853: the feedback panel's tags, earlier feedback and reply dot (ui/FeedbackPanel.tsx). No rules between
+   rows; the open thread is set apart by space. */
+.fb-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.fb-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); pointer-events: none; }
+.fb-dot.inline { position: static; flex: none; }
+.fb-open { position: relative; }
+.tab.gear { position: relative; }
+.fb-earlier { margin-top: 8px; }
+.fb-earlier .h { margin-top: 12px; }
+.fb-note { margin: 0 0 6px; color: var(--muted); }
+.fb-rows { list-style: none; margin: 0; padding: 0; }
+.fb-rows li { margin: 0 0 2px; }
+.fb-rows li.open { margin-bottom: 10px; }
+.fb-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 4px 6px; border: 0; background: transparent;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.fb-row:hover, .fb-rows li.open > .fb-row { background: var(--shade); }
+.fb-first { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-date { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+.fb-thread { display: flex; flex-direction: column; gap: 6px; padding: 6px 6px 0; }
+.fb-thread textarea { width: 100%; min-width: 0; padding: 4px 6px; border: 1px solid var(--rule); background: var(--bg);
+  color: var(--text); font: inherit; resize: vertical; }
+.fb-msg { padding: 4px 6px; }
+.fb-msg.anita { background: var(--tint); }
+.fb-who { display: flex; gap: 8px; color: var(--muted); }
+.fb-who span:first-child { font-weight: 700; }
+.fb-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fb-confirm p { margin: 0 0 6px; }
+.fb-del { border-color: var(--bad); color: var(--bad); }
+@media (pointer: coarse) {
+  .fb-tags .btn, .fb-thread .btn, .fb-confirm .btn { height: 34px; }
+  .fb-row { min-height: 44px; }
+}
+/* T-2962: the new-version notice, as the demand-stopped one without the alarm colour */
+.new-version-note { border-color: var(--accent); }
+.new-version-note .dsn-row .btn { border-color: var(--accent); color: var(--text); }
+.stop-mark.hot { box-shadow: 0 0 0 3px var(--map-casing, #fff), 0 0 0 5px var(--c), 0 0 12px 6px var(--c); z-index: 4; }

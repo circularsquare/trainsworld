@@ -1,0 +1,402 @@
+# trainsworld (trainworld) — spec
+
+**trainsworld** is the game's name wherever a player sees it (page title, UI, file names a player
+saves), lowercase. **trainworld** stays the internal name: this folder, the crate, packages, the
+serve.py registration and code. A browser game for building rail on a real world map, in the line
+of Subway Builder and NIMBY Rails: Subway Builder's data-driven demand, NIMBY Rails' whole world,
+and neither one's performance problems.
+
+This file is a summary of what is true **now**, one short section per area with a link to its
+detailed doc. It is rewritten in place when a decision changes; the history and the reasons live
+in `DECISIONS.md`, finished work in `ARCHIVE.md`, measurements in `notes/`. Where it says
+**open**, ask Anita; everything else is decided unless she changes it.
+
+| Area | Detailed doc |
+|---|---|
+| Performance ideas, technology, saves (2, 7, 11) | [docs/architecture.md](docs/architecture.md) |
+| One world: frames, coordinates, local time (3) | [docs/world.md](docs/world.md) |
+| Zones and how demand is split between them (3, 5) | [docs/zones.md](docs/zones.md) |
+| Local demand (4) | [docs/demand.md](docs/demand.md); abroad: [docs/demand-worldwide.md](docs/demand-worldwide.md) |
+| The regional layer (5) | [docs/regional.md](docs/regional.md) |
+| Track, trains, capacity, money, boarding (6) | [docs/track-and-service.md](docs/track-and-service.md) |
+| Interface (8) | [panels](docs/ui-panels.md), [inspectors](docs/ui-inspectors.md), [network on the map](docs/ui-map.md), [demand views](docs/ui-demand-views.md), [building](docs/ui-building.md) |
+| Adding a country | [docs/adding-a-country.md](docs/adding-a-country.md); the runner [docs/world-run.md](docs/world-run.md); by hand [docs/adding-a-city-by-hand.md](docs/adding-a-city-by-hand.md) |
+
+---
+
+## 1. Priorities, in order
+
+When two goals conflict, the higher one wins. **Current focus (Anita): the whole world, with
+sensible demand at the core** (2026-10-17: sensible and fun over fitting real cities). Performance
+is open work (2026-10-15): each item's impact is measured, and those with high impact or that let
+the game scale to hundreds of cities come first.
+
+1. **The game never freezes.** The main thread draws and handles input, nothing else. Anything
+   that can take more than a few milliseconds runs in a worker, and the UI keeps showing the last
+   finished result until the new one lands. No edit, load, save or recompute may block input.
+2. **Low CPU.** Work happens when something changes, not every frame. The ~10k-train goal is about
+   passengers, whose cost scales with network and demand, not train count.
+3. **Demand that feels earned.** Ridership follows from where people live and work and how good the
+   trip is, and the player can see why. Building rail must matter: Anita's two ceiling tests are the
+   targets and real networks a loose check of the right order (section 9). Prefer simple,
+   interpretable rules over faithful ones.
+4. **Many cities, one world.** Several full cities, links between them and to smaller places, in
+   one save.
+5. **Cute, clear look** (section 8).
+
+## 2. The core performance idea
+
+**Trains are cheap; passengers are expensive.** A train's position is `profile(t - departure)`,
+so nothing ticks per train. Passengers are flows, not agents: trips per period between places,
+route and mode choice solved in workers when service changes. The clock worker turns the loads into
+a **boarding account** per line [T-164]: each train's load and each platform's crowd, worked out a
+day at a time; a rider comes and waits only for a train with room within 30 minutes (demand's
+riders are held to the same queue), full trains leaving nobody behind past 90 minutes, and a
+platform side holds at most 5,000 [T-1067, T-1255]. [docs/architecture.md](docs/architecture.md) 2.
+
+**2.1 No signals, for now.** Trains do not block each other; tangles cost delay through capacity
+computed from schedules (section 6). Trains are drawn from keyframes on a directed track graph, so
+a block simulator could come later without touching renderer or demand.
+
+## 3. World, zones and cities
+
+**One network, one world** [T-125, T-306; [docs/world.md](docs/world.md)]. A save holds the whole
+Earth: the track model is planar in spherical Mercator with every length measured on the ground,
+so lengths, speeds, costs and run times are right anywhere (no track near the poles or across the
+180th meridian). Demand packs keep their own frames; `app/src/game/registry.json` is the one
+registry of frames, packs and the market. Track, trains and lines have no urban/intercity split;
+only demand is split into layers. **Local time** [T-309]: the clock keeps UTC-5; each region's
+periods, weekends and fares run on its own `utcOffset`, a line on its first stop's (rest: T-321).
+
+**Zones** [T-276, [docs/zones.md](docs/zones.md)]: the world is divided into **city zones** (the
+metro packs), **countryside zones** (the rest of a covered country in units grown to at least
+about 0.5M people, 1M in China and Taiwan, built as packs by the same pipeline, `kind: "zone"`) and **dead
+space**, where no trip starts or ends. Only zones a
+built station reaches join the demand solves; a zone viewed or beside the view that no station
+reaches opens **bare** in one auxiliary worker, its figures, bubbles and clicks from a no-rail pass
+that equals a solve's to the bit, so panning never re-solves [T-325]. A zone the player's built
+track crosses is in play as a reached one is, opened bare in turn once loads are done, and in the
+game's opened list [T-1047, [docs/zones.md](docs/zones.md) "Track"]. Every zone of a shown
+**realm** loads for the view on a pan [T-801]: zones group into country-sized realms (China in
+seven), and a realm is shown while the game has a station or track in it, starts in it, or the player showed
+it this session (a game started on the map shows them all until it builds); the others are one dark fill with a button and nothing of theirs is drawn or
+loaded for viewing, while demand, the market and money are the same whatever is shown [T-975,
+[docs/zones.md](docs/zones.md) "Realms"]. Zones that share no rider
+(Toronto and the Northeast, London, Paris) fall into separate **clusters**, each solved on its own
+lines; an edit re-solves only the clusters it touched, the others keep their figures [T-326,
+[docs/demand-runtime.md](docs/demand-runtime.md) "Clusters"].
+
+- **What is covered** (2026-10-22, about 800 zones): the US Northeast's nine city packs in one
+  regional market with the four counties between them (Anita, T-300: no ring round each city;
+  new US cities are paused); Toronto; Japan whole (seven metros and 38 prefecture zones); Europe
+  whole but for Russia, Belarus and Ukraine (held, Anita 2026-10-19; Moscow, Saint Petersburg and
+  Voronezh built); China's Jiangsu with Shanghai (T-897); and the sampler metros Mumbai, São Paulo,
+  Lagos (with three more Nigerian rows) and Seoul. Every place outside the US is tier 0, a
+  low-fidelity first pass on global sources with a country's own inputs where it has a module;
+  each country's sources and procedure are in [docs/data-register.md](docs/data-register.md), the
+  rules in [docs/demand-worldwide.md](docs/demand-worldwide.md). New rows come from the world plan
+  (`pipeline/world_plan.json`) through the unattended runner (`pipeline/world_run.py`,
+  [docs/world-run.md](docs/world-run.md)).
+- **Cells** are H3 resolution 9 (about 0.1 km²); sparse ones merge [T-044, T-466, T-510]: a res-8
+  parent under 2,500 trip ends a weekday becomes one cell, in busier parents touching children under
+  1,250 each merge, a cell under 1,250 left alone joins a touching merged cell of its zone
+  across its parent's edge, and any cell still under 50 joins the nearest busier one [T-850b]; in
+  very rural packs 2x2 blocks of 2 km demand zones under 1,000 trip ends each become one 4 km zone
+  [T-852] ([docs/demand-sources.md](docs/demand-sources.md) 4.1).
+
+## 4. Demand: local trips
+
+Each zone's local layer models eight purposes from the same national and global sources [T-066,
+T-140, T-142, T-150, T-152, T-181] (the US sources are named here; elsewhere tier 0's equivalents,
+[docs/demand-worldwide.md](docs/demand-worldwide.md)): **commutes** (a doubly constrained gravity
+from LODES homes to jobs), **shopping and errands** and **social and leisure** outings (retail,
+food and recreation jobs, population, and OSM parks for 8% of leisure, T-196; outside the US the
+same sectors' jobs by small area where published, else each 2 km zone's jobs blended with OSM's
+shops and leisure places, T-453; how many from each country's national travel survey, a worldwide
+median where it has none, T-509; how far by one worldwide set of distance scales, errands and
+social 1.0 km, school 1.4, medical 2.0, university 3.5, T-637, with a fifth of errands and social
+outings drawn instead to dense centres, attraction times its density at a 6 km scale, T-1092),
+**school** (NCES public schools),
+**university** (IPEDS), **airport** ground trips (FAA boardings less connecting passengers),
+**medical** visits (OSM facilities) and visits to **attractions** (museums, zoos, theme parks,
+temples, castles and the like from one Wikidata world file, sized by their visitors a year, drawn
+from homes and leisure jobs at a 10 km half-distance, T-263). Private schools are not modelled yet. **Homes leave out
+institutions** (prisons, nursing homes and the like, T-234).
+
+- **Commutes are one gravity over each group of zones that commute to each other** [T-276,
+  T-463] (the Northeast; Japan's 45 packs), solved offline (`joint_gravity`); the cross-pack part
+  travels in the regional layer. Each pack carries its own distance curve (US
+  d^-0.8 exp(-d / 30 km), T-198) and border factor (US states 0.23, Washington 0.45; a line between
+  two packs of one country elsewhere 0.5, Japan's too, T-1163; abroad, national borders only, T-181).
+- **Everyday outings cross zone lines** [T-1163, T-1175]: errands, social, school, university and
+  medical are drawn offline over the neighbouring packs' zones too; each zone keeps its own pack's
+  share of them (`everyday_kept_<purpose>`, its budget times it) and the rest travel in the regional
+  layer (section 5.1). Packs built before carry none and keep everything.
+- **Mode choice** recomputes after service or fare changes: station access, destination-specific
+  common-line strategies (a wait is half the combined headway, in plain minutes [T-585]; a change
+  of trains costs a fixed 2 perceived minutes, its wait and the walk between the two platforms'
+  centres [T-717]), fare-sensitive choice between rail and driving, and up to three crowding
+  rounds that price crowded trains and riders left behind by full ones [T-188]; a period stops
+  once a round moves its loads under 1% [T-434]. Riders choose among station pairs by how much
+  slower an option is relative to the trip's length: the scale is 20 over the trip's rough length
+  in perceived minutes (25 + 3 a straight km), in four distance bands, the regional layer's trips
+  too [T-718]; past 60 minutes it softens further, times sqrt(60 / T) (T the car's perceived
+  minutes between cities, the band's length in a city), so a long trip minds a minute less; a
+  train counts as crowded only from 70% of its rated load, 160 a car [T-710], and takes riders up
+  to 150% of it [T-2186]. Each round uses
+  the combined loads of every zone, the everyday layer and the regional market. Walking the whole
+  way is a third mode [T-558], its share from a logit at 0.10 a perceived minute (past 60 perceived
+  car-minutes 0.10 x sqrt(60 / T) [T-495]): 1.5 perceived minutes a minute at every length,
+  a bonus of 10 minutes against the car, commutes walking
+  between sampled cells rather than zone centres [T-587], so a good station
+  near a short trip takes some walkers and a long walk loses to the train. Rail and the car split
+  the rest on the ratio of their costs [T-918]: rail's share is 1 / (1 + (rail / car)^3), so twice
+  as dear gets 1 in 9, symmetric for the car, fading to nothing from 3 to 4 times either way; no
+  rail constant (time and money alone), car ownership $2.00 a trip plus $0.13 a km and 7 minutes to
+  park [T-636, T-637, T-938]. A fare dollar costs 4.4 x (GDP per head / $90,000)^-0.7 perceived
+  minutes in the trip's country, GDP at market rates (the US 4.4, Japan 8.4, China 16, India 51),
+  the car's money 3 everywhere [T-1277, T-1166, T-1521]. The regional market keeps a damped logit
+  with the plane [T-495, T-502]; its longer trips come from three income groups per country, each
+  weighing every mode's money (car, plane, rail) at its own minutes a dollar [T-1431] times 0.4 [T-1521].
+  There the car costs its country's fuel and tolls a km and the plane $100 plus 5 cents a km. Game
+  dollars are US dollars at market rates: the car and the plane match published prices [T-1521]
+  and the starting fare curve is one simple line [T-1670].
+- **No car ownership** [T-854]: everyone can drive, and the car stands for every way about but
+  rail and walking. Instead, every car trip from a home pays parking at the home end, 0.4 of the
+  destination's paid-space rule on the home zone's residents per km², so dense places drive less.
+- **Walks and drives follow real paths** [T-275] round water and over OSM roads. Riders walk
+  between stations within 300 m after a ride, and between any two stations of a complex [T-161].
+- **Homes and places are grouped for the choice**: the cells of a 2 km zone that share their
+  nearest station and lie in the same 15-minute band of walking to it share one walk per station
+  [T-090, T-720]. The trip explorer answers for its two cells' own walks, and its hovers give the
+  grouped figure the map's bubbles count where it differs [T-720].
+- **Weekdays, Saturdays and Sundays** [T-260, T-262]: three kinds of day. Each line's country
+  decides its weekend (Saturday and Sunday in most; Friday and Saturday in much of the Middle East,
+  the day of rest running as a Sunday; a one-day weekend a Sunday) and its public holidays run as
+  Sundays [T-872, docs/world.md "Calendar"]; Saturday and Sunday demand is worked out from the
+  weekday's solve per purpose and period (NHTS 2017 rates). The demand views show the average day
+  (5 weekdays, a Saturday and a Sunday over 7) unless a weekday, a Saturday or a Sunday is chosen
+  [T-464]. The same trains run every day (Anita, T-261: for now). **Superholidays** [T-264,
+  notes/T-264.md]: a run of days off around Spring Festival, Golden Week, Obon, Chuseok,
+  Thanksgiving, Christmas, Eid and the like; its days away are a fourth kind, a Sunday with local
+  outings at 0.7 and attractions at 1.5; its going-out day is a weekday and its coming-back day a
+  Sunday, each with longer trips twice a weekday's leaning out of big places and into touristy
+  zones, and back [T-1373, T-1374, docs/demand-market.md]. A calendar icon by the clock lists the runs coming within 21 days; its
+  click shows the going-out day, and the Day choice offers the three kinds while one is near.
+- **Demand rules must hold up worldwide**: every demand rule has an entry in
+  [docs/demand-worldwide.md](docs/demand-worldwide.md).
+
+Detail: [docs/demand.md](docs/demand.md).
+
+## 5. Demand: the regional layer
+
+The regional layer carries what crosses zones or goes far [T-117, T-276]. Detail:
+[docs/regional.md](docs/regional.md).
+
+- **5.1 The market**: total all-mode trips first, then the network earns rail's share. One
+  **world market** with every zone in it [T-362, T-377]. **Inter-city trips** (visits, business
+  and leisure of 25 km and more): a ground curve fitted to NHTS 2017 and a long-haul tail (T-376),
+  both scaled by GDP per head and shared over the world field (Kontur people with country,
+  income and landmass), so trips to places with no zone leave the map; a border factor between
+  countries; zones under 250 km apart pair 6 km zone to 6 km zone, farther ones place to place.
+  Rail competes with a car that pays for time, running cost and parking (only within a landmass)
+  and, between places 250 km or more apart that both have airports, a plane (T-378); other pairs
+  stay fixed. **Commutes between zones**: the joint gravity's cross-pack
+  part, at commute timing and mode choice. Each zone's own pack holds its part; a registry row per
+  zone gives every pair of zones its trips with nothing opened; the game builds pairs only between
+  zones a station serves on one track network [T-174, T-409]. **Everyday outings across a zone
+  line** [T-1175, T-1176]: a third list in each zone's market pack, by 6 km pair and purpose with its
+  walking share with no rail, built as the commutes are and chosen as the everyday layer chooses
+  (walking, then rail against the car on the ratio curve), at each purpose's timing; their loads are
+  their purposes' (docs/zones.md 4a). The data comes with the next rebuild.
+- **5.2 Access**: the same walks and rides to stations as local demand, so feeder lines and
+  transfers carry real loads; nothing bypasses the player's local network.
+- **5.3 Park-and-ride** [T-295, T-371, T-389, T-373, T-372]: a commute or everyday trip of 5 km or more
+  may ride (car, bus, bike or a lift, one mode) from home to the cheapest station of each nearby
+  line within 15 km, at a fixed cost plus the drive, counted double a minute of driving the whole
+  way [T-916], plus parking or a drop-off at the station; the walk is a true 6 km/h walk. Its
+  constants are fitted on New York (T-372). The car pays parking by the destination's job density with a free-parking share, and
+  congestion charges in Manhattan and central London (T-380, docs/demand-mode.md 4.3). The regional layer's commutes between zones ride at the home end and
+  its inter-city trips at both ends, the far end a drop-off only, through the same
+  `access_options`, so a lone station in a new city draws riders from beyond walking reach. A
+  station's inspector splits the commuters who live nearby into those who walked and those who
+  drove, and the trip explorer shows a ride access as a drive [T-374]; the split covers
+  commutes only.
+- **5.4 Size**: a zone's market pack opens and closes with the zone, in the same worker pool as
+  the zone packs.
+
+## 6. Building and running
+
+The player draws curved track (straights and circular arcs, regular double or high speed, at elevations
+-3 to +3, "levels" in the code) two clicks per segment, each segment one curve through the click leaving along the track, up
+to 350 degrees round [T-418, T-422, T-442], its curves laid out for a target max speed the player picks
+(160 to 320 km/h, wider curves for faster; T-817; high-speed track is double track at 1.5x the
+price, its target max speed 320 by default; track caps trains at 160 km/h, high-speed track at 320),
+places stations (on track only [T-1820]), and makes lines, all as
+**blueprints** that are free to edit and undo, then pays to **construct** them. The track and station tools' options sit in a bar on the map while the tool is on, and each click mode but plain selecting has its colour as an aura round the map [T-2282, T-2284]. A segment is one
+piece of track [T-244]; the Select tool picks many at once, blueprint or else constructed, to
+disable, re-level or remove together, and rebuild constructed track in place at another level or track type, rail to tram and back included, or single track as double, for its full new price, or double regular track as single, free with nothing back; a level change takes the stations on the track with it, those at the pick's ends ramping on the track beyond [T-333, T-815, T-829, T-3059, T-3088, T-3241, T-3296, T-3321]. Quad track is regular, high-speed or tram, drawn or doubled up from a double of that kind [T-3126, T-3166]. A station clicked on quad track goes on the pair clicked only; the game
+adds no crossovers, so the player draws crossing track where lines should change pairs (saves keep
+their crossovers) [T-338, T-733, T-1687, T-1688]. Single
+track is in the Build tab's Tracks row again [T-3093]; single track can run one way, set in the track inspector, and a line that goes both ways over a one-way piece takes its own way back [T-3094]. With the ramp switch on, a new junction a double regular or high-speed route makes on double track is laid as a real flyover of one-way legs where it fits, its curves laid out for a flyover target max speed the player picks (80 km/h by default; faster takes more room) [T-3092, T-3169, T-3170]. Trains, trams and buses keep right or left, one side per game, picked on the new game sheet (set from the start country) and switchable in Settings, with what the switch could not fix listed [T-3297, world.md "Running side"]. Each line has
+a train length in cars, by default the most its shortest platform fits (20 m cars) and never more
+[T-733], and ordinary trains (160 km/h) or high-speed trains (320 km/h on high-speed track, cars
+1.5x the price, dearer to run, a fleet of their own), the player's choice [T-817]. A line may reverse partway at a stop or a bare track end, standing its turnaround there, and a large icon marks the place [T-797] (a line in manual mode, below, is exempt). Every turn at a station, ending or reversing, a dead end or a through station alike, holds one platform for its turnaround: 15 an hour at 3 minutes, 30 with a terminal (6.2) [T-1281, T-3107]. Stations take **upgrades** from a row of icons in their panel, into the blueprint or paid at once on a built station, none refunded [T-1281]: a terminal (trains turn on both platforms: 30 an hour instead of 15), a park and ride (a ride to the station costs 10 perceived minutes less; US$20M), a waiting room (waits there count at 0.8 of their minutes; US$5M), and a passage to another station up to 1 km away (one complex, changes along the straight line at 2 m/s; US$10M plus US$90M a km), the one way to link stations. A complex shares park and ride and a waiting room across its stations [T-1528]. A line whose last stop is its first
+is a loop, closed and opened by clicking its first stop while editing stops: a circle carries on round
+through it, a balloon turns back there; a loop runs both ways with half its (even) trains each way,
+or one way, round in the direction it was drawn, with all of them (a toggle in the line panel; new bus
+and ferry loops start one way, train loops both ways) [T-2981]; trains hold at the first stop to the
+headway, and riders ride through a circle's first stop the short way round, on a one-way loop the
+only way round [T-798]. While a line's stops are edited a click on a station adds or removes the stop and nothing else; a right click (a held finger by touch) closes (at either end of the line), opens or turns a loop where the station offers one, a line's end turning round a loop of track as T-3021's "loop back here", and a right click on any stop of a loop opens it there; bus and ferry routes take the same gestures, looping back with a right click on a point or port partway along; on touch a Loop button makes the next tap a right click [T-3109, T-3118]. A click never turns a line round a loop: only the right click loops a line or makes it one way [T-3140]. A loop line stops every time it passes a station it stops at, except straight after a stop there (a terminal whose loop has no stop): a stem with a loop at each end, right clicked at each loop, runs round both, stopping both ways along the stem; the sim's answer to which way each stop is served drives the half dots and the chevrons, which point along the track [T-3122, T-3139]. A one-way circle that runs out and back along one branch ends there, turning as at an end of the line rather than reversing partway [T-3141]. Lines set a whole number of trains for high, medium and low demand, or a headway for each, run with the fewest trains that keep it, or at the track's limit the most that fit [T-625, T-679]; capacity and
+junction conflicts add delay, computed from the schedules in the clock worker before demand runs,
+and no track, platform or junction carries more trains than its capacity: a line's fleet past that
+waits at its ends [T-517].
+The clock worker owns edits (with undo for reversible changes), capacity, fleet, costs, money and
+the boarding account. Fares are paid into the cash as trains pick up riders and running costs
+drain evenly [T-284], each hour's share following when riders travel and trains run, fares
+landing as rides end [T-736]; the economy runs at 100x real days [T-081]. Changing a line's trains moves no
+running train: added ones enter at a terminal, removed ones leave at one, and the change takes
+effect a moment ahead so it is drawn in step at any clock speed [T-206, T-1071]. A new game starts
+with $10B in an empty New York [T-805, T-2271]; double track costs a base of US$75M a km times a
+multiplier per elevation (US$37.5M at grade, 75 at +1 and -1, 120 at -2) [T-805, T-1928], plus the ground's terrain class (hills +0.5 or +1.2, mountains +3; the player sees both hill classes as "Hills") at
+every elevation but the bored -2 and -3, so in mountains a tunnel is the cheaper way; a viaduct or cut and cover tunnel over more than 30 km of unbroken water is refused [T-1930]; Settings can
+shade the hills on the map [T-1270], a 200 m station a fixed US$50M plus a part by level (US$75M at grade, US$90M at +1,
+US$150M at -2) [T-1267], a 20 m car costs US$2.5M, bought as a line's fleet grows and kept in the depot for any line
+when it shrinks [T-028, T-631], and running costs are US$4 a train-km plus US$2 a car-km [T-807]. Constructed
+track and stations cost upkeep whether trains run or not, US$35k a km of double track on the ground (US$50k on a viaduct, 100k in cut and cover, 130k in a bored tunnel, T-1931) and US$50k a station a game
+day, US$200k for one underground (-1 to -3) [T-2619], draining evenly; a line's profit takes off its share, each piece's split by the trains a day of the lines
+using it [T-867]. The fare is a curve of trip length through three points, never falling with distance: in the Money tab the player drags the points on a graph to set fares, or sets a base fare at 0 km and, for each of the two stretches after it, its end distance and its rate per km (at least $0) [T-626, T-1112, T-1143, T-1201]. Each country charges the curve times its fare scale: by default its income's, (its GDP per head at market rates over the start country's)^0.5, or the player's own, set in the Money tab as a multiple of the reference country's fares (the first country built in, or one the player picks; switching it changes no fare); a trip pays its starting country's [T-2021, T-1277, T-1554, T-1906, T-2670, T-2679]. A new game's curve is set once for the country it starts in: $2.50, $6.50 and $22.50 at 0, 20 and 100 km in the US, those times the country's scale elsewhere (Japan $1.30, $3.40 and $12). Rides on a line with high-speed trains pay the curve's part above the base times a multiplier, 1.5 unless the player sets another in the Money tab; ferry lines do the same with their own, 1.00 by default [T-1626, T-2194, T-2195]. A fare change shows in the Money tab at once, but a line's income keeps the fares its riders were solved with until riders solved with the new ones show [T-2266]. Each line's fare income takes a share of the network's base fares, half by its boardings and half by its passenger-km, at most one base a boarding [T-2104]. The player may take one loan at a time, of $1B, $5B or $10B, repaid in 60 equal daily payments at 1% interest a game day ($22.2M a day for $1B), and refused while a payment is more than the recent daily profit [T-1661, T-2022, T-1906]. Prices and fares in full: track-and-service.md 6.4.
+**Points** measure each city's network: what it earned in the past 24 game hours, recomputed
+once a game hour, at 20 a rail trip (a rider's whole journey, changes included, counted in the
+city it starts in) and 1 a passenger-km; not a running total, and they unlock nothing yet [T-684,
+T-694]. A city's goals are train shares of 10%, 20%, 30% and 40%, each kept once reached: the 10%
+one is a star in the Cities list [T-685], 10% and 20% are ticks on the trips bar in the city view, and all are listed there as
+goals reached once reached [T-1437, T-1438, T-1551, T-2145]. In the seven cities with a real network save the bar also marks
+the train share that real network gets in this game [T-2145].
+**Achievements** are goals for the whole game, each kept once earned: four tiered ones (Cities served
+2/10/25/100, Trips a day 1M to 1B, Busiest station 500k to 5M boardings a day, Busiest line 500k to 10M
+riders a day, the last three on the average day) and ten firsts (a line in two countries, on two
+continents, 1,000 km long, with $200M profit in a day, a train at 300 km/h, a circle of 10 stops, one
+change per trip, a city at 20% of its own trips and of its trips to other places by train, a rider 12
+hours on one train), then hidden ones shown only once earned: eight long corridors (Hokkaido to Shikoku, Paris to
+Istanbul, New York to San Francisco, western Europe to eastern Russia, Santiago to Buenos Aires, Cape Town to
+Cairo, Adelaide to Darwin, Istanbul to Xi'an) and a share of a region's rides by train in Europe and in fourteen
+countries [T-3037]. The achievements view's hovers give the share of players who have each [T-3038]. A small toast at the map's bottom left says each one earned; the medal at the
+top of the Cities tab opens them. A sandbox earns none [T-2124; docs/ui-panels.md "Achievements"].
+
+Bus lines (T-1464, T-1465) need no track: the player clicks a route that follows the roads between
+clicks (a point the roads do not reach is refused, T-2451), stops place themselves at the train
+stations it passes and about every 2 km (or the player sets a line's stops about a distance apart, T-2885), a hop takes the car's time over its road at 90% of the car's speed (never under 30 km/h, a bus lane) plus 28 s for the stop (T-2904),
+and homes within 300 m of the route ride from it, each boarding of a bus costing 6 perceived minutes; US$1M a road-km, US$0.6M a
+bus and US$6 a bus-km to run. A bus is a third of a train car (53 riders at the rated load, 80 at crush, T-2919), so its crowding reads as a train's. Trips by bus count as rail.
+A route that ends where it starts is a loop (T-2899), and so is a ferry line whose last port is its first: it runs round and round as a train circle does, one way unless the player sets both ways (T-2981).
+
+
+Ferry lines (T-2193, design notes/T-2177.md) run on water between ports, stations of their own kind
+with a landing on the shore and a berth in the water. The route is free, found in the app over the
+basemap's water between two ports (T-2192): at least 5 m off land, keeping 400 m off where that costs
+under 1.3 times the shortest, with bends up to 300 m and a speed each point by its room and bend. Boats
+(one kind, two train cars: 320 riders, 480 at crush) run at most 32 km/h as room allows (T-2450) and accelerate
+at 0.15 m/s²; US$10M a port, US$8M a boat and US$40 a boat-km to run. The player places ports only with
+the Ferry tool (beside Bus, key O; T-2194); the line draws dashed, boats as pointed hulls, with a panel
+like a bus line's whose port list takes a port out by its dot or moves one by dragging (T-2275), and a
+Ferry fare row in the Money tab. A new line runs a boat every 20 and 30 minutes, none at low demand (T-2273). In demand (T-2195) a ferry line is a line like
+any other, its ports stations, with no boarding cost; its rides pay the curve's part above the base
+times the Ferry multiple, and trips by ferry are the network's. A tenth of visits and attractions
+trips are ferry fans, for whom each minute aboard a ferry counts 0.1 (T-2196, docs/demand-mode.md).
+
+Detail: [docs/track-and-service.md](docs/track-and-service.md) (6.1 track and stations, 6.2
+capacity, 6.3 trains and schedules, 6.4 costs and money, 6.5 edits, 6.6 the boarding account, 6.7
+bus lines, 6.8 ferry routes, 6.9 ferry lines).
+
+## 7. Technology
+
+Web first, so it can be shared as a link. TypeScript, Vite and Preact with signals for the app;
+MapLibre GL 6 for the basemap, flat or as a globe (Settings, T-033), with our own WebGL2 renderer on a canvas over it for track,
+stations and trains, drawn in the same frame as MapLibre's, as are the canvases and DOM marks over it (faces, names, tags; T-1418). Rust compiled to WebAssembly in Web
+Workers: one clock worker (track model, lines, money, boarding account, autosave) and a pool of
+demand workers that each own a fixed set of the five periods. Threads talk by transferring
+versioned snapshots. The page opens on a start menu (New game, then the saved games); the workers
+start with the pick (T-677). A loaded game holds only its clock, behind a loading card, until its
+fresh demand solve's final result lands (T-347), or until its network is in when the last final
+result kept beside the save is for that very network (T-328, T-2560: the game plays on it while the
+same network is solved again); input is never blocked. Another game opened from the saves
+panel reloads the page into it, which frees the last game's memory (T-1196). City packs come from an offline Python pipeline. The simulation is a pure
+function of (save, pack versions, game time); a save made just after a service edit carries the
+change over [T-206, T-1071].
+Detail: [docs/architecture.md](docs/architecture.md) 7; file layout in `docs/code-map.md`.
+
+## 8. Look and UI
+
+A pastel style in Zen Maru Gothic, light or dark (Settings, Theme) with three colours each [T-039].
+Panels take CSS tokens (`ui/style.css`); the map's light and dark colours (basemap, line casing, map
+ink) are one table, `game/shades.ts`, whose basemap palette is warm paper land, soft teal water and sage parks [T-676]. The network takes the line colours, the same in both themes. One dock on the left holds the icon tabs (Build, Lines, Stations, Finances, Cities), the
+saved games button and the Settings gear, with the inspector under them, whose top edge never
+moves. The top bar holds the mode split (the goal number) of the city in view, or zoomed far out the world's train trips a day ("11.8M trips/day", T-1440), the cash, the local time and date beside or over
+a moving sky and a band in the demand level's colours (T-861), pause and three speeds. **Panels show what can change**: labels, numbers and states,
+no explanatory notes [T-253]. **Everything drawn that encodes a number has a hover**, always the
+game's own tag, never a browser tooltip [T-194, T-210]. Motion is allowed where it helps, never
+slowing a control (Anita 2026-10-29). A new normal game shows a **Tutorial card**, a post-it
+under the search button with steps ticked as the player does them (a zoom into a city on a world
+start, track, stations, construct, a line, stops, a train, the crowding dot, trains at every level, unpausing: a new game starts paused, T-2142),
+then a second card on reading demand (Homes, a bubble, a trip, a star), until the player has finished
+the first once in the browser [T-1822, T-2123; docs/ui-panels.md "Tutorial card"]; a browser's first elevation is +1. **Panels count the past 24 hours, not a forecast** [T-293, T-446]: the line and station panels
+count the past 24 hours from the boarding account (labelled "today", the profit "expected profit today" [T-1893]), while the map's demand views (Homes and Destinations bubbles
+coloured by mode share, line widths by riders, station ridership circles, inter-city trips) show demand's
+whole day: the average day by default, or a weekday, a Saturday or a Sunday [T-464, T-262]. On the map, lines sharing track are drawn over each other,
+stations are dots from zoom 9 and their true platforms from 14, and trains fill like a gauge with
+their riders.
+
+## 9. Checking the demand model
+
+Rough on purpose: the bar is the right order (section 1).
+
+- **Anita's two ceiling tests are the targets** [T-636, notes/T-636.md]: rail's share of rail +
+  car with a straight free train between every pair of points (A, at least 85%) and with a slower
+  fared one (B, at least 50%). A change to a demand rule is measured on both.
+- **Real networks are loose checks** [T-007, T-509]: a city's real rail network (the operators'
+  GTFS, else OSM routes; `realnet.py net <city>`) is solved natively through the sim's demand code
+  (the `calib` bin) and compared by `calib.py` with census rail shares by area, station entries and
+  line counts where published. Nothing is fitted to them (Anita, 2026-10-17); a moderate overshoot
+  where real riders shun transit (New York) is accepted. Known gaps are open tasks (Tokyo's commute
+  rail share, T-529; commuter rail high, T-271; subway peak loads, T-216).
+- **Tier-2 check** against LODES OD: commute lengths and county pairs (notes/T-198.md).
+- To do: long-distance rail share on corridors with known rail and air numbers (Northeast
+  Corridor first).
+
+## 10. Milestones
+
+- **M0, spikes** and **M1, New York sandbox**: done.
+- **M2, Northeast**: nine cities, the regional market, zones, commutes between them and
+  park-and-ride are in; between packs a coarse world mask holds the sea and large lakes (T-1285).
+- **M3, world** (under way): whole countries from the world plan by the unattended runner, the
+  world market with air, clusters that re-solve only what an edit touched, and the game published
+  by direct link (T-924). Covered so far: section 3.
+- **M4**: POIs, the look pass, sharing saves by link, accounts.
+
+## 11. Saves and accounts
+
+A save is the player's inputs only; everything else is recomputed from versioned packs. The clock
+worker writes it to IndexedDB in named browser slots (one writing tab per slot) and to files. New
+game, Open a file and opening a backup as a copy each start a new slot; no slot is ever written over with
+another game [T-743]. A game is normal or a sandbox (nothing refused for money, the cash hidden;
+a normal game can become one once, never back), starts in a city or on the world map, and a sandbox
+in one of 37 cities can start from its real network [T-728, T-731, T-3225; docs/ui-panels.md "Saved
+games"]. Each slot keeps backups reaching back about 10 minutes, an hour, a day and a week, and
+one from before the account's copy last replaced it, each restorable as a new slot [T-744,
+T-1826]. A save that fails for a full disk frees the demand caches and tries again, and a
+database cleared under a running game is made again with the game in it [T-1829]. A game saved by a newer build with parts this one cannot read plays but is never written
+or uploaded here [T-1826]; closing the page asks first only while a change cannot be saved. Beside each slot the page keeps its last final demand result, shown at once
+on reload when the network, packs and build match [T-328].
+Keeping old saves loading is a nicety: only Anita has saves. An optional account, noritetsu's on
+`shonei-server` (one sign-in for both pages), lists a signed-in player's normal games by points on
+a world leaderboard and one per city and country, each person once per board. A game counts at its
+current figures, never its best ever, so a demand change never leaves an unreachable score up, and
+on each board a person's row is their best game there; a game that was ever a sandbox is never listed [T-972, T-973, T-3248; docs/ui-panels.md "Account and leaderboards"].
+Games synced between devices and sharing by link come later (T-988 to T-990).
+[docs/architecture.md](docs/architecture.md) 11.
+
+## 12. Open questions
+
+- Open items in the detailed docs: border factor fade (T-273), how commutes between zones are
+  labelled (T-298).

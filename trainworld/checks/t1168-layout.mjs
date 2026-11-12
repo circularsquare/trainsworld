@@ -1,0 +1,100 @@
+// T-1168 stage 2: the related-lines layout (game/relatedLayout.ts) on the real save, against the
+// mockups (t1168-*.png in the maps root, artifacts/trainworld/t1168/): the 2, the 4 and the 6X.
+// Prints each line's columns and checks the ones the mockups show. Run from the maps root:
+//   node trainworld/checks/t1168-layout.mjs
+import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
+import init, { TrackApi } from '../app/src/wasm/track/sim.js';
+import { loadApp, REAL_SAVE } from './lib.mjs';
+
+const { buildComplexes } = await loadApp('src/game/complexes.ts');
+const { decodeRelated } = await loadApp('src/game/relatedLines.ts');
+const { relatedLayout } = await loadApp('src/game/relatedLayout.ts');
+
+await init({ module_or_path: readFileSync(new URL('../app/src/wasm/track/sim_bg.wasm', import.meta.url)) });
+const raw = gunzipSync(readFileSync(REAL_SAVE));
+const api = new TrackApi(-73.985, 40.758, true);
+if (!api.load(raw.subarray(8 + raw.readUInt32LE(4)))) throw new Error('save did not load');
+const ni = api.nodes_info(), geo = [];
+let top = 0;
+for (let i = 0; i < ni.length; i += 10) {
+  top = Math.max(top, ni[i]);
+  if (ni[i + 7] > 0) geo.push({ id: String(ni[i]), x: ni[i + 1], y: ni[i + 2], heading: ni[i + 9], length: ni[i + 7] });
+}
+const fl = api.station_links(), links = [];
+for (let k = 0; k + 1 < fl.length; k += 2) links.push([String(fl[k]), String(fl[k + 1])]);
+const cx = buildComplexes(geo, links);
+const of = new Uint32Array(top + 1).fill(0xffffffff);
+for (const g of geo) of[Number(g.id)] = cx.of.get(g.id);
+
+const li = api.lines_info(), ids = [];
+for (let i = 0; i < li.length; i += 22) ids.push(li[i]);
+const lineStops = new Map(ids.map((l) => [l, [...api.line_stops(l)]]));
+const short = (n) => n.replace(/^subway /, '');
+const opts = (l, width) => ({
+  line: l, stopS: api.line_stop_s(l, 0), width,
+  lineName: (x) => short(api.line_name(x)),
+  stopName: (x, s) => api.node_name(lineStops.get(x)[s]).split(' / ')[0],
+});
+
+let fail = 0;
+const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${what}`); if (!ok) fail++; };
+const layoutOf = (name, width = 340) => {
+  const l = ids.find((x) => short(api.line_name(x)) === short(name));
+  const t = performance.now();
+  const lay = relatedLayout(decodeRelated(api.line_related(l, of)), opts(l, width));
+  const ms = performance.now() - t;
+  const nm = (i) => opts(l, width).stopName(lay.rows[i].ref.line, lay.rows[i].ref.stop);
+  console.log(`\n== ${name}: ${lay.rows.length} rows (${lay.rows.filter((r) => r.lStop < 0).length} side-only), ${lay.columns.length} columns, ${lay.width} px wide, ${ms.toFixed(1)} ms`);
+  for (const c of lay.columns) console.log(`  ${short(api.line_name(c.line)).padEnd(4)} ${c.side}${Math.round((Math.abs(c.x - lay.spineX) - 6.5) / 5) + 1} rows ${c.r0}-${c.r1} ${nm(c.r0)} .. ${nm(c.r1)}${c.up ? ' up' : ''}${c.down ? ' down' : ''}`);
+  return { lay, col: (n) => lay.columns.filter((c) => short(api.line_name(c.line)) === n), nm };
+};
+
+{
+  const { lay, col, nm } = layoutOf('subway 2');
+  const one = col('1');
+  check(one.length === 1 && one[0].side === 'R' && nm(one[0].r0) === 'Chambers St' && nm(one[0].r1) === '96 St', 'the 2: the 1 on the right, Chambers St to 96 St');
+  check(lay.rows.some((r) => r.lStop < 0 && opts(0).stopName && true), 'the 2: rows only the 1 stops at');
+  check(col('3').length === 1 && col('3')[0].side === 'L', 'the 2: the 3 on the left');
+  check(col('5').length === 2 && col('5').every((c) => c.side === 'L'), 'the 2: the 5 twice on the left (Brooklyn, the Bronx)');
+  check(col('4').length === 1 && col('4')[0].side === 'L', 'the 2: the 4 beside in Brooklyn');
+  check(!col('A').length && !col('R').length, 'the 2: no A or R column');
+  const x149 = lay.rows.findIndex((r) => nm(lay.rows.indexOf(r)).startsWith('149 St-Grand'));
+  check(x149 >= 0 && lay.rows[x149].cross.some((c) => short(api.line_name(c)) === '4'), 'the 2: the 4 crosses at 149 St-Grand Concourse');
+}
+{
+  const { col } = layoutOf('subway 6X');
+  check(col('6').length === 2 && col('6').every((c) => c.side === 'R'), 'the 6X: both 6 locals on the right');
+  check(col('4').length === 1 && col('5').length === 1 && col('4')[0].side === 'L' && col('5')[0].side === 'L', 'the 6X: the 4 and 5 on the left');
+  check(col('J').length === 1 && col('Z').length === 1 && !col('N').length, 'the 6X: the J and Z beside for two rows (T-1391), the N crossing twice');
+}
+{
+  const { lay, col } = layoutOf('subway 4');
+  check(lay.columns.length >= 4, `the 4: ${lay.columns.length} columns`);
+  check(col('6').length + col('6X').length >= 2, 'the 4: the Lexington locals beside it');
+  // T-1795: a mark the 4 does not stop in has a faded rim; the 4's own stops each have one full mark
+  const full = lay.pills.filter((p) => !p.passed);
+  check(lay.pills.some((p) => p.passed), 'the 4: marks it passes are faded');
+  check(full.length === lay.rows.filter((r) => r.lStop >= 0).length && full.every((p) => lay.rows[p.row].lStop >= 0), `the 4: ${full.length} full marks, one per stop`);
+}
+{
+  const { lay } = layoutOf('subway 4', 280);
+  check(lay.width <= 0.4 * 280 + 1, `the 4 at the narrowest dock (280 px): the drawing in 40% of the panel (${lay.width} px)`);
+}
+{
+  // T-1894: drawn last stop first, the same columns with the rows the other way up; no side rows
+  // where `sideStop` turns them all away
+  const l = ids.find((x) => short(api.line_name(x)) === '2');
+  const groups = decodeRelated(api.line_related(l, of));
+  const a = relatedLayout(groups, opts(l, 340)), b = relatedLayout(groups, { ...opts(l, 340), flip: true });
+  const stopsA = a.rows.map((r) => r.lStop).filter((s) => s >= 0), stopsB = b.rows.map((r) => r.lStop).filter((s) => s >= 0);
+  check(stopsB.join() === [...stopsA].reverse().join(), 'the 2 flipped: its stops bottom to top');
+  const cols = (lay) => lay.columns.map((c) => `${c.line}:${c.r1 - c.r0}`).sort().join();
+  check(cols(a) === cols(b) && a.rows.length === b.rows.length, 'the 2 flipped: the same rows and columns');
+  const one = b.columns.filter((c) => short(api.line_name(c.line)) === '1');
+  const nmB = (i) => opts(l, 340).stopName(b.rows[i].ref.line, b.rows[i].ref.stop);
+  check(one.length === 1 && nmB(one[0].r0) === '96 St' && nmB(one[0].r1) === 'Chambers St', 'the 2 flipped: the 1 from 96 St down to Chambers St');
+  const c = relatedLayout(groups, { ...opts(l, 340), sideStop: () => false });
+  check(c.rows.every((r) => r.lStop >= 0), 'the 2 without side stops: only its own rows');
+}
+process.exit(fail ? 1 : 0);

@@ -1,0 +1,591 @@
+//! A segment drawn at ground level across water becomes a bridge by itself (T-656).
+//!
+//! The drawing tool's alignment is re-expressed as the same shape with more vertices: each stretch
+//! over water is raised to level 1, with ramps that end on land before the water and start on
+//! land after it. A ramp is centred between two vertices of different levels (geom.rs), so a ramp
+//! centred at `c` is placed by a vertex at `c - d` and another at `c + d` (d at least half a ramp).
+//! On a straight a vertex is a PI with no turn; on an arc the arc is cut into arcs of the same
+//! radius, each its own PI at the tangents' crossing, whose vertex chainage is the middle of its
+//! arc. The preview and the edit both go through `bridge`, so they cannot disagree.
+
+use super::cost::{water_spans, WaterMask};
+use super::frame::merc_k;
+use super::geom::{self, Fit, Piece, Pi};
+use super::params::*;
+
+thread_local! {
+    /// The smallest radius of the track being bridged (`with_min_radius`).
+    static MIN_R: std::cell::Cell<f64> = const { std::cell::Cell::new(MIN_RADIUS) };
+}
+
+/// T-2927: `f` with the bridges laid for track whose smallest radius is `r` (a tram kind's 25 m),
+/// so its tighter curves are not taken for a shape that does not fit.
+pub fn with_min_radius<T>(r: f64, f: impl FnOnce() -> T) -> T {
+    let was = MIN_R.with(|c| c.replace(r));
+    let out = f();
+    MIN_R.with(|c| c.set(was));
+    out
+}
+
+/// `geom::fit_in` for the track in hand.
+fn fit_here(v: &[Pi], scaled: bool) -> Fit {
+    geom::fit_min(v, scaled, R_CAP, MIN_R.with(|c| c.get()))
+}
+
+/// The level a bridge runs at.
+const BRIDGE_LEVEL: i8 = 1;
+/// A ramp up to the bridge, m.
+const RAMP: f64 = RAMP_PER_LEVEL;
+/// Land kept between a ramp and the water's edge: the mask is read every `WATER_STEP`.
+const SHORE: f64 = WATER_STEP + 2.0;
+/// Ramps that a curve in the way keeps off their place move back by this, up to `MAX_SHIFT`.
+const SHIFT_STEP: f64 = 25.0;
+const MAX_SHIFT: f64 = 400.0;
+
+/// How far a ramp moves from its place, in turn.
+fn shifts() -> impl Iterator<Item = f64> {
+    (0..=(MAX_SHIFT / SHIFT_STEP) as u32).map(|k| k as f64 * SHIFT_STEP)
+}
+/// Half the distance between a ramp's two vertices, tried in turn: a ramp is the same wherever
+/// they are, so a curve that has no room for them close in may have it further out.
+const HALF_SPANS: [f64; 11] = [100.0, 125.0, 150.0, 200.0, 260.0, 340.0, 450.0, 600.0, 800.0, 1100.0, 1500.0];
+/// The shortest arc an arc is cut into, m.
+const MIN_CUT: f64 = 5.0;
+
+/// There is no room on land for the ramps.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NoRoom;
+
+/// A ramp centred at `c`, with its vertices `d` either side. Ramps alternate up and down from the
+/// level at the start (`level_after`).
+#[derive(Clone, Copy, Debug)]
+struct Ramp {
+    c: f64,
+    d: f64,
+}
+
+/// One vertex a ramp needs. `follow` is the second vertex of its ramp.
+#[derive(Clone, Copy, Debug)]
+struct Req {
+    x: f64,
+    level: i8,
+    follow: bool,
+    /// The other vertex of the same ramp, where there is one (the end node can stand in).
+    partner: Option<f64>,
+}
+
+/// A vertex of the new alignment; `level` None takes the level of the stretch it lies in.
+struct V {
+    pi: Pi,
+    mid: f64,
+    level: Option<i8>,
+}
+
+/// The level after `k` ramps, from a start at the bridge's level where `up`.
+fn level_after(k: usize, up: bool) -> i8 {
+    ((k + usize::from(up)) % 2) as i8 * BRIDGE_LEVEL
+}
+
+/// Which ends of `verts` are up at the bridge's level already (T-1269: drawn on from an end a bridge
+/// left up), the vertices next to them that the drawing tool gave their level included; the rest
+/// must be at level 0. None for any other levels, or none at 0.
+fn ends_up(verts: &[Pi]) -> Option<[bool; 2]> {
+    let a = verts.iter().take_while(|p| p.level == BRIDGE_LEVEL).count();
+    let b = verts.iter().rev().take_while(|p| p.level == BRIDGE_LEVEL).count();
+    (a + b < verts.len() && verts[a..verts.len() - b].iter().all(|p| p.level == 0)).then_some([a > 0, b > 0])
+}
+
+/// The chainage spans of an alignment a bridge must clear; `fine` as for `fine_spans`.
+pub type Spans<'a> = &'a dyn Fn(&Fit, bool) -> Vec<[f64; 2]>;
+
+/// The water along an alignment, as spans.
+pub fn water(mask: &dyn WaterMask) -> impl Fn(&Fit, bool) -> Vec<[f64; 2]> + '_ {
+    move |f: &Fit, fine: bool| {
+        if fine {
+            return fine_spans(f, mask);
+        }
+        let mut wet = vec![];
+        water_spans(f.len, |s| { let (x, y, _) = geom::pos_at(&f.pieces, s); (x, y) }, mask, &mut wet);
+        wet
+    }
+}
+
+/// `verts` (at level 0, an end perhaps up at the bridge's level) with a bridge over each stretch of
+/// water, as the same alignment. Ok(None) where nothing needs doing: no water, any other level, or
+/// an alignment that is invalid anyway. An end up already stays up to the water, or comes down
+/// at once where there is room to go up again before it. `lift`: an end that is a new node, not
+/// track already there, may stay at the bridge's level with no ramp on its side: over water
+/// (T-1269), or on land where its ramp has no room (T-2414).
+pub fn bridge(verts: &[Pi], scaled: bool, mask: &dyn WaterMask, lift: [bool; 2]) -> Result<Option<Vec<Pi>>, NoRoom> {
+    if mask.is_empty() {
+        return Ok(None);
+    }
+    bridge_in(verts, scaled, &water(mask), false, lift)
+}
+
+/// `verts`, running at level `base`, taken a level up (`up`) or down over each stretch `spans`
+/// finds, by the bridge's ramps and rules (T-1615: over or under other track): the alignment seen
+/// with `base` as level 0 and the way taken as up. `long` as for `bridge_long`.
+pub fn ramp_over(verts: &[Pi], scaled: bool, spans: Spans, base: i8, up: bool, lift: [bool; 2], long: bool) -> Result<Option<Vec<Pi>>, NoRoom> {
+    let dir: i8 = if up { 1 } else { -1 };
+    if !(MIN_LEVEL..=MAX_LEVEL).contains(&(base + dir)) {
+        return Err(NoRoom);
+    }
+    let rel: Vec<Pi> = verts.iter().map(|p| Pi { level: (p.level - base) * dir, ..*p }).collect();
+    let out = if long { bridge_long_in(&rel, scaled, spans, lift) } else { bridge_in(&rel, scaled, spans, false, lift) }?;
+    Ok(out.map(|v| v.into_iter().map(|p| Pi { level: base + p.level * dir, ..p }).collect()))
+}
+
+/// `bridge` over what `spans` finds, read as `fine_spans` does where `fine`: a window of a long
+/// route is cut into pieces later, each checked at its own phase, so it must clear the slivers
+/// they can find.
+fn bridge_in(verts: &[Pi], scaled: bool, spans: Spans, fine: bool, lift: [bool; 2]) -> Result<Option<Vec<Pi>>, NoRoom> {
+    if verts.len() < 2 {
+        return Ok(None);
+    }
+    let Some(fixed) = ends_up(verts) else { return Ok(None) };
+    let f = fit_here(verts, scaled);
+    if !f.issues.is_empty() || f.pieces.is_empty() {
+        return Ok(None);
+    }
+    let wet = spans(&f, fine);
+    if wet.is_empty() {
+        return Ok(None);
+    }
+    // The stretch each bridge must cover. Two close together share one, since there is not room
+    // for the ramp down and the ramp up between them. An end up already is a stretch of its own
+    // (no shore), left by a ramp down at once where there is room to come up again before the
+    // water.
+    let mut zones: Vec<[f64; 2]> = vec![];
+    if fixed[0] {
+        zones.push([0.0, 0.0]);
+    }
+    for w in &wet {
+        let z = [w[0] - SHORE, w[1] + SHORE];
+        match zones.last_mut() {
+            Some(last) if last[1] > 0.0 && z[0] - last[1] < 2.0 * RAMP + 2.0 * SHORE => last[1] = last[1].max(z[1]),
+            _ => zones.push(z),
+        }
+    }
+    if fixed[1] {
+        zones.push([f.len, f.len]);
+    }
+    let ends = [fixed[0] || lift[0] && wet[0][0] <= 1e-6, fixed[1] || lift[1] && wet[wet.len() - 1][1] >= f.len - 1e-6];
+    lay(&f, verts, scaled, &zones, &wet, ends, lift).map(Some).ok_or(NoRoom)
+}
+
+/// The ramps for `zones` (the stretches that must be up, in order), laid one after another along
+/// the alignment, each as close to its stretch as it fits (T-2414). `ends`: which ends are up.
+/// Where a ramp has no room the track stays up instead: between two stretches, the ramp down
+/// after the first goes and the bridge carries on over the land to the second; at an end that is
+/// a new node (`lift`), that end stays up, on land or not. Elsewhere there is no room.
+fn lay(f: &Fit, verts: &[Pi], scaled: bool, zones: &[[f64; 2]], wet: &[[f64; 2]], ends: [bool; 2], lift: [bool; 2]) -> Option<Vec<Pi>> {
+    let mut start_up = ends[0];
+    let mut ramps: Vec<Ramp> = vec![];
+    // the track is up after the ramps laid so far
+    let mut is_up = start_up;
+    let last = zones.len() - 1;
+    for (i, z) in zones.iter().enumerate() {
+        if !is_up {
+            // the ramp up, ending at the stretch's start, moved back while a curve keeps it off
+            let floor = ramps.last().map_or(0.0, |r| r.c + RAMP / 2.0);
+            let mut at = shifts().map(|s| z[0] - s - RAMP / 2.0).take_while(|&c| c - RAMP / 2.0 >= floor - 1e-9);
+            match at.find_map(|c| one_ramp(f, verts, scaled, &ramps, start_up, c)) {
+                Some(r) => ramps.push(r),
+                // the start, a new node, stays up
+                None if ramps.is_empty() && lift[0] => start_up = true,
+                // the bridge before carries on to this one
+                None if !ramps.is_empty() => {
+                    ramps.pop();
+                }
+                None => return None,
+            }
+            is_up = true;
+        }
+        if i == last && ends[1] {
+            break;
+        }
+        // the ramp down, starting at the stretch's end, leaving room for the next ramp up
+        let ceil = if i < last { zones[i + 1][0] - RAMP } else { f.len };
+        let mut at = shifts().map(|s| z[1] + s + RAMP / 2.0).take_while(|&c| c + RAMP / 2.0 <= ceil + 1e-9);
+        match at.find_map(|c| one_ramp(f, verts, scaled, &ramps, start_up, c)) {
+            Some(r) => {
+                ramps.push(r);
+                is_up = false;
+            }
+            // up on to the next stretch
+            None if i < last => {}
+            // the end, a new node, stays up
+            None if lift[1] => break,
+            None => return None,
+        }
+    }
+    let (nv, g) = build(f, verts, scaled, &ramps, start_up)?;
+    water_held(&g, wet).then_some(nv)
+}
+
+/// A ramp centred at `c` after `ramps`, with the nearest vertices that hold it; None where none do
+/// or it would not lie on the alignment.
+fn one_ramp(f: &Fit, verts: &[Pi], scaled: bool, ramps: &[Ramp], up: bool, c: f64) -> Option<Ramp> {
+    if c < RAMP / 2.0 - 1e-9 || c > f.len - RAMP / 2.0 + 1e-9 {
+        return None;
+    }
+    let cap = c.min(f.len - c);
+    // Vertices the alignment has already are the nearest to use for one end of the ramp.
+    let mut spans: Vec<f64> = HALF_SPANS.to_vec();
+    spans.push(cap);
+    spans.extend(verts.iter().enumerate().skip(1).take(verts.len() - 2).map(|(i, _)| (f.vert_s[i] - c).abs()));
+    spans.sort_by(f64::total_cmp);
+    let mut tried: Vec<f64> = vec![];
+    let mut with = ramps.to_vec();
+    for d in spans {
+        // a vertex next to the end node is the end node
+        let d = if d > cap - 0.5 { cap } else { d };
+        if d < RAMP / 2.0 - 1e-9 || tried.contains(&d) {
+            continue;
+        }
+        tried.push(d);
+        with.push(Ramp { c, d });
+        if build(f, verts, scaled, &with, up).is_some_and(|(_, g)| ramp_in_place(&g, c, level_after(with.len(), up) == 0)) {
+            return Some(Ramp { c, d });
+        }
+        with.pop();
+    }
+    None
+}
+
+/// Corners further than this along the alignment from water (fit units) are left as they are by
+/// `bridge_long`: past the ramps' furthest shift and span, with room to spare.
+const LONG_REACH: f64 = 4000.0;
+
+/// `bridge` for a long route through many corners (the real-network snap, T-727d): each stretch of
+/// water bridged on its own, between the corners LONG_REACH either side of it, the rest of the
+/// route as it is. `bridge` on the whole tries every vertex for every ramp and fits the whole
+/// alignment for each try, minutes over hundreds of corners, and one river it cannot bridge
+/// moves every ramp on the route. Such a stretch is raised whole; NoRoom only where even that has
+/// no leg for a ramp, as with water just past an end of the route. `lift` as for `bridge`.
+pub fn bridge_long(verts: &[Pi], scaled: bool, mask: &dyn WaterMask, lift: [bool; 2]) -> Result<Option<Vec<Pi>>, NoRoom> {
+    if mask.is_empty() {
+        return Ok(None);
+    }
+    bridge_long_in(verts, scaled, &water(mask), lift)
+}
+
+fn bridge_long_in(verts: &[Pi], scaled: bool, spans: Spans, lift: [bool; 2]) -> Result<Option<Vec<Pi>>, NoRoom> {
+    if verts.len() < 2 || ends_up(verts).is_none() {
+        return Ok(None);
+    }
+    let f = fit_here(verts, scaled);
+    if !f.issues.is_empty() || f.pieces.is_empty() {
+        return Ok(None);
+    }
+    let wet = spans(&f, true);
+    if wet.is_empty() {
+        return Ok(None);
+    }
+    let n = verts.len();
+    // the windows, as vertex index ranges with the water's first and last chainage, merged where
+    // they meet
+    let mut wins: Vec<(usize, usize, f64, f64)> = vec![];
+    for w in &wet {
+        let a = (0..n).rev().find(|&i| f.vert_s[i] <= w[0] - LONG_REACH).unwrap_or(0);
+        let b = (0..n).find(|&i| f.vert_s[i] >= w[1] + LONG_REACH).unwrap_or(n - 1);
+        match wins.last_mut() {
+            Some(last) if a <= last.1 => (last.1, last.3) = (last.1.max(b), last.3.max(w[1])),
+            _ => wins.push((a, b, w[0], w[1])),
+        }
+    }
+    let mut out: Vec<Pi> = vec![];
+    let mut next = 0;
+    for (a, b, s0, s1) in wins {
+        out.extend_from_slice(&verts[next..a]);
+        // the window's corners with their chainage along the whole route
+        let mut sub: Vec<(Pi, f64)> = (a..=b).map(|i| (verts[i], f.vert_s[i])).collect();
+        if sub.len() == 2 {
+            // water on one long straight leg: corners on it either side of the water, with no turn
+            let (p, q) = (verts[a], verts[b]);
+            let at = |s: f64| {
+                let t = ((s - f.vert_s[a]) / (f.vert_s[b] - f.vert_s[a])).clamp(0.05, 0.95);
+                (Pi::new(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t, 0.0, 0), f.vert_s[a] + t * (f.vert_s[b] - f.vert_s[a]))
+            };
+            sub.insert(1, at(s1 + LONG_REACH / 2.0));
+            sub.insert(1, at(s0 - LONG_REACH / 2.0));
+        }
+        // Its corners keep the radii the whole route gives them: alone, the window would let the
+        // corner next to each of its ends take all of the end leg, which the route's own corner
+        // there shares, and `bridge` sets every radius it fits (T-1187).
+        let mut pis: Vec<Pi> = sub.iter().map(|v| v.0).collect();
+        for i in a + 1..b {
+            if pis[i - a].radius == 0.0 && f.radius[i] > 0.0 {
+                pis[i - a].radius = floor_mm(f.radius[i]);
+            }
+        }
+        // only the route's own ends may stay up
+        let lift = [lift[0] && a == 0, lift[1] && b == n - 1];
+        let mut nv = match bridge_in(&pis, scaled, spans, true, lift) {
+            Ok(Some(v)) if held(&v, scaled, spans) => v,
+            // no room for ramps beside the water (Lake Hamana's islands), or the window alone does
+            // not fit: the stretch goes up whole, rather than one lake refusing 500 km (T-727d)
+            _ => {
+                let up = |end: usize, wet_there: bool| lift[end] && wet_there || pis[if end == 0 { 0 } else { pis.len() - 1 }].level == BRIDGE_LEVEL;
+                raised(&sub, s0, s1, [up(0, s0 <= 1e-6), up(1, s1 >= f.len - 1e-6)], scaled).ok_or(NoRoom)?
+            }
+        };
+        // the window's ends are the route's own corners, radius and all
+        let last = nv.len() - 1;
+        nv[0] = Pi { level: nv[0].level, ..verts[a] };
+        nv[last] = Pi { level: nv[last].level, ..verts[b] };
+        out.extend_from_slice(&nv[..last]);
+        next = b;
+        // the route's own end stays up with its window
+        if b == n - 1 {
+            out.push(nv[last]);
+            return Ok(Some(out));
+        }
+    }
+    out.extend_from_slice(&verts[next..]);
+    Ok(Some(out))
+}
+
+/// Water spans sampled four times as finely as `water_spans`: the route is cut into pieces later,
+/// and each piece is checked with its own samples, which can catch a sliver of shore the whole
+/// route's samples stepped over (the Hudson line).
+fn fine_spans(f: &Fit, mask: &dyn WaterMask) -> Vec<[f64; 2]> {
+    let mut wet = vec![];
+    let step = WATER_STEP / 4.0;
+    let n = (f.len / step).ceil().max(1.0) as usize;
+    let mut open: Option<f64> = None;
+    for j in 0..=n {
+        let s = (j as f64 * f.len / n as f64).min(f.len);
+        let (x, y, _) = geom::pos_at(&f.pieces, s);
+        match (mask.is_water(x, y), open) {
+            (true, None) => open = Some((s - step).max(0.0)),
+            (false, Some(s0)) => {
+                wet.push([s0, s]);
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s0) = open {
+        wet.push([s0, f.len]);
+    }
+    wet
+}
+
+/// Every fine sample over water on `v` is at least half a level up, as the edit's check wants.
+fn held(v: &[Pi], scaled: bool, spans: Spans) -> bool {
+    let g = fit_here(v, scaled);
+    g.issues.is_empty() && spans(&g, true).iter().all(|w| {
+        let mut s = w[0];
+        while s <= w[1] {
+            if geom::height_at(&g.vert, s) < LEVEL_H / 2.0 {
+                return false;
+            }
+            s += WATER_STEP / 4.0;
+        }
+        true
+    })
+}
+
+/// A window raised whole, from a corner before the water to one after it (from its start or to its
+/// end where `stay_up` says so). The ramps start as late and end as soon as they can while the
+/// stretch `s0 - SHORE..s1 + SHORE` (the whole route's chainage) stays up: a ramp longer than its
+/// leg spreads into the legs either side (T-1895), so many short legs serve as well as one long
+/// one. None where nothing fits.
+fn raised(sub: &[(Pi, f64)], s0: f64, s1: f64, stay_up: [bool; 2], scaled: bool) -> Option<Vec<Pi>> {
+    let n = sub.len();
+    let base: Vec<Pi> = sub.iter().map(|p| p.0).collect();
+    let los: Vec<usize> = if stay_up[0] { vec![0] } else { (1..n).rev().filter(|&i| sub[i - 1].1 <= s0 - SHORE).collect() };
+    let his: Vec<usize> = if stay_up[1] { vec![n - 1] } else { (0..n - 1).filter(|&i| sub[i + 1].1 >= s1 + SHORE).collect() };
+    let up = |v: &[Pi], lo: usize, hi: usize| -> Option<Vec<Pi>> {
+        let mut v = v.to_vec();
+        for p in &mut v[lo..=hi] {
+            p.level = BRIDGE_LEVEL;
+        }
+        let g = fit_here(&v, scaled);
+        // the window's own chainage at a place along the whole route, by its corners
+        let at = |s: f64| {
+            let i = sub.partition_point(|p| p.1 <= s).clamp(1, n - 1);
+            let t = ((s - sub[i - 1].1) / (sub[i].1 - sub[i - 1].1).max(1e-9)).clamp(0.0, 1.0);
+            g.vert_s[i - 1] + t * (g.vert_s[i] - g.vert_s[i - 1])
+        };
+        let (a, b) = (at(s0 - SHORE).max(0.0), at(s1 + SHORE).min(g.len));
+        let mut s = a;
+        while s < b + WATER_STEP / 4.0 {
+            if geom::height_at(&g.vert, s.min(b)) < LEVEL_H - 0.01 {
+                return None;
+            }
+            s += WATER_STEP / 4.0;
+        }
+        g.issues.is_empty().then_some(v)
+    };
+    // the ramp up as late as it goes, then the ramp down as soon as it goes with it
+    los.iter().find_map(|&lo| his.iter().copied().filter(|&hi| hi >= lo).find_map(|hi| up(&base, lo, hi)))
+}
+
+/// The ramp at `c` is where it should be: it spans a ramp's length about `c`.
+fn ramp_in_place(g: &Fit, c: f64, down: bool) -> bool {
+    let (lo, hi) = if down { (LEVEL_H, 0.0) } else { (0.0, LEVEL_H) };
+    let h = |s: f64| geom::height_at(&g.vert, s);
+    (h(c - RAMP / 2.0 - 0.02) - lo).abs() < 0.05 && (h(c + RAMP / 2.0 + 0.02) - hi).abs() < 0.05 && (h(c) - LEVEL_H / 2.0).abs() < 0.05
+}
+
+fn floor_mm(v: f64) -> f64 {
+    ((v / QUANT) + 1e-6).floor() * QUANT
+}
+
+/// The alignment with the ramps `ramps` (in order along it) and no others, fitted.
+fn build(f: &Fit, verts: &[Pi], scaled: bool, ramps: &[Ramp], up: bool) -> Option<(Vec<Pi>, Fit)> {
+    let n = verts.len();
+    let after = |k: usize| level_after(k, up);
+    let mut reqs: Vec<Req> = vec![];
+    for (k, r) in ramps.iter().enumerate() {
+        let (u, v) = (r.c - r.d, r.c + r.d);
+        let (has_u, has_v) = (u > 0.5, v < f.len - 0.5);
+        if has_u {
+            reqs.push(Req { x: u, level: after(k), follow: false, partner: has_v.then_some(v).or(Some(f.len)) });
+        }
+        if has_v {
+            reqs.push(Req { x: v, level: after(k + 1), follow: true, partner: has_u.then_some(u) });
+        }
+    }
+    // Which vertex each lies on: a straight (a PI with no turn) or an arc (cut into arcs).
+    let mut on_arc: Vec<Vec<Req>> = vec![vec![]; n];
+    let mut items: Vec<(f64, Vec<V>)> = vec![];
+    // an end of a ramp at a vertex the alignment has is that vertex, at the ramp's level
+    let mut fixed: Vec<Option<i8>> = vec![None; n];
+    for r in &reqs {
+        if let Some(i) = (1..n - 1).find(|&i| (f.vert_s[i] - r.x).abs() < 1e-6) {
+            fixed[i] = Some(r.level);
+            continue;
+        }
+        let j = geom::piece_at(&f.pieces, r.x);
+        let piece = &f.pieces[j];
+        if piece.k != 0.0 {
+            on_arc[f.piece_at_vertex[j] as usize].push(*r);
+        } else {
+            let (x, y, _) = piece.at(r.x - piece.s0);
+            items.push((r.x, vec![V { pi: Pi::new(quant(x), quant(y), 0.0, r.level), mid: r.x, level: Some(r.level) }]));
+        }
+    }
+    for i in 1..n - 1 {
+        // Every radius is set, since a PI next to a new one no longer has the legs the auto radius
+        // was taken from.
+        let kept = Pi::new(verts[i].x, verts[i].y, if f.radius[i] > 0.0 { floor_mm(f.radius[i]) } else { 0.0 }, 0);
+        if on_arc[i].is_empty() {
+            items.push((f.vert_s[i], vec![V { pi: kept, mid: f.vert_s[i], level: fixed[i] }]));
+            continue;
+        }
+        let j = (0..f.pieces.len()).find(|&j| f.pieces[j].k != 0.0 && f.piece_at_vertex[j] as usize == i)?;
+        items.push((f.vert_s[i], slice(&f.pieces[j], scaled, &on_arc[i])?));
+    }
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let level_at = |m: f64| after(ramps.iter().filter(|r| r.c < m).count());
+    let mut nv = vec![Pi::new(verts[0].x, verts[0].y, 0.0, after(0))];
+    for (_, vs) in &items {
+        for v in vs {
+            nv.push(Pi { level: v.level.unwrap_or_else(|| level_at(v.mid)), ..v.pi });
+        }
+    }
+    nv.push(Pi::new(verts[n - 1].x, verts[n - 1].y, 0.0, after(ramps.len())));
+    let g = settle(f, &mut nv, scaled)?;
+    Some((nv, g))
+}
+
+/// An arc cut so that each request is the middle of one piece of it, and no vertex lies between
+/// the two ends of a ramp. Each piece becomes a PI where the tangents at its ends cross, with the
+/// radius the arc has.
+fn slice(piece: &Piece, scaled: bool, reqs: &[Req]) -> Option<Vec<V>> {
+    let (a, b) = (piece.s0, piece.s0 + piece.len);
+    // (from, to, level of the piece)
+    let mut cuts: Vec<(f64, f64, Option<i8>)> = vec![];
+    let mut cur = a;
+    for r in reqs {
+        let (left, right);
+        if r.follow {
+            let h = r.x - cur;
+            (left, right) = (cur, r.x + h);
+        } else if r.partner.is_some_and(|p| p < b - 1e-6) {
+            // The second end is on this arc too, in the piece that follows: this one is as wide as
+            // it can be, so that one is as narrow as it can, since the pair reaches that far past
+            // the second end.
+            let gap = r.x - cur;
+            let h = if gap - (RAMP - MIN_CUT) < MIN_CUT { gap } else { RAMP - MIN_CUT };
+            (left, right) = (r.x - h, r.x + h);
+        } else {
+            // the second end is further on: this piece runs to the end of the arc
+            let h = b - r.x;
+            (left, right) = (r.x - h, b);
+        }
+        if left < cur - 1e-9 || right > b + 1e-9 || right - left < MIN_CUT {
+            return None;
+        }
+        if left - cur > 1e-9 {
+            if left - cur < MIN_CUT {
+                return None;
+            }
+            cuts.push((cur, left, None));
+        }
+        cuts.push((left, right, Some(r.level)));
+        cur = right;
+    }
+    if b - cur > 1e-9 {
+        if b - cur < MIN_CUT {
+            return None;
+        }
+        cuts.push((cur, b, None));
+    }
+    let rp = piece.radius();
+    Some(cuts.iter().map(|&(c0, c1, level)| {
+        let (x0, y0, th0) = piece.at(c0 - a);
+        let (_, _, th1) = piece.at(c1 - a);
+        let t = rp * (geom::wrap(th1 - th0).abs() / 2.0).tan();
+        let ymid = piece.at((c0 + c1) / 2.0 - a).1;
+        let k = if scaled { merc_k(ymid) } else { 1.0 };
+        let pi = Pi::new(quant(x0 + t * th0.cos()), quant(y0 + t * th0.sin()), floor_mm(rp / k), 0);
+        V { pi, mid: (c0 + c1) / 2.0, level }
+    }).collect())
+}
+
+/// The new alignment fits and is the old one. Radii that the millimetre grid left a hair too big
+/// are eased.
+fn settle(f: &Fit, nv: &mut [Pi], scaled: bool) -> Option<Fit> {
+    let mut g = fit_here(nv, scaled);
+    for _ in 0..10 {
+        let bad = g.clamped.clone();
+        if bad.is_empty() {
+            break;
+        }
+        for j in bad {
+            nv[j].radius = floor_mm(nv[j].radius * 0.9995);
+        }
+        g = fit_here(nv, scaled);
+    }
+    if !g.issues.is_empty() || g.pieces.is_empty() || (g.len - f.len).abs() > 0.05 {
+        return None;
+    }
+    let mut s = 0.0;
+    while s < f.len {
+        let (a, b) = (geom::pos_at(&f.pieces, s), geom::pos_at(&g.pieces, s));
+        if (a.0 - b.0).hypot(a.1 - b.1) > 0.25 {
+            return None;
+        }
+        s += 25.0;
+    }
+    Some(g)
+}
+
+/// The track is high over all the water.
+fn water_held(g: &Fit, wet: &[[f64; 2]]) -> bool {
+    wet.iter().all(|w| {
+        let mut s = w[0];
+        while s <= w[1] {
+            if geom::height_at(&g.vert, s) < LEVEL_H - 0.01 {
+                return false;
+            }
+            s += WATER_STEP / 2.0;
+        }
+        geom::height_at(&g.vert, w[1]) >= LEVEL_H - 0.01
+    })
+}

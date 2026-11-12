@@ -1,0 +1,77 @@
+/* T-2124, T-2179: the achievements (ui/Achievements.tsx, ui/inspector/AchievementsView.tsx) */
+
+/* each achievement's colour (its ring and its medals' ribbon), and the firsts' */
+:root { --ach-cities: #3a78c9; --ach-trips: #c8423b; --ach-station: #c97a12; --ach-line: #2f8f5b; --ach-first: #8558c2; }
+:root[data-shade="dark"] { --ach-cities: #6aa2ea; --ach-trips: #ec7b7b; --ach-station: #e9a24a; --ach-line: #5fbf87; --ach-first: #b28ae6; }
+.r-cities { --rib: var(--ach-cities); }
+.r-trips { --rib: var(--ach-trips); }
+.r-station { --rib: var(--ach-station); }
+.r-line { --rib: var(--ach-line); }
+.r-first { --rib: var(--ach-first); }
+
+/* the medal and count at the top right of the Cities tab, the leaderboards' trophy before it */
+.ach-head { display: flex; justify-content: flex-end; align-items: center; gap: 4px; margin-bottom: 6px; }
+.ach-open { height: 24px; padding: 0 6px; font-size: 12px; }
+.ach-open svg { color: var(--accent); }
+.ach-head .btn.lb-open { width: 24px; height: 24px; border: 1px solid var(--rule); color: var(--accent); }
+.ach-head .btn.lb-open:hover { color: var(--accent); background: var(--tint); }
+/* T-2161: the network diagram's button at the row's left */
+.ach-head .map-diagram { margin-right: auto; width: 24px; height: 24px; }
+.ach-mark { display: inline-flex; color: var(--accent); flex: none; }
+.title .ach-mark svg { width: 20px; height: 20px; }
+
+/* a medal: the disc in the tier's metal, the ribbon in the achievement's colour */
+svg.ach-medal { width: 16px; height: 22px; flex: none; stroke: none; overflow: visible; }
+.ach-medal .rib { fill: var(--rib); }
+.ach-medal .rib.back { fill: color-mix(in srgb, var(--rib) 68%, #000); }
+.ach-medal .face { fill: var(--face); stroke: var(--rim); stroke-width: 1.1; }
+.ach-medal .inner { fill: none; stroke: var(--rim); stroke-width: .8; opacity: .6; }
+.m-bronze { --face: #cd8a4e; --rim: #8a5225; }
+.m-silver { --face: #c9ccd1; --rim: #80858d; }
+.m-gold { --face: #efc548; --rim: #a57d14; }
+.m-platinum { --face: #eef7fb; --rim: #5b8fb3; }
+.m-emerald { --face: #3fc68c; --rim: #177a54; }
+/* a medal's place, or a faint outline where one not yet earned would go */
+.ach-slot { flex: none; display: inline-flex; width: 16px; height: 22px; }
+.ach-slot.empty { box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--rule) 70%, var(--bg)); }
+
+/* a tier not yet reached leaves its place blank (the hover stays) */
+.ach-tier .ach-slot.empty { border-color: transparent; }
+
+/* a tiered achievement: its name, its medals under it, the ring at the right */
+.rows > li.ach-tier { display: flex; align-items: flex-start; gap: 10px; padding: 2px 0; }
+.rows > li.ach-tier + li.ach-tier { margin-top: 2px; }
+.ach-left { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 3px; }
+.ach-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ach-medals { display: flex; gap: 5px; }
+.ach-dial { position: relative; flex: none; width: 54px; height: 54px; margin-top: 4px; }
+svg.ach-ring { width: 54px; height: 54px; display: block; stroke-width: 6; }
+.ach-ring .track { stroke: color-mix(in srgb, var(--rib) 18%, var(--bg)); }
+.ach-ring .fill { stroke: var(--rib); stroke-linecap: round; }
+/* 2 px below the middle: the figures' line boxes sit high for their digits */
+.ach-fig { position: absolute; inset: 2px 0 -2px; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; }
+.ach-fig b { font-size: 12px; }
+.ach-fig .muted { font-size: 11px; }
+
+/* the firsts: a gold medal once earned, else its place; the day at the right */
+.ach-firsts { margin-top: 12px; }
+.ach-firsts.rows > li { min-height: 28px; }
+.ach-firsts .val { font-size: 12px; color: var(--muted); }
+
+/* the toasts, stacked up from the tool notes at the map's bottom left */
+.ach-toasts { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 0 0 10px 10px; }
+.ach-toast { display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 6px 10px 6px 8px; text-align: left; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--rule); color: var(--text); font-size: 12px; line-height: 1.3;
+  animation: ach-rise 150ms ease-out !important; transition: opacity 1200ms ease-in !important; }
+/* the !important rules above outrank style.css's general no-animation rule, as .spin's does */
+.ach-toast.out { opacity: 0; }
+.ach-toast .ach-mark svg { width: 16px; height: 16px; }
+.ach-words { display: flex; flex-direction: column; min-width: 0; }
+@keyframes ach-rise { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ach-toast { animation: none !important; } }
+/* a phone held upright: one toast, its second line cut to one */
+@media (max-width: 600px) and (min-height: 560px) {
+  .ach-toasts { margin-right: 10px; }
+  .ach-toast { max-width: calc(100vw - 20px); }
+  .ach-words .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}

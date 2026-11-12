@@ -1,0 +1,128 @@
+// The train inspector (SPEC 8): where the train is and who is aboard.
+
+import { clock } from "../../game/clock";
+import { demandView, lineDemand } from "../../game/demand";
+import { loadFailure } from "../../game/loading";
+import { PERIODS, periodAt } from "../../game/periods";
+import { distanceOf, exact } from "../../game/format";
+import { lowerWord, t } from "../../i18n";
+import type { LineInput } from "../../game/types";
+import { linesById, stationNames, world } from "../../game/world";
+import { live } from "../../map/live";
+import { tripAt } from "../../map/network";
+import { capacity, tripLoad } from "../../game/boarding";
+import { nameBeforeNoun, vehicleCars, vehicleOf, type Vehicle } from "../../game/vehicle";
+import { Chip, Row } from "../widgets";
+import { OneRider } from "./OneRider";
+import { TrainStops } from "./TrainStops";
+
+export function TrainInspector({ line, profile, dep }: { line: string; profile: number; dep: number }) {
+  const w = world.value;
+  void clock.minute.value; // re-render each game minute: the train moves
+  const l = w ? linesById(w).get(line) : undefined;
+  const net = live.overlay?.renderer.net;
+  if (!w || !l || !net) return null;
+  const st = w.lineStats[l.id];
+  // a train standing at a terminal for its next departure is drawn past its trip (T-206)
+  const ren = live.overlay!.renderer, ti = ren.tripIndex(profile, dep - ren.tripsEpoch);
+  const at = tripAt(net, profile, dep + ren.tripLag(ti), clock.now(), ti >= 0 && ren.tripEnds ? ren.tripEnds[ti] + ren.tripsEpoch : -Infinity);
+  const name = stationNames(w);
+  const run = Math.floor(profile / 3) % 2;
+  const stops = run === 0 ? l.stops : [...l.stops].reverse();
+  const stopS = st.stopS[run] ?? [];
+  const next = at ? stopS.findIndex((s) => s > at.s + 1) : -1;
+  const len = net.meta[profile * 4 + 3];
+  const head = stops.length - 1;
+  return (
+    <>
+      <div class="title">
+        <Chip line={l} size="lg" />
+        <span class="name">{t("trainInspector.title", { name: nameBeforeNoun(l.name, vehicleOf(st)), vehicle: vehicleOf(st) })}</span>
+      </div>
+      <div class="sub muted">{t("trainInspector.towards", { name: name.get(stops[head]) ?? "" })}</div>
+      {at ? (
+        <ul class="rows">
+          <Row label={t("trainInspector.nextStop")}>{next >= 0 ? name.get(stops[next]) : t("trainInspector.terminus")}</Row>
+          <Row label={t("trainInspector.along")}>
+            {distanceOf(at.s, len)}
+          </Row>
+        </ul>
+      ) : (
+        <p class="muted">{t("trainInspector.finished", { vehicle: vehicleOf(st) })}</p>
+      )}
+      {at && <OnBoard line={l} run={run} s={at.s} stopS={stopS} cars={vehicleCars(st)} what={vehicleOf(st)} profile={profile} dep={dep} />}
+    </>
+  );
+}
+
+/**
+ * Who is on board (T-083, T-164, SPEC 8): this train's own riders on the stretch it is running,
+ * from the boarding account (game/boarding.ts), against seats and crush load; and the typical
+ * train of the period, demand's riders on the stretch shared among the trains then.
+ */
+function OnBoard({ line, run, s, stopS, cars, what, profile, dep }: { line: LineInput; run: number; s: number; stopS: number[]; cars: number; what: Vehicle; profile: number; dep: number }) {
+  const dm = lineDemand(line.id);
+  const n = line.stops.length;
+  // T-309: the period in the line's own local time
+  const p = periodAt(clock.minute.value * 60 + (world.value?.lineStats[line.id]?.shift ?? 0));
+  const tph = line.tph[PERIODS[p].demand];
+  const trains = tph * (PERIODS[p].to - PERIODS[p].from);
+  let seg = 0;
+  while (seg + 1 < n - 1 && stopS[seg + 1] <= s + 1) seg++;
+  const loads = dm?.loads[p];
+  const r = live.overlay?.renderer;
+  const i = r?.board ? r.tripIndex(profile, dep - r.tripsEpoch) : -1;
+  const own = r?.board && i >= 0 ? tripLoad(r.board, i, run === 0 ? seg : n - 2 - seg) : null;
+  if (!demandView.value || own === null || !loads || loads.length !== 2 * (n - 1) || trains <= 0)
+    return (
+      <ul class="rows">
+        <Row label={t("trainInspector.riders")}>
+          {/* the train is drawn striped while the riders are being worked out */}
+          <span class="muted">{t(loadFailure.value ? "trainInspector.unavailable" : "trainInspector.calculating")}</span>
+        </Row>
+      </ul>
+    );
+  const atEnd = s >= stopS[n - 1] - 1;
+  // the typical train this hour on this stretch, from the same account as this one (T-230): its
+  // line's trains in this direction drawn this hour
+  let sum = 0, many = 0;
+  const b = r!.board!, stretch = run === 0 ? seg : n - 2 - seg;
+  for (let k = 0; k < r!.tripCount; k++) {
+    const pk = r!.trips[k * 2];
+    if (Math.floor(pk / 6) !== Math.floor(profile / 6) || Math.floor(pk / 3) % 2 !== run) continue;
+    const v = tripLoad(b, k, stretch);
+    if (v !== null) { sum += v; many++; }
+  }
+  const average = atEnd || !many ? 0 : sum / many;
+  const aboard = atEnd ? 0 : own;
+  // T-2186: the bar runs to crush, with a mark at the seats and at the rated load (100%), and past
+  // it a second band to crush
+  const { seats, rated, crush } = capacity(cars);
+  const state = t("trainInspector.state", { state: aboard <= 0.5 ? "empty" : aboard <= seats ? "seats" : aboard < crush - 0.5 ? (aboard <= rated + 0.5 ? "standing" : "crowded") : "full" });
+  const pct = (x: number) => (Math.min(x, crush) / crush) * 100 + "%";
+  return (
+    <>
+      <div class="h">
+        <span>{t("trainInspector.onBoard")}</span><span class="right muted small">{lowerWord(PERIODS[p].name)}{dm?.estimate && <span data-tip={t("trainInspector.estimateTip")}>{t("trainInspector.estimate")}</span>}</span>
+      </div>
+      <ul class="rows">
+        <Row label={t("trainInspector.riders")} bold>{exact(aboard)}</Row>
+        <Row label={t("trainInspector.typical", { vehicle: what })}>{exact(average)}</Row>
+        <li>
+          <span class="grow">
+            <span class="board-bar" data-tip={t("trainInspector.barTip", { aboard: exact(aboard), crush: exact(crush) })}>
+              <i class="fill" style={{ width: pct(Math.min(aboard, rated)) }} />
+              {aboard > rated && <i class="fill over" style={{ left: pct(rated), width: `calc(${pct(aboard)} - ${pct(rated)})` }} />}
+              <i class="seats" style={{ left: pct(seats) }} />
+              {rated < crush && <i class="seats" style={{ left: pct(rated) }} />}
+            </span>
+          </span>
+          <span class="val">{state}</span>
+        </li>
+        <Row label={t("trainInspector.fullAt")}>{exact(crush)}</Row>
+      </ul>
+      {!atEnd && dm && <TrainStops line={line} dm={dm} board={b} trip={i} run={run} seg={seg} stopS={stopS} profile={profile} dep={dep} />}
+      {!atEnd && dm && aboard > 0.5 && <OneRider key={`${profile}:${dep}`} line={line} dm={dm} run={run} seg={seg} p={p} vehicle={what} />}
+    </>
+  );
+}

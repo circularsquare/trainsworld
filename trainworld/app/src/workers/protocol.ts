@@ -1,0 +1,935 @@
+// Messages between the main thread and the workers (SPEC 6.5, 7).
+//
+// Rules: workers own their data. The main thread sends edits and settings, never waits, and
+// swaps in the newest snapshot (a version number on every result). Big arrays travel as
+// transferred buffers.
+//
+// Coordinates in edits are world metres (the loaded game's frame, game/frame.ts: the track
+// model's frame); what the renderer draws comes back in local units (map/geo.ts). Money in
+// messages is US$M, as in the track model.
+
+import type { BuildingInput, EdgeId, Level, NodeId } from "../game/types";
+import type { FrameSpec } from "../game/frame";
+import type { LineShape } from "../game/lineShape";
+import type { Loan } from "../game/loan";
+import type { Achieved, DayLedger, GameMode, GuideSave, HourLedger, NewGameSpec, PendingLoad, SaveSlot, SlotBackup } from "./saveFile";
+import type { NetworkBuffers } from "../map/network";
+import type { CloudContext } from "./cloud";
+import type { DiagramGraph } from "../diagram/graph";
+import type { PackedOutlines } from "../map/coarseOutlines";
+
+export type { DayLedger, HourLedger };
+
+// ---------- clock worker: owns the network, run times, capacity, keyframes (T-025) ----------
+
+/** A point of intersection (PI), pack metres: a point the player clicked, where the track turns
+ * with a circular curve that cuts the corner (SPEC 6.1, T-092). */
+export interface PiInput {
+  x: number;
+  y: number;
+  level: Level;
+  /** player-set radius in m; auto when absent (SPEC 6.1) */
+  radius?: number;
+}
+
+/** Where a drawn route starts or ends: a new node, an existing node, or splitting an edge. */
+export type RouteEnd =
+  | { kind: "free"; x: number; y: number; level: Level }
+  | { kind: "node"; node: NodeId }
+  | { kind: "edge"; edge: EdgeId; x: number; y: number };
+
+/** Where a station goes: on a node, splitting an edge near a point, or on open ground with a
+ * straight piece of new track from (x0, y0) to (x1, y1) under it (T-794). */
+export type StationAt =
+  | { kind: "node"; node: NodeId }
+  | { kind: "edge"; edge: EdgeId; x: number; y: number }
+  | { kind: "free"; x0: number; y0: number; x1: number; y1: number; level: Level; quad: boolean; hsr?: boolean; tram?: boolean };
+
+/** A route turning at the clicked points `pis`; a junction it makes is flat (T-080). `through`
+ * (T-418): a route with no PIs from a heading to open ground is one tangent arc. `design` (T-817):
+ * the design speed its curves are laid out for, km/h; 160 when absent. */
+export interface RouteAsk { from: RouteEnd; to: RouteEnd; pis: PiInput[]; single: boolean; quad?: boolean; through?: boolean; design?: number; hsr?: boolean; tram?: boolean; /** T-2927: tram track that follows the streets (street tram track), along `streetLine` (lng, lat pairs, flat) */ street?: boolean; streetLine?: number[]; ramp?: boolean; beside?: [number, number];
+  /** T-3137: which of double track's two tracks single track joins at its start and end: a point (pack units) on that
+   * track, start x, y, end x, y (`TrackApi::set_route_join`); null for the track beside the route there */
+  join?: [number | null, number | null, number | null, number | null];
+  /** T-3169: the flyover target max speed, km/h (`TrackApi::set_flyover_speed`); 80 when absent */
+  flyover?: number }
+
+/** One edit. Blueprint edits are undoable; construct and removing constructed things are final
+ * (SPEC 6.4). Line ids are the track model's numbers. */
+export type EditOp =
+  | ({ op: "route" } & RouteAsk)
+  | { op: "removeEdge"; edge: EdgeId }
+  /** reshape blueprint track (T-064): its PIs replaced (moved, or a radius set), same ends;
+   * `design` (T-1898): as a route's, for the corners it moves or adds */
+  | { op: "edgePis"; edge: EdgeId; pis: PiInput[]; design?: number }
+  /** move a blueprint node (T-093) to pack metres x, y; the blueprint track there follows */
+  | { op: "moveNode"; node: NodeId; x: number; y: number; design?: number }
+  /** a plain node on blueprint track where pack metres x, y project onto it, or halfway along
+   * without them (T-2951); the shape is unchanged */
+  | { op: "addPoint"; edge: EdgeId; x?: number; y?: number }
+  /** move several blueprint nodes together by dx, dy pack metres (T-475) */
+  | { op: "moveNodes"; nodes: NodeId[]; dx: number; dy: number; design?: number }
+  /** a whole blueprint stretch on one level, shape kept */
+  | { op: "edgeLevel"; edge: EdgeId; level: Level }
+  /** several blueprint stretches on one level, one undoable edit (T-815); pieces that cannot
+   * change are left out, counted in the answer's `skipped` */
+  | { op: "edgesLevel"; edges: EdgeId[]; level: Level }
+  /** several blueprint pieces made high-speed or regular track, one undoable edit (T-1898); single
+   * track, crossovers and constructed track are left out, counted in `skipped` */
+  | { op: "edgesKind"; edges: EdgeId[]; kind: 1 | 2 | 3 }
+  /** blueprint track made single (T-3321) or double (T-3296), one undoable edit; pieces that cannot are counted in
+   * `skipped`, and the answer's issues then say why */
+  | { op: "edgesTracks"; edges: EdgeId[]; tracks: 1 | 2 }
+  /** constructed track and stations changed in place to `level` (null: kept), a track type (0 kept, 1 regular,
+   * 2 high speed, 3 tram: T-3088) and a track count (0 kept, 1 single and free: T-3321, 2 double: T-3296), final and
+   * paid at the full new price (T-3059); pieces the track model refuses are left as they are, counted in `skipped` */
+  | { op: "rebuild"; edges: EdgeId[]; stations: NodeId[]; level: Level | null; kind: 0 | 1 | 2 | 3; tracks: 0 | 1 | 2 }
+  /** remove several pieces at once (T-829): undoable when all blueprint, else final */
+  | { op: "removePieces"; edges: EdgeId[]; stations: NodeId[] }
+  | { op: "flying"; node: NodeId; flying: boolean }
+  | { op: "stationUpgrade"; nodes: NodeId[]; bit: number; on: boolean }
+  | { op: "addStation"; at: StationAt; platform: number; name: string }
+  /** a crossover on track `edge` near x, y and the track running beside it (T-338) */
+  | { op: "crossover"; edge: EdgeId; x: number; y: number }
+  /** an express pair beside double track `edge` and the run it is on, as blueprint (T-708) */
+  | { op: "doubleUp"; edge: EdgeId }
+  /** single track run one way (`dir` 1 a to b, 2 b to a) or both (0), the lines that ran against it taking another way in the same edit (T-3094); refused with "OneWayNoWay:<line>" */
+  | { op: "oneWay"; edge: EdgeId; dir: 0 | 1 | 2 | 3 }
+  | { op: "stationProps"; node: NodeId; platform: number; name: string }
+  /** T-3288: the name a complex goes by, set on the station the others follow; no typed name */
+  | { op: "stationName"; node: NodeId; name: string }
+  | { op: "removeStation"; node: NodeId }
+  /** `buses` (T-1464): bus lines whose routes to construct */
+  | { op: "construct"; edges: EdgeId[]; stations: NodeId[]; buses?: number[] }
+  /** T-1464: a planned bus line over a route (world metres, x, y and the point's kind per point, flat),
+   * its stops placed by the sim; answered with its `line` */
+  | { op: "addBusLine"; route: number[]; name: string; colour: string }
+  /** T-1464: a bus line's route drawn again (final and charged when it is constructed) */
+  | { op: "busRoute"; line: number; route: number[] }
+  /** T-2885: how far apart a bus line's stops are, m; 0 leaves them to place themselves */
+  | { op: "busSpacing"; line: number; spacing: number }
+  /** T-2891: the player places a bus line's stops, from none between its ends; `busSpacing` leaves it */
+  | { op: "busHand"; line: number }
+  /** T-2891: a stop on a by-hand bus line put where the route is nearest (x, y), or (`on` false) the stop there taken out */
+  | { op: "busHandStop"; line: number; x: number; y: number; on: boolean }
+  /** T-2194: a planned ferry line over its ports in route order (a port's node, or a new one added
+   * first) and its route (world metres, x, y, kind, m/s per point, flat: notes/T-2177.md "F2 -> F3");
+   * answered with its `line` */
+  | { op: "addFerryLine"; ports: FerryPortIn[]; route: number[]; name: string; colour: string }
+  /** T-2194: a ferry line's ports and route drawn again (free; new ports on a constructed line are paid now) */
+  | { op: "ferryRoute"; line: number; ports: FerryPortIn[]; route: number[] }
+  | { op: "constructAll" }
+  /** switch blueprint track and stations off or on (T-333): Construct and the quote skip what is off; one undoable edit */
+  | { op: "blueprintOff"; edges: EdgeId[]; stations: NodeId[]; off: boolean }
+  | { op: "constructLine"; line: number }
+  /** `autoFast` (T-1899, on addLine, setStops and insertStop): a new line's trains become high-speed
+   * when more than half its route's km is high-speed track, ordinary otherwise */
+  | { op: "addLine"; stops: NodeId[]; name: string; colour: string; autoFast?: boolean }
+  | { op: "copyLine"; line: number; name?: string }
+  | { op: "setStops"; line: number; stops: NodeId[]; autoFast?: boolean }
+  /** T-648: the station put in where the line tool's search fits it best (`TrackApi::insert_stop`),
+   * then set as `setStops`; refused with "InsertStop" when no track joins it in */
+  | { op: "insertStop"; line: number; station: NodeId; autoFast?: boolean }
+  /** T-1791, the group view's stop edits, all keeping the line's path: stop `index` out (an end's removal cuts the path back), the line ended at stop `index` (the stops past it toward the nearer end go), a station the line passes made a stop; refused with "LinePath" */
+  | { op: "dropStop"; line: number; index: number }
+  | { op: "endLineAt"; line: number; index: number }
+  | { op: "stopPassed"; line: number; station: NodeId }
+  /** T-2895: the stops in the order the player dragged them to, which the line then keeps (`TrackApi::order_stops`); refused with "StopOrder:<kind>:<from>:<to>" naming the first two stops in a row with no route between them (kind 0 no track joins them, 1 only by turning back at a junction), else "LinePath". `sortStops` gives the order back to the game (`sort_stops`) */
+  | { op: "orderStops"; line: number; stops: NodeId[] }
+  | { op: "sortStops"; line: number }
+  /** T-3021: the line's end turned round the loop past `station`, the stop before the branch, run one way (`TrackApi::turn_end`); `openLoop` makes a loop line open again: a circle less its closing stop, a turned line less its way back (`open_loop`). Refused with "LinePath" */
+  | { op: "turnEnd"; line: number; station: NodeId }
+  | { op: "openLoop"; line: number }
+  | { op: "setTrainCount"; line: number; trains: [number, number, number] }
+  /** T-625: the line's trains follow a headway in seconds per level (0: no service), or null: counts by hand */
+  | { op: "setHeadway"; line: number; seconds: [number, number, number] | null }
+  /** a field left out keeps the line's own as the worker has it now, so an edit never carries a stale
+   * name, colour or symbol over one still on its way (T-1812); `letter` is the symbol set by hand, "" for none */
+  | { op: "lineLook"; line: number; name?: string; colour?: string; letter?: string }
+  | { op: "removeLine"; line: number }
+  /** a line's train length in cars, 0 for the most its shortest platform fits (T-733) */
+  | { op: "lineCars"; line: number; cars: number }
+  | { op: "lineFast"; line: number; fast: boolean }
+  | { op: "lineOneWay"; line: number; oneWay: boolean }
+  /** T-2987: a rail line's speed limit in km/h, 0 for none */
+  | { op: "lineLimit"; line: number; kmh: number }
+  /** T-1791: put lines in a group (a line's group number, "new" for a fresh one, 0 for none), or name one ("" for its oldest line's name); one undoable edit, no service change */
+  | { op: "lineGroup"; lines: number[]; group: number | "new" }
+  | { op: "groupName"; group: number; name: string }
+  /** T-1813: a group's bullet text ("" for its name's) and colour (null for its lines') */
+  | { op: "groupLook"; group: number; symbol: string; colour: string | null }
+  /** the fare curve (T-883, game/fareCurve.ts): its nodes, or a base and rate as two nodes; not undoable, a setting */
+  | { op: "fares"; base?: number; perKm?: number; nodes?: [number, number][] }
+  /** T-1277: a country's fare scale (ISO alpha-2), null for its income's again; not undoable, a setting */
+  | { op: "fareScale"; country: string; scale: number | null }
+  /** T-2679: the reference country, whose fares the Money tab's multiples are of; changes no fare */
+  | { op: "fareRef"; country: string }
+  /** T-1626: the fare multiplier on high-speed lines */
+  | { op: "fareHsr"; mul: number }
+  /** T-2194: the fare multiplier on ferry lines */
+  | { op: "fareFerry"; mul: number }
+  | { op: "fareBus"; mul: number }
+  | { op: "fareTransfer"; usd: number }
+  /** T-1661: take a loan of `amount` US$M (one of `LOAN_AMOUNTS`, none out), or pay off what is left of it; refused otherwise */
+  | { op: "borrow"; amount: number }
+  | { op: "repay" }
+  /** link two stations into one complex, or undo a link (T-197): node ids; not undoable, a setting */
+  | { op: "link"; a: NodeId; b: NodeId; on: boolean }
+  /** T-2218: station buildings (game/buildings.ts), paid at once and not undoable, as passages are;
+   * corners are pack x, y pairs, flat; a name "" takes the first built member's */
+  | { op: "addBuilding"; corners: number[]; name: string }
+  | { op: "reshapeBuilding"; id: number; corners: number[] }
+  | { op: "renameBuilding"; id: number; name: string }
+  | { op: "removeBuilding"; id: number }
+  | { op: "undo" }
+  | { op: "redo" };
+
+export type ToClock =
+  /** `pack`: the city pack's URL without extension (".../packs/nyc"), absolute. `fresh`: start a
+   * new game even if there is an autosave (`?new=1`). `testPage`: the page is a check or stress
+   * page (`?new=1`, `?synth=1`, `?demandTest=1`, T-320): it never writes a slot until the player
+   * saves a copy; `fresh` also does not read one. `newSlot`: the start menu's New game beside
+   * saved games (T-677): an empty game in a new slot of that name, written once something changes.
+   * `backupMs`: wall ms of the first backup step, 10 minutes, the others scaled with it (T-744, T-1826; `?backupMs=` for checks). `game`: how a
+   * new game (`fresh` or `newSlot`) starts (T-728). `patch`: `?patch=` (T-1029: "0" every state
+   * whole, "check" changes compared with whole builds). */
+  | { kind: "init"; pack: string; terrain: string; fresh?: boolean; testPage?: boolean; slot?: string; newSlot?: string; backupMs?: number; game?: NewGameSpec; pending?: boolean; patch?: string;
+      /** T-2058: how lines side by side are worked out (`bandTry` in perfFlags.ts) */
+      bandMode?: string;
+      /** T-1822: a new normal game starts with the Getting started card (this browser has not finished it) */
+      guide?: boolean;
+      /** T-2703: reads of the saved game to fail on purpose, for checks (`?debug=1&readFails=N`) */
+      readFails?: number;
+      /** T-2802: the least the WASM memory grows by, bytes (`heapStep` in deviceMemory.ts) */
+      heapStep?: number }
+  /** T-2802: every zone's coarse outline, the page's parse of `packs/outlines.json` (null: unavailable), after init */
+  | { kind: "outlines"; packed: PackedOutlines | null }
+  /** T-1822: the Getting started card's progress, to keep in the save */
+  | { kind: "guide"; guide: GuideSave }
+  /** T-2395: the game's home, a zone id or `WORLD_HOME`; null for none */
+  | { kind: "home"; home: string | null }
+  /** T-1029: the client could not take a state as changes to the last: post the next whole */
+  | { kind: "wholeState" }
+  /** T-2159: the network diagram is shown (its graph follows every network state) or hidden */
+  | { kind: "diagram"; on: boolean }
+  /** T-1196: the page reloads into another game: save the one in hand, keep `pending` (the game the
+   * reloaded page opens, when not a slot) and let go of the slot; answered with "left" */
+  | { kind: "leave"; pending?: PendingLoad }
+  /** the view's bounds in degrees after a move (T-302): water masks near it are fetched ahead, but
+   * not those of `skip`, the zones of realms not shown (T-975) */
+  | { kind: "view"; w: number; s: number; e: number; n: number; skip?: string[] }
+  /** the theme the player is in (T-543): a save's thumbnail is drawn in it */
+  | { kind: "shade"; shade: "light" | "dark" }
+  /** T-1929: the basemap's zoom 14 tile URL template, where the worker fetches the roads track crosses */
+  | { kind: "roadTiles"; template: string }
+  /** `early` (T-1407, the track tool's blueprint segments): a route edit that changes no line for
+   * demand is answered before its state is built, so the next ghost is not kept waiting */
+  /** `rows` (T-2766, the line tool's stop clicks): the world's rows are posted and the edit answered at once, its
+   * network, trips and boarding once no stop click has come for a moment; a stop click before then joins them */
+  | { kind: "edit"; seq: number; op: EditOp; early?: boolean; rows?: boolean }
+  /** what a route would cost and whether it can be built; answered with "preview" */
+  | ({ kind: "preview"; seq: number } & RouteAsk)
+  /** what giving blueprint track new PIs would do (T-064); answered with "preview" */
+  | { kind: "previewEdge"; seq: number; edge: EdgeId; pis: PiInput[]; design?: number }
+  /** what moving a blueprint node would do (T-093); answered with "preview", one part per edge */
+  | { kind: "previewNode"; seq: number; node: NodeId; x: number; y: number; design?: number }
+  /** the same for several nodes moved together (T-475) */
+  | { kind: "previewNodes"; seq: number; nodes: NodeId[]; dx: number; dy: number; design?: number }
+  /** previews up to `seq` are no longer wanted (a newer one waits, or the run ended): one not yet
+   * started, or waiting for water masks, is answered `stale` at once (T-1039); handled outside
+   * the queue */
+  | { kind: "previewStale"; seq: number }
+  /** T-2404: the track tool's segments placed early, their state held while the pointer moves, are
+   * wanted now (the run ended, or the pointer came near them) */
+  | { kind: "release" }
+  /** whether `addStation` with these arguments would succeed, nothing changed (T-311, the
+   * placement ghost's colour); answered with "stationCheck" */
+  | { kind: "previewStation"; seq: number; at: StationAt; platform: number }
+  /** what the crossover op would do (T-338); answered with "crossoverCheck" */
+  | { kind: "previewCrossover"; seq: number; edge: EdgeId; x: number; y: number }
+  /** the render epoch the main thread is in (start of the game hour, s): send its trips and the
+   * next hour's */
+  | { kind: "epoch"; epoch: number }
+  /** the draw anchor moved (T-307, map/geo.ts): rebuild every drawn position relative to it and send
+   * a full state */
+  | { kind: "anchor"; lng: number; lat: number; version: number }
+  /** the game clock (main thread, game/clock.ts) whenever it is set, paused, resumed or changes
+   * speed: game seconds `t` at wall time `at` (performance.timeOrigin + performance.now(), the
+   * clock game/clock.ts runs on, never Date.now(): T-488), moving `rate` game s per wall s (0
+   * when stopped). The worker settles money by the game hour from it (T-028). `game`: the last
+   * "loaded" message's `game` the main thread had seen; the worker ignores a clock from before
+   * its latest load (T-715). */
+  | { kind: "clock"; t: number; rate: number; at: number; game: number }
+  /** fare income in force, US$M per game hour for each of the five periods (from demand riders,
+   * game/money.ts), one table per kind of day (T-260, game/days.ts `DayKind` order); `lines` the
+   * same per line (T-293: each line's fares taken today) */
+  | { kind: "income"; perHour: number[][]; rides: number[][]; lines?: { line: number; perHour: number[][]; rides: number[][] }[] }
+  /** T-531: each running line's fares, train rides and running cost by region, [region, share] pairs
+   * (game/regionMoney.ts) */
+  | { kind: "regionShares"; lines: { line: number; fare: [string, number][]; ride: [string, number][]; run: [string, number][] }[]; upkeep: [string, number][] }
+  /** T-684: each running line's points per game hour by region, `[region, perHour[dayKind][period]]`
+   * (game/points.ts) */
+  | { kind: "points"; lines: { line: number; regions: [string, number[][]][] }[] }
+  /** T-685: region `zone`'s rail share has reached the star's mark, or with `share` (T-1437) that
+   * higher goal; kept from the first time */
+  | { kind: "star"; zone: string; share?: number }
+  /** T-2124: achievement steps met (game/achievements.ts keys), each kept from the first time at the
+   * game second it lands; the first of an older save marks its achievements worked out */
+  | { kind: "achieve"; got: Record<string, Omit<Achieved, "at">> }
+  /** T-706: notes chosen for lines that had none; kept from the first time */
+  | { kind: "lineNotes"; notes: Record<string, [number, string]> }
+  /** T-531: how edit `seq`'s charge divides between regions */
+  | { kind: "chargeShares"; seq: number; build: [string, number][]; trains: [string, number][] }
+  /** demand's riders for the boarding account (T-164): `TrackApi.set_riders`'s packing, built by
+   * game/boarding.ts `packRiders` from the demand result, for one kind of day (T-260) */
+  | { kind: "riders"; packed: Float32Array; day: number; /** T-1255: `TrackApi.set_arrivals`'s packing, `packArrivals` */ arrive?: Float32Array }
+  /** demand's transfers between platforms (T-554): `TrackApi.set_transfers`'s packing, from
+   * `platformTransfers` for the solve shown */
+  | { kind: "transfers"; packed: Float32Array }
+  /** write the autosave now if anything changed (the page is being hidden or closed) */
+  | { kind: "flush" }
+  /** T-988: the account the slots sync with (null: signed out, or no server); `settle` asks the
+   * worker to settle every slot again (after the sign-in question's Add) */
+  | { kind: "account"; ctx: CloudContext | null; settle?: boolean }
+  /** T-1007, dev server only: make the track model panic, now (`now` holds its borrow, `read`
+   * does not) or on the next edit once it is applied */
+  | { kind: "debugPanic"; when: "now" | "read" | "afterEdit" }
+  /** T-2766, dev server only: set the cash, US$M, and with `fleet` own only the cars in use (a check's
+   * refusal for want of money) */
+  | { kind: "debugCash"; cash: number; fleet?: boolean }
+  /** the game as a file: answered with "exported" */
+  | { kind: "export"; /** T-3115: for a Community share, not a download */ share?: true }
+  /** load a save file (T-029); answered with "loaded". It and "newGame" start a slot named `name`
+   * (T-743): no slot is ever written over with another game */
+  | { kind: "import"; bytes: ArrayBuffer; name?: string }
+  /** start again: empty city (or `game.real`'s network), `START_CASH`, day 1 07:00; answered with "loaded" */
+  | { kind: "newGame"; name?: string; game?: NewGameSpec }
+  /** T-728: make this normal game a sandbox, for good */
+  | { kind: "sandbox" }
+  /** T-3297: every train, tram and bus to the other side (`TrackApi.flip_right_hand`), answered with "answer": the
+   * sites, two numbers each (sim `FLIP_*`: 1 single track turned round, an edge; 2 a line moved, 3 a line left
+   * broken; 4 a junction now crossing flat, 5 one-way track no train can use, a node) */
+  | { kind: "flipSide"; seq: number }
+  /** T-729: the zones this game has opened, the whole list in order (game/openedZones.ts) */
+  | { kind: "opened"; zones: string[] }
+  /** T-1223: the zones demand holds fine, and T-2153 the last two builds' zones, for the save's header */
+  | { kind: "demandFine"; zones: string[]; built: string[][] }
+  /** T-1813: the Lines (0) or Stations (1) tab's hand order, ids first first; empty for none */
+  | { kind: "listOrder"; list: 0 | 1; ids: number[] }
+  /** T-3319: a line's own bullet shape, null for its mode's; outside the undo history */
+  | { kind: "lineShape"; line: string; shape: LineShape | null }
+  /** `restore`: `key` is a backup's (T-744) */
+  | { kind: "saveSlot"; action: "refresh" | "save" | "create" | "open" | "rename" | "delete" | "restore"; key?: string; name?: string }
+  /** inspector queries (T-031), answered with "answer": a junction's moves
+   * (`TrackApi.junction_info`), where a line waits at a demand level (`line_delays`), a blueprint
+   * stretch's PIs with their curves (`edge_pis`, T-064), a flyover's price (`[US$M]`, T-080), or
+   * what doubling up a track adds to the blueprint (`[US$M]`, or `[-1, ...]` and the refusal's
+   * kinds as character codes, joined by newlines; T-708), or what removing pieces does to lines
+   * (`removal_lines`, T-859), the blueprint's quote rows (`blueprint_cost_items`, seven numbers a
+   * row, US$M), its pieces' prices (`blueprint_piece_costs`, five a row, T-2269) or a planned line's `[build, trains]` in US$M (T-1171: priced only when a panel asks),
+   * or the gap between a line and a station no track joins it to (`stop_gap`, T-1896) */
+  | {
+      kind: "query";
+      seq: number;
+      q: { what: "insertStop"; line: number; station: number } | { what: "stopTiers"; line: number } | { what: "stopGap"; line: number; station: number } | { what: "passedStations"; line: number } | { what: "junction"; node: number } | { what: "lineDelays"; line: number; level: number } | { what: "lineWaits"; line: number; level: number } | { what: "passingSpots"; line: number } | { what: "lineHeld"; line: number } | { what: "lineMarks"; line: number } | { what: "lineProfile"; line: number } |{ what: "lineRelated"; line: number } | { what: "lineTrips"; line: number; t0: number; t1: number } | { what: "edgePis"; edge: number } | { what: "flyover"; node: number } | { what: "upgradeCost"; node: number } | { what: "upgradeCosts"; nodes: number[]; bit: number } |{ what: "platformCost"; nodes: number[]; platform: number } | { what: "doubleUp"; edge: number } | { what: "oneWay"; edge: number; dir: number } | { what: "lineAccount"; line: number; day: number } | { what: "linePeriods"; line: number; day: number } | { what: "linesPeriods"; lines: number[]; day: number } |{ what: "today" } | { what: "removal"; edges: number[]; stations: number[] } | { what: "busQuote"; line: number; route: number[] } | { what: "rebuildQuote"; edges: number[]; stations: number[]; level: number | null; kind: number; tracks: number } | { what: "blueprintQuote" } | { what: "blueprintPieces" } | { what: "lineCost"; line: number } | { what: "buildingQuote"; id: number | null; corners: number[] };
+    };
+
+/** T-531: each region's today and this hour, as the "cash" message carries them. */
+export type RegionNow = Record<string, { today: DayLedger; hour: HourLedger }>;
+
+/** Money as the worker keeps it (T-028), US$M unless said. */
+export interface MoneyState {
+  cash: number;
+  /** T-2271: seconds ahead of the clock of the local time the ledgers' days run on (the start zone's) */
+  dayShift: number;
+  /** T-728: a sandbox refuses nothing for money and hides the cash */
+  mode: GameMode;
+  /** T-3115: a copy of a shared network: it plays as normal and never ranks */
+  copy?: boolean;
+  /** cars owned, and the cars the running lines need */
+  fleet: number;
+  carsNeeded: number;
+  /** high-speed cars owned and needed (T-817): spares of one kind never serve the other */
+  fleetFast: number;
+  carsNeededFast: number;
+  /** US$M per car, US$ per car-km and per train-km (the real figures) (sim/src/track/params.rs) */
+  carPrice: number;
+  runCostCarKm: number;
+  runCostTrainKm: number;
+  /** the same for high-speed cars (T-817) */
+  hsCarPrice: number;
+  hsRunCostCarKm: number;
+  hsRunCostTrainKm: number;
+  /** T-867: upkeep a day, real US$, per km of double track and per station, and single and
+   * high-speed track's upkeep over double track's */
+  upkeepTrackKm: number;
+  /** T-1931: the same per km of viaduct, cut and cover and bored tunnel (`upkeepTrackKm` is the ground's) */
+  upkeepViaductKm: number;
+  upkeepCutKm: number;
+  upkeepBoredKm: number;
+  upkeepStation: number;
+  /** T-2619: an underground station's (-1 to -3); `upkeepStation` is any other's */
+  upkeepStationUnder: number;
+  upkeepSingle: number;
+  upkeepHsr: number;
+  /** T-867: the network's upkeep a game day, US$M (track and stations), the route-km and stations
+   * behind it; T-1464: bus routes' upkeep, US$M, and their road-km */
+  upkeep: { track: number; stations: number; km: number; count: number; buses: number; busKm: number; ports: number; portCount: number };
+  /** T-1464: buses owned and needed; a bus's price US$M, its running cost a bus-km and a route's
+   * upkeep a road-km a day (real US$), a route's price a road-km US$M */
+  fleetBus: number;
+  busesNeeded: number;
+  busPrice: number;
+  runCostBusKm: number;
+  upkeepBusKm: number;
+  busRouteKm: number;
+  /** T-2193: boats owned and needed; a boat's price US$M, its running cost a boat-km (real US$), a
+   * port's upkeep a day (real US$) and its price US$M */
+  fleetFerry: number;
+  boatsNeeded: number;
+  /** T-2926: tram cars (20 m sections) owned and needed, and a car's price US$M */
+  fleetTram: number;
+  tramsNeeded: number;
+  tramPrice: number;
+  boatPrice: number;
+  runCostBoatKm: number;
+  upkeepPort: number;
+  portPrice: number;
+  /** fares and running costs count this many times over in a game day (T-081, `ECONOMY`) */
+  economy: number;
+  /** T-1661, T-2022: the loan out, null for none */
+  loan: Loan | null;
+  fares: { base: number; perKm: number; nodes: [number, number][]; scales?: Record<string, number>; baseline?: string; basis?: "usd"; income?: number; hsr?: number; ferry?: number; bus?: number; transfer?: number };
+  /** running cost per game hour at high, medium, low demand */
+  runningPerHour: [number, number, number];
+  /** recent game days, oldest first; the last is today so far (as of the last whole hour; the
+   * "cash" message carries today as fares land, T-284) */
+  ledger: DayLedger[];
+  /** recent game hours, oldest first, the last this hour so far (T-447) */
+  hours: HourLedger[];
+  /** T-531: the same per region (a zone id; "" outside every zone) */
+  regions: Record<string, { ledger: DayLedger[]; hours: HourLedger[] }>;
+  /** T-685: stars earned, per region the game second it was earned */
+  stars: Record<string, number>;
+  /** T-1437: the higher goals reached, per region and share (%) the game second it was reached */
+  goals: Record<string, Record<string, number>>;
+  /** T-2124: the achievement steps earned; absent until an older save's have been worked out */
+  achievements?: Record<string, Achieved>;
+  /** T-706: each line's station note and the city it was chosen in (see `SaveHeader.notes`) */
+  notes: Record<string, [number, string]>;
+  /** T-1822: the Getting started card's progress; absent where the game has no card */
+  guide?: GuideSave;
+}
+
+export interface ClockEdge {
+  id: number;
+  a: number;
+  b: number;
+  tracks: 1 | 2;
+  built: boolean;
+  /** a blueprint switched off (T-333) */
+  off: boolean;
+  /** high-speed track (T-817) */
+  hsr: boolean;
+  /** `TrackApi.edge_kind`: 0 rail, 1 high speed, 2 street tram, 3 tram (T-2926) */
+  kind: number;
+  /** one-way single track (T-3094): 0 both ways, 1 a to b only, 2 b to a only */
+  oneWay: 0 | 1 | 2;
+  /** T-3137: the track of double track single track's ends join (`TrackApi::join_edges`), a's + 4 x b's: 0 none, 1
+   * left, 2 right, looking out from the node along the piece; only joins that count */
+  join: number;
+  /** T-3137 C4: the way the player stored (`TrackApi::edge_oneway`): 0 automatic, 1 a to b, 2 b to a, 3 both ways pinned */
+  setWay: 0 | 1 | 2 | 3;
+  /** T-3137 C4: the way the edge's run takes by itself (`TrackApi::edge_infer`): 0 both, 1 a to b, 2 b to a */
+  autoWay: 0 | 1 | 2;
+  /** one diagonal of a crossover (T-338) */
+  crossover: boolean;
+  /** the crossover's other diagonal, -1 if none */
+  partner: number;
+  lengthM: number;
+  /** US$M */
+  cost: number;
+  vminKmh: number;
+  levelMin: number;
+  levelMax: number;
+}
+
+export interface ClockNode {
+  id: number;
+  x: number;
+  y: number;
+  lng: number;
+  lat: number;
+  level: number;
+  ports: number;
+  builtPorts: number;
+  flying: boolean;
+  /** two moves through it can cross at its level (T-3103): the flat-junction badge */
+  crosses?: true;
+  /** T-3164: one-way single track no train can use: 1 pointing in with no way on, 2 pointing out
+   * with no way in, 3 both */
+  unusable?: 1 | 2 | 3;
+  platform: number;
+  stationBuilt: boolean;
+  /** a blueprint station switched off (T-333) */
+  stationOff: boolean;
+  /** the station's upgrades, `UPGRADE` bits (T-1281) */
+  upgrades: number;
+  name: string;
+  /** the player typed the name (T-2683) */
+  named?: true;
+  /** track heading through it, rad, counter-clockwise from east */
+  heading: number;
+  /** a station's platform line (T-1859, `StationInput.line`, workers/platformLines.ts) */
+  line?: Float32Array;
+  /** `TrackApi.node_kind` where it is a tram's (2 or 3, T-2926); absent for rail */
+  kind?: number;
+  /** T-1464: a bus stop that is no station (`ClockBus.stops`), listed so a line's stops all have a
+   * row; no track, no platform, never picked or snapped to */
+  bus?: true;
+  /** T-2194: a port (a station for ferries, no track) and its berth, longitude and latitude */
+  port?: [number, number];
+}
+
+export interface ClockLine {
+  id: number;
+  name: string;
+  letter: string;
+  /** the line's group, 0 for none, and the group's name, "" for its oldest line's (T-1791) */
+  group: number;
+  groupName: string;
+  /** T-1813: the group's bullet text and colour ("#rrggbb") set by hand, "" for none */
+  groupSymbol: string;
+  groupColour: string;
+  colour: string;
+  ok: boolean;
+  running: boolean;
+  broken: boolean;
+  tph: [number, number, number];
+  cars: number;
+  /** the train length the player set, cars, 0 for the most its shortest platform fits (T-733) */
+  carsSet: number;
+  lengthM: number;
+  roundTrip: [number, number, number];
+  trains: [number, number, number];
+  /** headway in seconds per level when the trains follow it (T-625), else null */
+  auto: [number, number, number] | null;
+  delay: [number, number, number];
+  dwell: number;
+  turnaround: number;
+  stops: number[];
+  /** `edge << 1 | direction`, first stop to last */
+  path: number[];
+  /** T-3117: the return run's path, last stop to first, where it is not `path` run backward (round
+   * one-way track: a flyover's other leg) */
+  back?: number[];
+  /** run 0, per demand level: arrival at each stop from the start, s */
+  fromStart: number[][];
+  stopS: [number[], number[]];
+  /** high-speed trains (T-817) */
+  fast: boolean;
+  /** a line on tram track (T-2926) */
+  tram: boolean;
+  /** its share of the upkeep of the track and stations it uses, US$M a game day (T-867) */
+  upkeep: number;
+  /** per stretch between stops of run 0: top speed reached, the limit there (km/h), what sets
+   * the limit (`TrackApi::line_stretch_speeds`, T-817) */
+  stretchSpeeds: number[];
+  /** seconds its local time runs ahead of the game clock: its first stop's region's (T-309) */
+  shift: number;
+  /** the stations it passes between stops, `[gap, node]` pairs (`TrackApi::passed_stations`, T-646) */
+  passed: number[];
+  /** the stops (indices into `stops`) where its trains reverse partway (`TrackApi::line_reversals`, T-797) */
+  reversals: number[];
+  /** the bare track ends (nodes) where its trains reverse between stops (`TrackApi::line_end_turns`, T-797 B3) */
+  endTurns: number[];
+  /** T-3122: `[node, heading]` per station it serves one way only, the heading in radians, world frame (`TrackApi::line_stop_ways`) */
+  ways: number[];
+  /** T-2895: the player set its stop order by hand (`TrackApi::line_hand`) */
+  hand: boolean;
+  /** a loop (`TrackApi::line_loop`, T-798): 0 none, 1 a circle, 2 a balloon */
+  loopKind: number;
+  /** T-2981: a loop that runs one way (`TrackApi::line_one_way`) */
+  oneWay: boolean;
+  /** T-2987: the line's speed limit, km/h; 0 for none (`TrackApi::line_limit`) */
+  limit: number;
+  /** T-1464: a bus line's route and stops; absent for a rail line, whose `path` this replaces
+   * (a bus line's `path` is empty, its `stops` its `bus.stops`' ids) */
+  bus?: ClockBus;
+}
+
+/** T-1464: a bus line (sim/src/track/bus.rs). Positions in world metres, as `ClockNode.x, y`. */
+export interface ClockBus {
+  /** constructed: paid for and running */
+  built: boolean;
+  /** the route, x, y flat: along the roads where they were found, straight elsewhere */
+  route: number[];
+  /** per route point, `bus::K_CORNER` (1: a point the player clicked), `K_ROAD` (2: the route up to
+   * it follows roads) and `K_TRUNK` (4: the route up to it is on a trunk road) */
+  kinds: number[];
+  /** road length, m: the drawn length, times 1.2 on the straight stretches */
+  roadM: number;
+  /** the stops demand sees, in run 0's order: kind 0 an end, 1 a train station (`station` its
+   * node), 2 a stop between, 3 where it crosses another bus route; `station` -1 for no station. Every
+   * stop is on the route (T-2982); at a station `at` is the station's own longitude and latitude */
+  stops: { id: number; x: number; y: number; lng: number; lat: number; kind: number; station: number; at?: [number, number] }[];
+  /** the street stops between, drawn only, x, y flat */
+  street: number[];
+  /** T-2885: how far apart the player set the stops, m; 0: they place themselves */
+  spacing: number;
+  /** T-2891: the player places the stops */
+  hand: boolean;
+  /** T-2891: while `hand`, the stations the route can stop at, a stop or not */
+  reach: { node: number; x: number; y: number; lng: number; lat: number }[];
+  /** `route` and `street` as longitude, latitude pairs, flat */
+  routeLL: number[];
+  streetLL: number[];
+  /** T-2194: a ferry line, which has a bus line's row so that everything treating a bus as no rail
+   * treats a ferry so too: `kinds` are then `ferry::K_*` (0 route, 1 a port's berth, 2 a waypoint),
+   * `roadM` its route's ground metres, `stops` its ports and `street` empty */
+  ferry?: FerryRow;
+}
+
+/** T-2194: what a ferry line's row adds to a bus line's */
+export interface FerryRow {
+  /** per route point, the most a boat may do there, m/s */
+  speeds: number[];
+  /** per port in route order: its node and its landing, longitude and latitude, then its berth's */
+  ports: { node: number; landing: [number, number]; berth: [number, number] }[];
+}
+
+/** T-2194: a ferry line's port as the tool sends it: a port the network has, or a new one (its landing
+ * on the shore and its berth in the water, world metres) added before the line; `again`: the port at that
+ * index of the list once more, a loop's closing port (T-2899) */
+export type FerryPortIn = { node: number } | { x: number; y: number; bx: number; by: number; name: string } | { again: number };
+
+/** Everything drawn, in local units (map/geo.ts). */
+export interface ClockRender {
+  /** T-1029: each edge's points (x, y, height m triples) on its own, in `ClockState.edges` order (in
+   * the clock worker only: the same arrays while an edge is unchanged, never posted) */
+  edgeParts?: Float32Array[];
+  /** each edge's geometry speed limit km/h per segment, indexed as its vertices */
+  edgeSpeedParts?: (Float32Array | undefined)[];
+  /** keyframes (notes/T-040.md): phases (t, s, v, a), per profile (first, count, trip s, length
+   * m), run 0 of each line resampled (x, y, local units), per line id (first sample, count,
+   * length m, step m) */
+  phases: Float32Array;
+  meta: Float32Array;
+  samples: Float32Array;
+  lineTable: Float32Array;
+}
+
+/** A busy resource (SPEC 6.2: 75% and up), local units. `kind`: 0 track, 1 single track,
+ * 2 platform, 3 terminus, 4 junction, 5 flat crossing, 6 a line turning on a through platform,
+ * 7 track several lines share, 8 a turn across the other track (`Capacity::wire_kind` in
+ * sim/src/track/capacity.rs; words in game/capacityKinds.ts). */
+export interface CapacityMarker {
+  x: number;
+  y: number;
+  rho: number;
+  delayS: number;
+  kind: number;
+  /** trains an hour through it */
+  tph: number;
+  /** full, with some line's trains waiting at its ends for room (T-517) */
+  held: boolean;
+}
+
+export interface RowsDelta<T> {
+  ids: number[] | null;
+  rows: T[];
+}
+
+export interface ClockState {
+  version: number;
+  /** busy resources per demand level (high, medium, low) */
+  markers: CapacityMarker[][];
+  /** T-819: per demand level, track sections at capacity, `TrackApi.full_track`: per edge on one
+   * edge id, utilisation, trains an hour */
+  fullTrack: Float64Array[];
+  /** US$M */
+  cash: number;
+  builtCost: number;
+  blueprintCost: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  edges: ClockEdge[];
+  nodes: ClockNode[];
+  lines: ClockLine[];
+  /** T-1029: the edges, nodes and lines that changed since the last state posted, with every id in
+   * order (null: as last posted); `edges`, `nodes` and `lines` are then posted empty and the client
+   * rebuilds them from its last ones before anything reads the state */
+  delta?: { edges: RowsDelta<ClockEdge>; nodes: RowsDelta<ClockNode>; lines: RowsDelta<ClockLine> };
+  /** `?patch=check`: the rows in full, for the client to compare its rebuilt ones with */
+  checkRows?: { edges: ClockEdge[]; nodes: ClockNode[]; lines: ClockLine[] };
+  /** stations the player linked into one complex (T-197): node id pairs, flat */
+  links: number[];
+  /** the station buildings (T-2217, game/buildings.ts) */
+  buildings?: BuildingInput[];
+  /** the clock worker only: each node's station complex (0xffffffff none), for drawing one waiting
+   * room and car park per complex (T-1528) */
+  complexOf?: Uint32Array;
+  /** the clock worker only: each of `buildings`' corners as lng, lat pairs, for drawing them (T-2219) */
+  buildingLL?: number[][];
+  render: ClockRender;
+  /** where two tracks cross at one height (T-629), 5 numbers each: x, y (local units), kind (0
+   * flat, 1 bad), level, built (1 when both tracks are) */
+  crossings?: Float32Array;
+  /** T-1966: the flat crossings and crossing junction moves trains are held at on screen
+   * (`TrackApi.guard_conflicts`) */
+  conflicts?: Float64Array;
+  /** T-3202: the two-way single-track stretches trains of opposite directions keep off together on
+   * screen (`TrackApi.guard_singles`) */
+  singles?: Float64Array;
+  /** T-3297: the running side, false where trains keep left (`TrackApi.right_hand`); absent: right */
+  rightHand?: boolean;
+  money: MoneyState;
+  /** the renderer's buffers, built in the worker from the rest (T-063); the arrays are shared with
+   * `render` */
+  net?: NetworkBuffers;
+  /** worker ms: building the state, building `net` */
+  ms?: number[];
+  /** only the service changed (a train count, T-229): no geometry moved, so `net` is not built and
+   * the renderer keeps its buffers, taking only the new phase tables and profile meta */
+  service?: boolean;
+  /** T-1071: the game time a train count or headway edit takes effect, a moment ahead of the
+   * clock; the renderer draws this state and its trips from then, not before */
+  effectiveAt?: number;
+  /** T-1407: no trips follow it (blueprint track), so it is taken as it comes, not held for them */
+  noTrips?: boolean;
+  /** T-1407: the state of an edit answered ahead of it (`early`): taken after the next paint, so
+   * the ghost asked meanwhile is drawn first */
+  ghostFirst?: boolean;
+  /** T-2766: the rows alone, ahead of a stop click's answer: the world and money are taken, the renderer keeps
+   * its network (`render` is empty) until the full state after it */
+  rows?: boolean;
+  /** the draw anchor its local units are relative to (T-307, map/geo.ts) */
+  anchor?: { lng: number; lat: number; version: number };
+}
+
+export type FromClock =
+  | { kind: "ready"; initMs: number; frame: FrameSpec }
+  /** an edit's answer; `issues` are the track model's problem kinds (`TrackApi.issue_kinds`);
+   * `ms`: the worker's time on the edit by step (T-229, for `?debug=1`); `node` after addBuilding: the building's id */
+  | { kind: "edited"; seq: number; ok: boolean; issues: string[]; charge: number; line?: number; node?: number; skipped?: number; ms?: Record<string, number>; early?: boolean; held?: Float32Array[] }
+  | {
+      kind: "preview";
+      seq: number;
+      /** not worked out: a newer preview was wanted (T-1039); nothing else in it means anything */
+      stale?: boolean;
+      ok: boolean;
+      /** US$M */
+      cost: number;
+      lengthM: number;
+      /** the track's price over its length at the base price (level, water and terrain averaged, T-085) */
+      mult: number;
+      /** metres of a route preview on flat, rolling, hilly and mountain ground where the terrain is
+       * charged (T-1270, `TrackApi.preview_ground`), over water (T-1887), then the roads it crosses
+       * at ground level, weighted, and their price in US$M (T-1929) */
+      ground?: number[];
+      issues: string[];
+      /** per vertex: x, y (local units; the middle of its curve), radius m (0 = no arc), speed
+       * limit km/h */
+      verts: Float64Array;
+      /** x, y (local units), height m */
+      pts: Float32Array;
+      /** Geometry km/h per consecutive point pair, for a route/edge preview. */
+      speeds?: Float32Array;
+      /** T-3134: its track per segment, as `speeds`: 0 single, 255 double */
+      lanes?: Uint8Array;
+      /** T-3134: a node drag's track per part: 0 single, 255 double */
+      partLanes?: Uint8Array;
+      /** T-3137: a route's `TrackApi::route_joins`: the track of double track its start and end join (0 none, 1
+       * left, 2 right, looking out from that end along the route), then per piece in order drawn its way (0 both, 1
+       * along the drawing, 2 against) */
+      joins?: Uint8Array;
+      /** several alignments (a node drag moves every edge there, T-093): where each starts in
+       * `pts`, in triples, and the end; absent = one */
+      parts?: Uint32Array;
+      /** a tangent route's circle (T-418): centre x, y (local units), ground radius m, 0 */
+      arc?: Float64Array;
+      /** T-3092: a junction the route makes stays flat for want of room for a flyover */
+      noFlyover?: true;
+      /** T-3168: each flyover crossing leg's slowest curve, as `verts` (x, y local units, radius, km/h) */
+      legs?: Float64Array;
+      /** the draw anchor version `verts`, `pts`, `arc` and `marks` are relative to (T-307) */
+      anchor?: number;
+      /** where the track makes a crossing or a flat junction (T-629): x, y (local units), kind (0
+       * crossing, 1 junction), per mark */
+      marks?: Float32Array;
+    }
+  | { kind: "state"; state: ClockState }
+  /** trips drawn in [epoch, epoch + 3600): profile index, departure - epoch (notes/T-040.md);
+   * `ends`, per trip, when it stops being drawn - epoch (its train takes its next departure from
+   * the terminal or leaves service, T-206); `nexts`, per trip, the departure - epoch its train
+   * takes next (the other run's trip drawn from then), NaN when it leaves service (T-245); `board`, once demand's riders are known: that hour of the boarding account, lined up with
+   * `trips` (`TrackApi.boarding_hour`, game/boarding.ts reads it; T-164), the ms it took, the
+   * lines worked out again since the last, and the ms spent stepping through them (all, longest) */
+  | { kind: "trips"; version: number; epoch: number; trips: Float32Array; ends?: Float32Array; nexts?: Float32Array; bays?: Float32Array; board?: Float32Array; boardMs?: number; redone?: number; prepMs?: number; prepMax?: number }
+  | { kind: "snapshot"; snapshot: NetworkSnapshot }
+  /** T-2159: the network diagram's graph, after a network state while the diagram is shown */
+  | { kind: "diagramGraph"; graph: DiagramGraph; ms: number }
+  /** money changed without a network change (an hour settled, fares set) */
+  | { kind: "money"; money: MoneyState }
+  /** T-284: the cash and today's ledger as fares land and running costs drain, several times a wall
+   * second while the clock runs; the rest of MoneyState comes with "money" when an hour turns */
+  | { kind: "cash"; cash: number; today: MoneyState["ledger"][number]; hour: HourLedger; regions: RegionNow }
+  /** a game was loaded or started (`from`), at game time `clock`; a failed import says why in
+   * `error` and changes nothing;
+   * `frame`: the game now in the worker; `converted`: its save was in an older frame and was
+   * converted to the world's on the way in (T-308); `game` counts the worker's loads, for "clock"; `slot`, the
+   * slot the game goes into (a file's new slot is made active only after this message, T-2552) */
+  // (`reason` "rebuilt", T-2848: the same game, on a model rebuilt after a panic)
+  | { kind: "loaded"; from: "autosave" | "file" | "new"; clock: number; frame: FrameSpec; error?: string; why?: string; converted?: boolean; game: number; slot?: string; reason?: "rebuilt" }
+  /** T-1196: "leave" done (the page may reload), or why the game in hand could not be saved */
+  | { kind: "left"; error?: string }
+  /** T-889: a save being loaded: its built stations' x, y in `frame`, before its network is worked out;
+   * `fine` (T-1223), `built` (T-2153): the save's `demandFine` and `demandBuilt`, null where it has none;
+   * `home` (T-2395): the save's home, where the camera goes in place of the stations' fit */
+  | { kind: "stationsAhead"; frame: FrameSpec; xy: Float64Array; fine: string[] | null; built: string[][] | null; home?: string }
+  /** T-1539: the save being loaded: the key of its network's inputs (demandCache.ts `saveNetKey`) */
+  | { kind: "netAhead"; key: string }
+  /** T-2901: a terrain block in the view (a `.terrain` file), for the map's tint and hillshade */
+  | { kind: "terrain"; key: number; bytes: ArrayBuffer }
+  /** blocks the page need no longer hold */
+  | { kind: "terrainDrop"; keys: number[] }
+  /** `index.bin`: which blocks have a file */
+  | { kind: "terrainIndex"; bytes: ArrayBuffer }
+  /** T-2613: terrain grids and water masks on their way, and those whose last fetch failed */
+  | { kind: "ground"; pending: number; failed: number }
+  /** T-1929: road tiles just put in the track model: a preview asked before them is out of date */
+  | { kind: "roads" }
+  /** T-729: the opened zones of the game in hand, sent before its snapshot; null for a save from
+   * before T-729; `start`, its start zone (T-728), whose realm shows (T-975) */
+  | { kind: "opened"; zones: string[] | null; start?: string }
+  /** T-1813: the loaded game's hand order of lines and of stations, sent with "opened" */
+  | { kind: "listOrder"; lines: number[]; stations: number[] }
+  /** T-3319: the game's line shapes (`SaveHeader.shapes`), sent with "opened" and after a new line or a copy */
+  | { kind: "lineShapes"; shapes: Record<string, LineShape> }
+  /** T-2395: the home of the game in hand (`SaveHeader.home`), sent with "opened" */
+  | { kind: "home"; home: string | null }
+  /** the save file, for the player to keep */
+  | { kind: "exported"; bytes: Uint8Array; day: number; share?: true }
+  /** a station placement's check (T-311): `issues` as an edit's; `cost` what it adds to the
+   * blueprint, US$M */
+  | { kind: "stationCheck"; seq: number; ok: boolean; issues: string[]; cost: number }
+  /** a crossover preview (T-338): cost US$M, each diagonal's centre line (local x, y, height),
+   * relative to draw anchor version `anchor` */
+  | { kind: "crossoverCheck"; seq: number; ok: boolean; issues: string[]; cost: number; parts: Float32Array[]; anchor?: number }
+  /** a query's answer, in the track model's flat layout (pack metres) */
+  | { kind: "answer"; seq: number; data: Float64Array }
+  /** an autosave was written (Date.now()), its size, and worker ms to encode and to write */
+  | { kind: "saved"; at: number }
+  /** the answer to a save by hand (T-1251): when it was written, or why not */
+  | { kind: "savedByHand"; at?: number; error?: string }
+  /** T-1826: the player changed the game while nothing can write it (the page asks before closing) */
+  | { kind: "unsaved"; on: boolean }
+  /** `backups`: the active slot's (T-744), newest first; `newer`: a newer build saved the game in
+   * hand, which is not written here (T-1826) */
+  /** `viewing` (T-3257): the game in hand is a network viewed from Community, in no slot: its card, `key` "" */
+  | { kind: "saveSlots"; slots: SaveSlot[]; active: string; writable: boolean; at: number; reason?: string; error?: string; backups: SlotBackup[]; newer?: boolean; viewing?: SaveSlot }
+  | { kind: "error"; message: string }
+  /** T-988: the server refused the session's token (the main thread signs out) */
+  | { kind: "accountGone" }
+  /** T-1007: the track model panicked and was rebuilt from the game's last edit (or, `down`, could
+   * not be: the player is asked to reload). `detail` is for the console, `notice` for the player. */
+  | { kind: "recovered"; detail: string; notice: string; down?: boolean }
+  /** T-950: the worker's start (its WASM, the first game) threw; no game will come. `storage` (T-2703):
+   * the saved game could not be read, and was left as it is */
+  | { kind: "failed"; error: string; storage?: boolean }
+  /** T-2710: the worker's script has loaded, its first message */
+  | { kind: "booted" };
+
+// ---------- the network as demand sees it (T-025 -> T-026) ----------
+
+/**
+ * The service demand runs on: what a passenger can ride. Built by the clock worker after every
+ * service change (SPEC 6.5: a line's stops or frequency, a line starting or stopping running, or
+ * a station-to-station time moving 5 s or more), debounced ~0.5 s, and delivered on the main
+ * thread through `onNetworkSnapshot` in workers/clockClient.ts (the newest one is also in the
+ * `networkSnapshot` signal there). notes/T-025.md.
+ *
+ * Only what carries trains is in it: constructed stations, and lines whose every edge and stop
+ * is constructed (a line planned over blueprint track is left out until it runs).
+ */
+export interface NetworkSnapshot {
+  /** increases with every snapshot; a newer one replaces an older one */
+  version: number;
+  city: string;
+  /** the frame the stations' x, y are in (T-125): the loaded game's */
+  frame: FrameSpec;
+  stations: SnapshotStation[];
+  lines: SnapshotLine[];
+  /** The player's fare curve (game/fareCurve.ts): its first stretch as a base and rate, and its nodes. */
+  fare?: { base: number; perKm: number; nodes?: [number, number][]; scales?: Record<string, number> };
+  /** station pairs joined by a passage (T-1281), node ids; absent when there are none */
+  passages?: [number, number][];
+}
+
+export interface SnapshotStation {
+  /** the track model's node id; stable while the station exists */
+  id: number;
+  name: string;
+  /** world metres east and north of the frame's origin (the snapshot's `frame`, game/frame.ts) */
+  x: number;
+  y: number;
+  level: Level;
+  /** platform length, m */
+  platform: number;
+  /** its station complex among the snapshot's stations (T-161, game/complexes.ts with the
+   * player's links): stations with the same number are one complex, and demand lets riders change
+   * between any two of them on foot. Absent in snapshots made before T-161: no complexes. */
+  complex?: number;
+  /** its upgrades, `UPGRADE` bits (T-1281), only where it has any */
+  upgrades?: number;
+  /** T-1464: a bus stop that is no station (id from `bus::STOP_ID_BASE` up, platform 0), reached
+   * only through its line's corridor (`SnapshotLine.catches`) */
+  bus?: true;
+}
+
+export interface SnapshotLine {
+  /** the track model's line id; stable while the line exists */
+  id: number;
+  name: string;
+  /** station ids in order, first to last (run 0); run 1 is the same stops reversed */
+  stops: number[];
+  /** trains an hour at high, medium, low demand (SPEC 6.3; periods in sim/src/track/params.rs) */
+  tph: [number, number, number];
+  /**
+   * Per run (0 = stops in order, 1 = reversed), per demand level (0 high, 1 medium, 2 low):
+   * seconds from leaving stop i to arriving at stop i + 1, capacity holds on the way included.
+   * `hopS[run][level].length === stops.length - 1`; run 1's hops are in its own travel order.
+   */
+  hopS: number[][][];
+  /** Actual track km per segment, in each run's travel order. Legacy snapshots omit it. */
+  hopKm?: number[][];
+  /** T-1626: high-speed trains, whose fares are times the high-speed multiplier */
+  fast?: boolean;
+  /** T-2195: a ferry line, whose fares are times the ferry multiplier; its stops are ports */
+  ferry?: boolean;
+  /** T-2926: a line on tram track (`DemandApi.set_tram_lines`) */
+  tram?: boolean;
+  /** dwell at each stop, s, per run and level, in the run's own stop order (0 at both ends) */
+  dwellS: number[][][];
+  /** layover at each end, s */
+  turnaroundS: number;
+  /** a circle line (T-798): its last stop is its first and trains ride on round, standing this
+   * long there, s; absent otherwise */
+  wrapS?: number;
+  /** cars per train (20 m each); a bus line's 0.5, its 80 riders at crush; a ferry line's 2 */
+  cars: number;
+  /** T-1464, a bus line: per stop, the stretch of route whose homes walk to the route and ride
+   * from that stop, x, y flat in the snapshot's frame (empty at a station) */
+  catches?: number[][];
+  /** T-842: per period, run and stop (`[(period * 2 + run) * n + k]`, each run's stops in its
+   * travel order), the share of the period's riders there with a train due within their tolerance
+   * (`TrackApi.line_span`); absent when it is 1 everywhere */
+  span?: number[];
+}
+
+// ---------- demand workers: a small pool per city (T-026), later one long-distance ----------
+// Their messages are in workers/demandProtocol.ts; the main thread hands them each
+// NetworkSnapshot through `submitNetwork` in workers/demandClient.ts. notes/T-026.md.
+
+export type { DemandNetwork, FromDemand, ToDemand } from "./demandProtocol";

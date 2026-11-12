@@ -1,0 +1,388 @@
+//! The player's network as the demand kernel sees it: stations, lines as ordered stops, run time
+//! per hop, headway per period, seats and crush load per train. Plus a hand-made New York-ish
+//! network for the synthetic city (25 lines, ~400 stations, radial, crosstown and orbital).
+
+/// Morning peak, midday, evening peak, evening, night: the periods of `track::params::PERIOD_HOURS`,
+/// the one definition schedules and demand share.
+pub const PERIODS: usize = crate::track::params::PERIOD_HOURS.len();
+
+/// A bus line's cars in the network: a third of a train car, so 80 riders at crush as before and
+/// 53 at the rated load, crowding counted as on a train (T-2919; the snapshot's `BUS_DEMAND_CARS`,
+/// app/src/workers/clock.worker.ts).
+pub const BUS_CARS: f32 = 1.0 / 3.0;
+/// Where riders start to mind a crowded bus, as a share of its rated load (T-2922; 45 aboard). A
+/// train's is `Params::crowd_start`, 0.7. A bus's is higher so that making it a third of a car
+/// (T-2919) moves its riders little (weekday bus riders -8.9%, not -14%): players tuned their bus
+/// lines to the old bus, minded from 56 and full at 80. The penalty then rises over the same share
+/// of the rated load as a train's.
+pub const BUS_CROWD_START: f32 = 0.85;
+/// A tram section's share of a rail car's riders (T-2926; `track::params` `riders_scale` of the tram kinds).
+pub const TRAM_CARS: f32 = 0.75;
+
+#[derive(Clone)]
+pub struct Network {
+    /// Station position, metres from the pack origin.
+    pub st_x: Vec<f32>,
+    pub st_y: Vec<f32>,
+    pub line_name: Vec<String>,
+    /// CSR: stops of line l are `line_stops[line_off[l]..line_off[l+1]]`.
+    pub line_off: Vec<u32>,
+    pub line_stops: Vec<u32>,
+    /// Minutes from stop k to stop k+1 (parallel to `line_stops`; 0 on the last stop).
+    pub hop_min: Vec<f32>,
+    /// Minutes from stop k to stop k-1, the reverse run (parallel to `line_stops`; 0 on the first
+    /// stop). Empty: the reverse run takes `hop_min`'s times.
+    pub hop_back: Vec<f32>,
+    pub line_speed_kmh: Vec<f32>,
+    pub line_headway_min: Vec<[f32; PERIODS]>,
+    pub line_seats: Vec<f32>,
+    /// Riders a train holds at its rated load, 100% (T-2186), which crowding is counted against
+    /// (`kernel::crowd_factors`). Empty: the crush load.
+    pub line_rated: Vec<f32>,
+    /// Riders a train holds at crush, the most it takes (the queue, the wait for room).
+    pub line_crush: Vec<f32>,
+    /// The station complex of each station (T-161): stations with the same number are one complex
+    /// (game/complexes.ts, including the player's links, T-197), and a rider may change between any
+    /// two of them on foot whatever the distance (`kernel::build_graph`). Empty: no complexes.
+    pub st_group: Vec<u32>,
+    /// Where each stop's platform is (parallel to `line_stops`): the snapshot station the stop is
+    /// at, which for a demand station of several merged platforms is not its mean position. A
+    /// change of trains walks between platforms (T-717). Empty: every platform at its station.
+    pub stop_x: Vec<f32>,
+    pub stop_y: Vec<f32>,
+    /// Per line, a circle (T-798): its last stop is its first and trains carry on round, so a
+    /// rider may ride through it (`hop_min` at the last stop and `hop_back` at the first are the
+    /// stand there). Empty: none.
+    pub line_wrap: Vec<bool>,
+    /// T-842: per period and route node (`q * route nodes + r`, route nodes as `kernel::build_graph`
+    /// numbers them), the share of the riders arriving there whose wait for the next train is within
+    /// their tolerance (`track::span`). Empty: 1 everywhere.
+    pub span: Vec<f32>,
+    /// Each station's upgrades, `track::upgrades` bits (T-1281): park and ride cuts a ride's fixed
+    /// cost (`access_options`), a waiting room the perceived wait (`build_graph`). Empty: none.
+    pub st_ups: Vec<u8>,
+    /// Station pairs joined by a passage (T-1281), smaller first, sorted: a change between them
+    /// walks the straight line at `PASSAGE_MPS` (`build_graph`). Empty: none.
+    pub st_passage: Vec<[u32; 2]>,
+    /// Bus corridors (T-1464): per bus stop that is no train station, the stretch of its route whose
+    /// homes walk to the route and ride from it (`Catch`). Empty: no buses.
+    pub catches: Vec<Catch>,
+    /// Per station, whether it is a bus stop only (reached through `catches`, never by a plain walk).
+    /// Empty: none is.
+    pub st_bus: Vec<bool>,
+    /// Per station, whether only tram lines serve it (T-2926): a cell keeps at most `TRAM_SLOTS` of them among its nearest. Empty: none is.
+    pub st_tram: Vec<bool>,
+}
+
+/// A bus stop's stretch of route (T-1464): its demand station and the stretch as points in the
+/// network's frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Catch {
+    pub st: u32,
+    pub pts: Vec<[f32; 2]>,
+}
+
+impl Network {
+    /// Station `s`'s upgrade bits (T-1281).
+    #[inline]
+    pub fn ups(&self, s: usize) -> u8 {
+        self.st_ups.get(s).copied().unwrap_or(0)
+    }
+    /// Line `l`'s riders a train at its rated load (T-2186).
+    #[inline]
+    pub fn rated(&self, l: usize) -> f32 {
+        self.line_rated.get(l).copied().unwrap_or(self.line_crush[l])
+    }
+    /// Whether station `s` is a bus stop only (T-1464).
+    #[inline]
+    pub fn bus_only(&self, s: usize) -> bool {
+        self.st_bus.get(s).copied().unwrap_or(false)
+    }
+    /// Whether station `s` is served by tram lines only (T-2926).
+    #[inline]
+    pub fn tram_only(&self, s: usize) -> bool {
+        self.st_tram.get(s).copied().unwrap_or(false)
+    }
+    /// Whether line `l` is a bus line (T-1577): the snapshot gives a bus the cars of `BUS_CARS`, so its
+    /// crush load is a bus's, whatever its stops are (a short bus between two train stations has no
+    /// bus-only stop), or it has a bus-only stop.
+    #[inline]
+    pub fn bus_line(&self, l: usize) -> bool {
+        self.line_crush.get(l).is_some_and(|&c| c == BUS_CARS * super::api::CRUSH_PER_CAR)
+            || self.line_stops[self.line_off[l] as usize..self.line_off[l + 1] as usize].iter().any(|&st| self.bus_only(st as usize))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Subway,
+    Light,
+    Commuter,
+    Orbital,
+}
+
+impl Kind {
+    /// Stop spacing in km at distance r from the centre.
+    fn spacing(self, r: f64) -> f64 {
+        match self {
+            Kind::Subway => {
+                if r < 8.0 {
+                    0.9
+                } else {
+                    1.4
+                }
+            }
+            Kind::Light => 1.1,
+            Kind::Commuter => 5.0,
+            Kind::Orbital => 1.8,
+        }
+    }
+    /// Average speed including dwell.
+    fn speed(self) -> f32 {
+        match self {
+            Kind::Subway | Kind::Orbital => 35.0,
+            Kind::Light => 25.0,
+            Kind::Commuter => 55.0,
+        }
+    }
+    fn headways(self) -> [f32; PERIODS] {
+        match self {
+            Kind::Subway => [4.0, 8.0, 4.0, 10.0, 20.0],
+            Kind::Light => [7.0, 12.0, 7.0, 15.0, 30.0],
+            Kind::Commuter => [12.0, 30.0, 12.0, 30.0, 60.0],
+            Kind::Orbital => [6.0, 10.0, 6.0, 12.0, 20.0],
+        }
+    }
+    /// (seats, rated load) per train, crush 1.5 times rated. Subway: 10 cars x ~44 seats, ~160 rated.
+    fn capacity(self) -> (f32, f32) {
+        match self {
+            Kind::Subway => (440.0, 1600.0),
+            Kind::Light => (150.0, 400.0),
+            Kind::Commuter => (1100.0, 1800.0),
+            Kind::Orbital => (300.0, 1100.0),
+        }
+    }
+}
+
+/// Waypoints in km from Times Square (the T-004 pack origin), from real places.
+#[rustfmt::skip]
+const LINES: &[(&str, Kind, &[(f64, f64)])] = &[
+    ("Broadway-7 Av", Kind::Subway, &[(6.3, 13.6), (4.6, 8.5), (2.2, 3.0), (0.0, 0.0), (-2.0, -5.8), (-0.4, -7.3), (3.0, -10.0), (6.5, -11.5)]),
+    ("Lexington", Kind::Subway, &[(12.0, 16.0), (8.0, 11.4), (4.0, 5.1), (0.7, -0.7), (-1.6, -5.5), (-0.4, -7.3), (4.0, -8.5), (8.0, -10.0)]),
+    ("8 Av", Kind::Subway, &[(5.5, 11.0), (3.5, 6.0), (-0.3, -0.5), (-2.3, -4.5), (-0.6, -7.0), (5.0, -8.0), (11.0, -9.5), (19.4, -17.0)]),
+    ("6 Av-Queens Blvd", Kind::Subway, &[(14.8, -6.4), (9.0, -2.5), (3.3, -1.2), (0.3, -0.3), (-1.2, -4.0), (-0.9, -8.0), (-0.5, -13.0), (0.3, -20.1)]),
+    ("Broadway BMT", Kind::Subway, &[(5.5, 1.8), (3.3, -1.2), (0.1, 0.1), (-1.8, -5.0), (-1.2, -7.5), (-3.2, -13.8)]),
+    ("Flushing", Kind::Subway, &[(13.1, 0.1), (6.5, -0.5), (3.3, -1.2), (0.6, -0.6), (-0.6, -0.2)]),
+    ("Second Av-Bronx", Kind::Subway, &[(11.0, 16.0), (9.0, 9.0), (3.8, 4.2), (1.5, -1.5), (-1.0, -5.0)]),
+    ("Canarsie", Kind::Subway, &[(-1.8, -2.6), (1.2, -2.4), (3.5, -6.0), (6.0, -8.5), (9.0, -11.0)]),
+    ("Brooklyn-Queens", Kind::Subway, &[(-0.4, -7.3), (2.0, -4.5), (3.3, -1.2), (5.2, 2.4)]),
+    ("PATH Newark", Kind::Subway, &[(-15.1, -2.7), (-10.5, -3.0), (-6.6, -2.8), (-3.8, -2.6), (-2.2, -5.6)]),
+    ("Hudson light rail", Kind::Light, &[(-12.0, -11.0), (-8.5, -7.0), (-6.6, -3.5), (-4.5, 0.5), (-4.0, 6.0)]),
+    ("Staten Island", Kind::Light, &[(-7.5, -12.8), (-13.0, -18.0), (-22.3, -27.4)]),
+    ("Hudson", Kind::Commuter, &[(0.7, -0.7), (4.0, 5.1), (6.3, 13.6), (7.2, 19.8), (8.9, 48.0), (9.0, 70.0)]),
+    ("Harlem", Kind::Commuter, &[(0.7, -0.7), (4.0, 5.1), (9.5, 14.0), (17.7, 30.6), (30.8, 70.0)]),
+    ("New Haven", Kind::Commuter, &[(0.7, -0.7), (4.0, 5.1), (11.0, 13.0), (17.1, 17.0), (37.3, 32.1), (60.0, 42.0), (89.0, 60.0)]),
+    ("LIRR Main", Kind::Commuter, &[(-0.7, -0.9), (3.3, -1.2), (8.0, -3.5), (14.8, -6.4), (29.0, -1.9), (38.5, 1.0), (74.2, 5.6)]),
+    ("LIRR Babylon", Kind::Commuter, &[(-0.7, -0.9), (14.8, -6.4), (25.0, -9.0), (40.0, -8.5), (55.6, -6.4), (75.0, -2.0)]),
+    ("LIRR Port Washington", Kind::Commuter, &[(-0.7, -0.9), (3.3, -1.2), (13.1, 0.1), (25.1, 7.9)]),
+    ("NJ Northeast Corridor", Kind::Commuter, &[(-0.7, -0.9), (-7.6, 0.3), (-15.1, -2.7), (-19.4, -10.1), (-38.8, -29.0), (-64.8, -60.0)]),
+    ("NJ Coast", Kind::Commuter, &[(-0.7, -0.9), (-7.6, 0.3), (-15.1, -2.7), (-19.4, -10.1), (-24.0, -26.0), (-10.0, -40.0), (-0.4, -51.0)]),
+    ("NJ Morris", Kind::Commuter, &[(-0.7, -0.9), (-7.6, 0.3), (-15.1, -2.7), (-25.0, 1.0), (-41.7, 4.3), (-48.4, 13.6)]),
+    ("NJ Bergen", Kind::Commuter, &[(-0.7, -0.9), (-7.6, 0.3), (-10.0, 10.0), (-15.6, 17.7), (-13.9, 39.0)]),
+    ("Triboro", Kind::Orbital, &[(-3.2, -13.8), (2.0, -12.0), (6.0, -8.5), (10.0, -4.0), (9.5, 2.0), (8.0, 11.4), (6.3, 13.6)]),
+    ("Outer ring", Kind::Orbital, &[(-19.4, -10.1), (-15.1, -2.7), (-12.0, 8.0), (-4.9, 14.2), (7.2, 19.8), (17.1, 17.0), (25.1, 7.9), (29.0, -1.9), (27.0, -12.0), (17.3, -12.5)]),
+    ("Bronx-Queens", Kind::Orbital, &[(0.0, 13.0), (8.0, 11.4), (13.0, 6.0), (13.1, 0.1), (14.8, -6.4), (17.3, -12.5)]),
+];
+
+/// Stops closer than this to an existing station on another line become that station.
+const MERGE_KM: f64 = 0.35;
+
+pub fn synth_network() -> Network {
+    let mut net = Network {
+        st_x: vec![],
+        st_y: vec![],
+        line_name: vec![],
+        line_off: vec![0],
+        line_stops: vec![],
+        hop_min: vec![],
+        hop_back: vec![],
+        line_speed_kmh: vec![],
+        line_headway_min: vec![],
+        line_seats: vec![],
+        line_rated: vec![],
+        line_crush: vec![],
+        st_group: vec![],
+        stop_x: vec![],
+        stop_y: vec![],
+        line_wrap: vec![],
+        span: vec![],
+        st_ups: vec![],
+        st_passage: vec![],
+        catches: vec![],
+        st_bus: vec![],
+        st_tram: vec![],
+    };
+    for &(name, kind, pts) in LINES {
+        let mut stops: Vec<u32> = vec![];
+        let place =|x: f64, y: f64, net: &mut Network, stops: &mut Vec<u32>| {
+            let mut found = None;
+            for s in 0..net.st_x.len() {
+                let d = ((net.st_x[s] as f64 / 1000.0 - x).powi(2) + (net.st_y[s] as f64 / 1000.0 - y).powi(2)).sqrt();
+                if d < MERGE_KM {
+                    found = Some(s as u32);
+                    break;
+                }
+            }
+            let s = found.unwrap_or_else(|| {
+                net.st_x.push((x * 1000.0) as f32);
+                net.st_y.push((y * 1000.0) as f32);
+                (net.st_x.len() - 1) as u32
+            });
+            if !stops.contains(&s) {
+                stops.push(s);
+            }
+        };
+        place(pts[0].0, pts[0].1, &mut net, &mut stops);
+        for w in pts.windows(2) {
+            let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+            let len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+            let mid_r = (((x0 + x1) / 2.0).powi(2) + ((y0 + y1) / 2.0).powi(2)).sqrt();
+            let k = (len / kind.spacing(mid_r)).round().max(1.0) as usize;
+            for i in 1..k {
+                let f = i as f64 / k as f64;
+                let (x, y) = (x0 + f * (x1 - x0), y0 + f * (y1 - y0));
+                // commuter lines run express through the inner area
+                if matches!(kind, Kind::Commuter) && (x * x + y * y).sqrt() < 9.0 {
+                    continue;
+                }
+                place(x, y, &mut net, &mut stops);
+            }
+            place(x1, y1, &mut net, &mut stops);
+        }
+        net.line_name.push(name.to_string());
+        net.line_stops.extend_from_slice(&stops);
+        net.hop_min.extend(std::iter::repeat(0.0).take(stops.len()));
+        net.line_off.push(net.line_stops.len() as u32);
+        net.line_speed_kmh.push(kind.speed());
+        net.line_headway_min.push(kind.headways());
+        let (seats, rated) = kind.capacity();
+        net.line_seats.push(seats);
+        net.line_rated.push(rated);
+        net.line_crush.push(rated * super::api::CRUSH_PER_CAR / super::api::RATED_PER_CAR);
+    }
+    net.recompute_run_times();
+    net
+}
+
+impl Network {
+    pub fn n_stations(&self) -> usize {
+        self.st_x.len()
+    }
+    pub fn n_lines(&self) -> usize {
+        self.line_name.len()
+    }
+    pub fn stops(&self, l: usize) -> &[u32] {
+        &self.line_stops[self.line_off[l] as usize..self.line_off[l + 1] as usize]
+    }
+
+    /// Run time per hop from straight-line distance x 1.15 (curves) at the line's average speed.
+    pub fn recompute_run_times(&mut self) {
+        for l in 0..self.n_lines() {
+            let (a, b) = (self.line_off[l] as usize, self.line_off[l + 1] as usize);
+            for k in a..b {
+                self.hop_min[k] = if k + 1 < b {
+                    let (s, t) = (self.line_stops[k] as usize, self.line_stops[k + 1] as usize);
+                    let d = ((self.st_x[s] - self.st_x[t]).powi(2) + (self.st_y[s] - self.st_y[t]).powi(2)).sqrt();
+                    d * 1.15 / 1000.0 / self.line_speed_kmh[l] * 60.0
+                } else {
+                    0.0
+                };
+            }
+        }
+    }
+
+    /// The edit used for timing: move every station served only by line `l` by (dx, dy) metres.
+    /// Returns how many stations moved.
+    pub fn move_line(&mut self, l: usize, dx: f32, dy: f32) -> usize {
+        let mut nlines = vec![0u32; self.n_stations()];
+        for k in 0..self.n_lines() {
+            for &s in self.stops(k) {
+                nlines[s as usize] += 1;
+            }
+        }
+        let mut moved = 0;
+        let stops: Vec<u32> = self.stops(l).to_vec();
+        for s in stops {
+            if nlines[s as usize] == 1 {
+                self.st_x[s as usize] += dx;
+                self.st_y[s as usize] += dy;
+                moved += 1;
+            }
+        }
+        self.recompute_run_times();
+        moved
+    }
+}
+
+/// A real city's network as `pipeline/realnet.py` writes it (the file's `demand` object), in the
+/// arrays `DemandApi::set_network` takes. For the native tools and tests.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct RealNet {
+    pub st_xy: Vec<f32>,
+    pub line_n: Vec<u32>,
+    pub stops: Vec<u32>,
+    pub times: Vec<f32>,
+    pub tph: Vec<f32>,
+    pub cars: Vec<f32>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RealNet {
+    pub fn from_json(j: &serde_json::Value) -> RealNet {
+        let d = &j["demand"];
+        let f32s = |k: &str| d[k].as_array().unwrap_or_else(|| panic!("network: no {k}")).iter().map(|v| v.as_f64().unwrap() as f32).collect::<Vec<f32>>();
+        let u32s = |k: &str| d[k].as_array().unwrap_or_else(|| panic!("network: no {k}")).iter().map(|v| v.as_u64().unwrap() as u32).collect::<Vec<u32>>();
+        RealNet { st_xy: f32s("st_xy"), line_n: u32s("line_n"), stops: u32s("stops"), times: f32s("times"), tph: f32s("tph"), cars: f32s("cars") }
+    }
+    /// The network of the JSON file at `path`, and the file's whole JSON (stations' and lines'
+    /// names are there).
+    pub fn load(path: &str) -> (RealNet, serde_json::Value) {
+        let j: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"))).unwrap();
+        (RealNet::from_json(&j), j)
+    }
+    /// `route_nodes` of this network.
+    pub fn route_nodes(&self) -> (Vec<usize>, Vec<usize>, Vec<f32>) {
+        route_nodes(&self.st_xy, &self.line_n, &self.stops)
+    }
+    pub fn hop_km(&self) -> Vec<f32> {
+        self.route_nodes().2
+    }
+}
+
+/// Per route node, in the kernel's order (each line's stops forward, then reversed): its
+/// station, its line, and the km to the next stop (the fare's distance; 0 at a line's end).
+/// The same rule as the app's `hopKm`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn route_nodes(st_xy: &[f32], line_n: &[u32], stops: &[u32]) -> (Vec<usize>, Vec<usize>, Vec<f32>) {
+    let (mut rn_st, mut rn_line, mut hop_km) = (vec![], vec![], vec![]);
+    let mut off = 0usize;
+    for (l, &n) in line_n.iter().enumerate() {
+        let n = n as usize;
+        for dir in 0..2 {
+            for i in 0..n {
+                let k = if dir == 0 { off + i } else { off + n - 1 - i };
+                rn_st.push(stops[k] as usize);
+                rn_line.push(l);
+                hop_km.push(if i + 1 < n {
+                    let next = if dir == 0 { k + 1 } else { k - 1 };
+                    let (s0, s1) = (stops[k] as usize, stops[next] as usize);
+                    (st_xy[2 * s0] - st_xy[2 * s1]).hypot(st_xy[2 * s0 + 1] - st_xy[2 * s1 + 1]) / 1000.0
+                } else {
+                    0.0
+                });
+            }
+        }
+        off += n;
+    }
+    (rn_st, rn_line, hop_km)
+}

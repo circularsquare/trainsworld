@@ -1,0 +1,1821 @@
+"""T-287: tier 0, a city pack from global sources only (research/world-sampler.md section 2).
+
+    python pipeline/build_city.py <city>      (build_city.main hands a city with "tier0" to main())
+    python pipeline/merge_cells.py <ids> --through "tier0 {id} --education"   schools and universities again
+
+Every input comes from a source that covers the world, so any city can be built; a country's own
+census or registers then upgrade single inputs by replacing one function. What each input is:
+
+- Population: GHSL GHS-POP (R2023A, 100 m Mollweide tiles, CC BY 4.0), each pixel's people per
+  residential m3 (GHS-BUILT-V total less NRES) held within POP_BOUND of its POP_BOUND_SIGMA_M
+  neighbourhood's (bounded_population, T-1150), each pixel split over four 50 m points (points on
+  water dropped, the pixel's people kept on its land points), summed into the H3 cells and scaled
+  to GHS-POP's own total over them, then scaled to admin totals where the config gives them (any
+  census publishes district totals): each unit's cells take its total times the share of the
+  unit's GHSL people they hold (scale_to_units). No institutions taken off.
+- Jobs (the jobs proxy, T-012): a total of population x jobs per resident (World Bank: ILO's
+  employment-to-population ratio 15+ x the share aged 15+), spread over cells by a blend of three
+  normalised signals: GHSL non-residential built-up volume (GHS-BUILT-V NRES) times the cell's
+  mean non-residential height (volume over GHS-BUILT-S NRES surface, at most HEIGHT_CAP_M) to the power HEIGHT_POW, OSM
+  job places (shops, amenities, offices, crafts, commercial and industrial land;
+  canada.osm_places) and population. The weights are JOB_BLEND (notes/T-287.md); a city with much
+  informal or home-based work should raise the population share.
+- Commuters: jobs x (1 - work from home), the config's one national share (default 0), at both
+  ends; the home end in proportion to population (no small-area source of where workers live).
+- Everyday destinations (T-453): jobs in the customer-facing sectors where a country publishes
+  them by small area (the config's `everyday` hook) and they pass sector_check; otherwise
+  everyday_fallback, each 2 km zone's jobs (and, for errands, residents) blended with its OSM
+  shops and services or food, venues and hotels as far as the pack's OSM is complete. Set after
+  the gravity (everyday_pack), scaled to 15% and 8% of jobs.
+- Schools: OSM amenity=school sites; pupils = population x the national share aged 0-14 (World
+  Bank) x SCHOOL_ENROL, spread over the sites by the square root of their area (points take the
+  median site), no site over SCHOOL_SITE_MAX; pupils the mapped sites cannot hold go to school
+  where they live (by children). Children are the same share of every cell's people.
+- Universities: OSM amenity=university|college, each institution sized by its Wikidata student
+  count (P2196) split over its sites by area; sites with no Wikidata count by area at the
+  median students per hectare of those with one; points with no count left out. The total is
+  then scaled to population x the national tertiary students a resident (UNESCO via the World
+  Bank, SE.TER.ENRL / SP.POP.TOTL; T-288), so the counts and areas only spread it, no site past
+  its cap (university_sizes, campus_fill: T-3216 parents' counts, T-3226 caps and sites left out).
+  A site with an outline spreads its students over the cells under it (campus_spread, T-3214).
+- Airports: OurAirports scheduled-service airports in the boundary, boardings = a national count
+  (enrich_airports.PUBLISHED) or Wikidata patronage (P3872) / 2 (best_boardings), O&D share 1 except the config's judgement values for hubs, pack share
+  from the GHSL population around the airport (exp(-d/20 km), as enrich_airports); the rest goes in
+  the header's airport.sites for cross_everyday (T-2896).
+- Medical and parks: the shared scripts, OSM from the Geofabrik extract's cached features
+  (osm_features, through canada.osm_caches); job places and schools read the same cache.
+- Water: the config's `water_source` (lon/lat polygons, as water.build_mask takes); for any country
+  `osm_water.source([<Geofabrik extracts>])` (T-041: OSM coastline sea plus the extracts' inland
+  water).
+- Gravity curve: the config's "decay_pow"/"decay_km" if given; "curve": "borrowed" for a city with
+  no flows or distance table, borrowed_curve below (T-314), "borrowed_zone" for a non-city zone
+  the same rule over the fitted zones (T-723); else the length fitted so the model's median commute (straight line between 2 km zones) matches the
+  config's published figure ("curve": {"median_km" or "mean_km", "pow"}), fit_curve below; or
+  both parameters fitted to a census table of commuters by distance band ("curve": {"bands",
+  "road_factor"}), fit_curve_bands.
+- Regions: one region, no border factor; or each cell's admin-1 region from the config's `regions`
+  hook, with its `border_factor` across them (the US states, T-1016).
+
+Config keys (a CITIES entry with "tier0": True): origin, water, boundary_file (GeoJSON, any
+polygons, dissolved; or a callable returning its path, as england.itl3_boundary), water_source, extract (Geofabrik path), iso2 (World Bank country),
+boundary_drawn (callable -> (shapely geometry, source text), optional: the pack's drawn outline as
+given, where the footprint boundary_file is clipped to the shore), cell_points (callable boundary ->
+(lat, lon) arrays, optional: points that each get a cell, a census's small areas), regions
+(callable (lat, lon) of the pack's cells -> (u8 region per cell, the header's regions block),
+optional), admin_totals (callable boundary -> [(name, shapely geometry, population)] for the units
+touching it, optional; admin_totals.hook(iso2) reads them from a country's config), wfh (share
+working at home, optional, or a callable returning it; or per cell: at_home, callable (lat, lon) -> census at-home share, with
+telework, the share of the rest teleworking on a day), jobs (callable (city, boundary, signals, proxy weight per cell) ->
+(jobs per signal cell, source name), optional: a country's workplace counts by small area, spread
+inside each area by the proxy; jobs_url), population (callable (city, boundary, signals) ->
+(people per signal cell, source name), optional: census counts by small area), od_share ({OurAirports ident: share}, optional), boardings ({OurAirports
+ident: (boardings a year, "year, source")}, optional: a national figure in place of Wikidata's), curve or
+decay_pow/decay_km, region_name (optional), epoch (GHSL epoch, default 2020), job_blend (the proxy's
+blend in place of JOB_BLEND, or a callable returning it, optional: a larger population share where
+much work is informal),
+land_cap_km2 and land_spread_deg (optional, default LAND_CAP_KM2 and LAND_SPREAD_DEG, 0 for none: the
+cap on one OSM industrial or commercial area's job-place weight and the grid it is spread over; T-459, T-460), everyday (callable
+(city, lat, lon, jobs per pack cell) -> {"errand" and/or "leisure": (sector jobs per cell, source
+name[, the pack the concentration test was passed on])}, optional: a country's jobs by sector by
+small area; the third item makes the pack run only the level test, for a source judged on the
+country's best-mapped metro, since sparse packs' OSM misses roadside malls and resorts).
+"""
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+
+import io
+import json
+import math
+import re
+import time
+import zipfile
+
+import h3
+import numpy as np
+import pandas as pd
+import shapely
+from shapely import make_valid, union_all
+from shapely.geometry import Point, mapping, shape
+
+import build_city as b
+import netget
+import packio
+
+GHSL = "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/{group}/{product}/V1-0/tiles/{product}_V1_0_R{r}_C{c}.zip"
+PRODUCTS = {
+    "pop": ("GHS_POP_GLOBE_R2023A", "GHS_POP_E{epoch}_GLOBE_R2023A_54009_100"),
+    "nres_v": ("GHS_BUILT_V_GLOBE_R2023A", "GHS_BUILT_V_NRES_E{epoch}_GLOBE_R2023A_54009_100"),
+    "nres_s": ("GHS_BUILT_S_GLOBE_R2023A", "GHS_BUILT_S_NRES_E{epoch}_GLOBE_R2023A_54009_100"),
+    "tot_v": ("GHS_BUILT_V_GLOBE_R2023A", "GHS_BUILT_V_E{epoch}_GLOBE_R2023A_54009_100"),
+}
+MOLL_X0, MOLL_Y0, TILE_M, PIX_M = -18041000.0, 9000000.0, 1_000_000.0, 100.0
+WORLDBANK = "https://api.worldbank.org/v2/country/{iso2}/indicator/SL.EMP.TOTL.SP.ZS;SP.POP.0014.TO.ZS?source=2&format=json&date=2015:2025&per_page=100"
+WORLDBANK_NE = "https://api.worldbank.org/v2/country/{iso2}/indicator/SL.EMP.TOTL.SP.NE.ZS?format=json&date=2015:2025&per_page=100"
+WIKIDATA = "https://query.wikidata.org/sparql"
+
+# The jobs proxy's blend (shares of the job total): GHSL non-residential volume weighted by height,
+# OSM job places, population. The best joint fit on Toronto's census and London's BRES at 2 km zones
+# (T-360, notes/T-288.md); both cities are in-sample.
+JOB_BLEND = {"nres": 0.3, "osm": 0.5, "pop": 0.2}
+HEIGHT_POW = 2.0
+HEIGHT_CAP_M = 40.0                   # the height weight stops here: one tall tower or hangar took Berlin's share (T-573)
+LAND_CAP_KM2, LAND_SPREAD_DEG = 1.0, 0.003   # OSM industrial or commercial land: cap per area, spread grid (T-460)
+# A pack whose jobs are this proxy alone (T-583): one OSM place carries at most PLACE_JOBS_CAP of all
+# jobs, one cell at most cell_job_cap() jobs through the building parts; what the caps leave goes to
+# the population part. The gate's limits are 1% and 600 (checks/pack_gate.py).
+PLACE_JOBS_CAP, CELL_JOBS_K = 0.0075, 500.0
+ERRAND_SHARE, LEISURE_SHARE = 0.15, 0.08
+SCHOOL_ENROL = 0.9                    # pupils per child aged 0-14 (judgement; UNESCO rates would refine)
+SCHOOL_SITE_MAX = 3000.0              # pupils one OSM school site holds at most (T-574)
+SCHOOL_CELL_MAX = 6000.0              # ... and one pack cell's sites together (T-574: Vile Parle's campus of 8 schools)
+# T-3214: a campus's students spread over the cells under its outline, this share by GHSL
+# non-residential volume and the rest by area (judgement: lecture halls over playing fields and
+# farms, but no cell of the campus left empty).
+CAMPUS_BUILT_SHARE = 0.5
+CAMPUS_RES = 11                       # the outline sampled at H3 res 11 centres (~2,150 m² each)
+# T-3226: over the 2,773 Wikidata-counted institutions with 0.5 ha or more of OSM campus in every
+# tier 0 pack (2026-11-11), students go as 1,872 x hectares^0.31 (log error sd 1.32: a campus 100
+# times larger holds about 4 times the students, not 100). That curve bounds a site's students:
+# a count at most CAMPUS_SIZE_SPREAD (e^(2 x 1.32)) times it, where a count stands for a whole
+# system's or a distance university's students (IGNOU 3,000,000 on 61 ha, UNAM 360,883 on CU), and
+# a site sized by area at most CAMPUS_AREA_SPREAD (e^(1.28 x 1.32), the 90th percentile) times it
+# and CAMPUS_AREA_MAX (between the 95th and 99th percentiles of counts, 38,000 and 72,485); every site
+# at most CAMPUS_SITE_MAX (the 99.5th percentile, 101,052).
+CAMPUS_SIZE_C, CAMPUS_SIZE_POW = 1872.0, 0.31
+CAMPUS_SIZE_SPREAD = 14.0
+CAMPUS_AREA_SPREAD = 5.4
+CAMPUS_AREA_MAX = 50_000.0
+CAMPUS_SITE_MAX = 100_000.0
+CAMPUS_POINT_HA = 1.0                 # a counted point's area for the curve (counted points: median 1,602 students)
+# OSM sites tagged university or college that hold few students: open, distance, correspondence and
+# online universities and their study centres (their students study from home), in the main
+# languages and by the big ones' short names, research centres, and university farms and forests
+# (Yilan's 50,000 on its experimental forest) (judgement, T-3226, T-3273; Wikidata's classes
+# don't mark the open universities: NOUN and IGNOU are plain universities there)
+OPEN_UNIVERSITY = re.compile(
+    r"open universit|universitas terbuka|universiti terbuka|universidad abierta|universidade aberta|universit[ée] ouverte|"
+    r"open universiteit|uniwersytet otwarty|fernuni|fernhochschule|t[ée]l[ée]universit|t[ée]luq|universit[àa] telematica|"
+    r"distance (?:education|learning)|a distancia|a dist[âa]ncia|[àa] distance|uzaktan|a[çc][ıi]k[öo][ğg]retim|"
+    r"online universit|virtual universit|universidad virtual|universidade virtual|cyber universit|"
+    r"\b(?:ignou|noun|aiou|uned|upbjj)\b|payame? ?noor|"
+    r"空中大[學学]|开放大学|開放大學|广播电视大学|廣播電視大學|函授|放送大[学學]|通信教育|"
+    r"방송통신대|사이버대학|원격대학|المفتوحة|پیام نور|اوپن یونیورسٹی|मुक्त विश्वविद्यालय|উন্মুক্ত বিশ্ববিদ্যালয়|"
+    r"มหาวิทยาลัยเปิด|สุโขทัยธรรมาธิราช|открытый университет|відкритий університет|дистанцион|дистанційн|заочн|"
+    r"ανοι[κχ]τό πανεπιστήμιο|האוניברסיטה הפתוחה", re.I)
+NOT_CAMPUS = re.compile(
+    OPEN_UNIVERSITY.pattern + r"|centro at[óo]mico|atomic|nuclear research|research (?:centre|center|institute|station)|"
+    r"centre de recherche|centro de investigaci|instituto de investigaci|forschungszentrum|national laborator|"
+    r"university farm|experimental (?:forest|farm)|research (?:forest|farm)|experiment station|arboretum|"
+    r"實驗林|实验林|林場|林场|農場|农场|演習林|試驗場|试验场", re.I)
+DEFAULT_CURVE_POW = 1.4               # between Toronto's fit (1.2) and London's (1.5-1.85); only the length is fitted (T-360)
+ZONE_M = 2000.0
+INTRAZONAL_KM = 1.04                  # the game's same-zone distance
+# GHS-POP's people per residential m3 is one figure inside each of GHSL's own census units, which in
+# China are old and coarse enough to step 10-30x between neighbours; each pixel's figure is held
+# within POP_BOUND of its neighbourhood's, a Gaussian of POP_BOUND_SIGMA_M (T-1150).
+POP_BOUND, POP_BOUND_SIGMA_M = 2.0, 2000.0
+# A census unit with over this times GHSL's people, or under its inverse, is printed FLAG: GHSL's
+# phantoms and gaps, or a bad join (research/next-countries-data.md "The general fix" 3).
+ADMIN_FLAG = 2.0
+
+
+def raw(*p):
+    return os.path.join(b.RAW, "tier0", *p)
+
+
+# ---------------------------------------------------------------- GHSL grids
+
+def _moll():
+    from pyproj import Transformer
+    return (Transformer.from_crs("EPSG:4326", "ESRI:54009", always_xy=True),
+            Transformer.from_crs("ESRI:54009", "EPSG:4326", always_xy=True))
+
+
+def _tile_path(kind, epoch, r, c):
+    group, product = PRODUCTS[kind]
+    product = product.format(epoch=epoch)
+    url = GHSL.format(group=group, product=product, r=r, c=c)
+    path = raw("ghsl", f"{product}_V1_0_R{r}_C{c}.zip")
+    if os.path.exists(path):
+        return path
+    if os.path.exists(path + ".none"):
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    print(f"  downloading {url}", flush=True)
+    resp = netget.request(url, timeout=600, ok=(404,))
+    if resp.status_code == 404:  # GHSL has no tile over open ocean
+        open(path + ".none", "w").close()
+        return None
+    resp.raise_for_status()
+    tmp = f"{path}.{os.getpid()}.part"  # builds at once may fetch the same tile (T-1065)
+    with open(tmp, "wb") as f:
+        f.write(resp.content)
+    return b.settle(tmp, path)
+
+
+def _read_tile_window(path, r0, r1, c0, c1, tile_x0=None, tile_y0=None, dtype=np.float64):
+    """Rows r0:r1, columns c0:c1 of a GHSL tile (counted from the nominal 1,000 km tile's corner
+    tile_x0, tile_y0), decoding only the TIFF tiles they touch. Some tiles are cut short (T-288:
+    GHS-BUILT-V NRES R3_C18 is 9,000 pixels wide); the GeoTIFF tie point says where the image
+    starts, and rows or columns outside it are zero."""
+    import tifffile
+    with zipfile.ZipFile(path) as z:
+        data = z.read(next(n for n in z.namelist() if n.endswith(".tif")))
+    with tifffile.TiffFile(io.BytesIO(data)) as tf:
+        pg = tf.pages[0]
+        out = np.zeros((r1 - r0, c1 - c0), dtype)
+        dr = dc = 0
+        tie = pg.tags.get(33922)
+        if tile_x0 is not None and tie is not None:
+            dc = int(round((tie.value[3] - tile_x0) / PIX_M))  # image column 0 in tile columns
+            dr = int(round((tile_y0 - tie.value[4]) / PIX_M))
+        R0, R1 = max(r0 - dr, 0), min(r1 - dr, pg.imagelength)  # in image rows and columns
+        C0, C1 = max(c0 - dc, 0), min(c1 - dc, pg.imagewidth)
+        if R0 >= R1 or C0 >= C1:
+            return out
+        oR, oC = R0 + dr - r0, C0 + dc - c0  # where the image part lands in out
+        sub = out[oR:oR + (R1 - R0), oC:oC + (C1 - C0)]
+        r0, r1, c0, c1 = R0, R1, C0, C1
+        th, tw = pg.tilelength, pg.tilewidth
+        nx = math.ceil(pg.imagewidth / tw)
+        fh = tf.filehandle
+        for ty in range(r0 // th, (r1 - 1) // th + 1):
+            for tx in range(c0 // tw, (c1 - 1) // tw + 1):
+                i = ty * nx + tx
+                fh.seek(pg.dataoffsets[i])
+                seg = pg.decode(fh.read(pg.databytecounts[i]), i)[0]
+                seg = np.asarray(seg)
+                seg = seg.reshape(seg.shape[-3], seg.shape[-2]).astype(dtype)  # (.., rows, cols, samples)
+                ya, xa = ty * th, tx * tw
+                ra, rb = max(r0, ya), min(r1, ya + seg.shape[0])
+                ca, cb = max(c0, xa), min(c1, xa + seg.shape[1])
+                sub[ra - r0:rb - r0, ca - c0:cb - c0] = seg[ra - ya:rb - ya, ca - xa:cb - xa]
+    out[out < 0] = 0.0  # nodata (-200 in GHS-POP)
+    return out
+
+
+def moll_corners(fwd, w, s, e, n):
+    """Mollweide x and y of a lon/lat box's corners and edge midpoints; across the equator its edges at the
+    equator too, where a meridian lies farthest out (T-1738: Nias, Halmahera)."""
+    lats = [s, n] + ([0.0] if s < 0.0 < n else [])
+    lons = [w, e, (w + e) / 2]
+    return fwd.transform([x for x in lons for _ in lats], [y for _ in lons for y in lats])
+
+
+def ghsl_window(kind, bbox_ll, epoch=2020, pad_m=0.0, dtype=np.float64):
+    """A GHSL 100 m grid over a lon/lat box (plus pad_m), mosaicked from as many 1,000 km tiles as
+    it touches: (array, west edge x, north edge y) in Mollweide metres, row 0 north."""
+    fwd, _ = _moll()
+    w, s, e, n = bbox_ll
+    xs, ys = moll_corners(fwd, w, s, e, n)
+    xmin, xmax = min(xs) - pad_m, max(xs) + pad_m
+    ymin, ymax = min(ys) - pad_m, max(ys) + pad_m
+    X0 = MOLL_X0 + math.floor((xmin - MOLL_X0) / PIX_M) * PIX_M
+    Y0 = MOLL_Y0 - math.floor((MOLL_Y0 - ymax) / PIX_M) * PIX_M
+    W, H = math.ceil((xmax - X0) / PIX_M), math.ceil((Y0 - ymin) / PIX_M)
+    return moll_window(kind, X0, Y0, W, H, epoch, dtype), X0, Y0
+
+
+def moll_window(kind, X0, Y0, W, H, epoch=2020, dtype=np.float64):
+    """A GHSL 100 m grid of H x W pixels from the pixel corner (X0, Y0) in Mollweide metres, row 0
+    north, mosaicked from as many 1,000 km tiles as it touches."""
+    out = np.zeros((H, W), dtype)
+    r_first, r_last = int((MOLL_Y0 - Y0) // TILE_M) + 1, int((MOLL_Y0 - (Y0 - H * PIX_M) - 1) // TILE_M) + 1
+    c_first, c_last = int((X0 - MOLL_X0) // TILE_M) + 1, int((X0 + W * PIX_M - 1 - MOLL_X0) // TILE_M) + 1
+    for r in range(r_first, r_last + 1):
+        for c in range(c_first, c_last + 1):
+            tx0, ty0 = MOLL_X0 + (c - 1) * TILE_M, MOLL_Y0 - (r - 1) * TILE_M
+            # this tile's pixels inside the window (tile rows and columns)
+            c_a, c_b = max(0, round((X0 - tx0) / PIX_M)), min(10000, round((X0 + W * PIX_M - tx0) / PIX_M))
+            r_a, r_b = max(0, round((ty0 - Y0) / PIX_M)), min(10000, round((ty0 - (Y0 - H * PIX_M)) / PIX_M))
+            if c_a >= c_b or r_a >= r_b:
+                continue
+            path = _tile_path(kind, epoch, r, c)
+            if path is None:
+                continue
+            win = _read_tile_window(path, r_a, r_b, c_a, c_b, tx0, ty0, dtype)
+            wr, wc = round((Y0 - ty0) / PIX_M) + r_a, round((tx0 - X0) / PIX_M) + c_a
+            out[wr:wr + win.shape[0], wc:wc + win.shape[1]] = win
+    return out
+
+
+def ghsl_people(geoms, epoch=2020, inside=None, block=5000):
+    """GHS-POP people whose pixel centre lies in each lon/lat geometry (they must not overlap), and
+    with `inside` (a lon/lat geometry) also those of them whose centre lies in it: (whole, part)
+    arrays. Read in blocks of the tile grid, so each block decodes one tile."""
+    from affine import Affine
+    from rasterio import features
+    fwd, _ = _moll()
+    geoms = np.asarray(geoms, dtype=object)
+    to_moll = lambda xy: np.column_stack(fwd.transform(xy[:, 0], xy[:, 1]))  # noqa: E731
+    moll = shapely.transform(geoms, to_moll)
+    whole, part = np.zeros(len(geoms)), np.zeros(len(geoms))
+    live = np.flatnonzero(~shapely.is_empty(moll))
+    if not len(live):
+        return (whole, part) if inside is not None else whole
+    tree = shapely.STRtree(moll[live])
+    ins = shapely.transform(inside, to_moll) if inside is not None else None
+    xmin, ymin, xmax, ymax = shapely.total_bounds(moll[live])
+    c0, c1 = math.floor((xmin - MOLL_X0) / PIX_M), math.ceil((xmax - MOLL_X0) / PIX_M)  # global pixel columns
+    r0, r1 = math.floor((MOLL_Y0 - ymax) / PIX_M), math.ceil((MOLL_Y0 - ymin) / PIX_M)
+    for ca in range(c0 - c0 % block, c1, block):
+        for ra in range(r0 - r0 % block, r1, block):
+            cs, ce, rs, rend = max(ca, c0), min(ca + block, c1), max(ra, r0), min(ra + block, r1)
+            bx, by = MOLL_X0 + cs * PIX_M, MOLL_Y0 - rs * PIX_M
+            hit = live[tree.query(shapely.box(bx, MOLL_Y0 - rend * PIX_M, MOLL_X0 + ce * PIX_M, by))]
+            if not len(hit):
+                continue
+            pop = moll_window("pop", bx, by, ce - cs, rend - rs, epoch, np.float32)
+            if not pop.any():
+                continue
+            tf = Affine(PIX_M, 0.0, bx, 0.0, -PIX_M, by)
+            lab = features.rasterize(((moll[i], int(i) + 1) for i in hit), out_shape=pop.shape, transform=tf,
+                                     fill=0, dtype="int32").ravel()
+            w = pop.ravel().astype(np.float64)
+            whole += np.bincount(lab, weights=w, minlength=len(geoms) + 1)[1:]
+            if ins is not None:
+                m = features.rasterize([(ins, 1)], out_shape=pop.shape, transform=tf, fill=0, dtype="uint8").ravel()
+                part += np.bincount(lab, weights=w * m, minlength=len(geoms) + 1)[1:]
+    return (whole, part) if inside is not None else whole
+
+
+def grid_to_cells(arr, X0, Y0, origin, land=None, sub=2, near=None):
+    """Each pixel's value over sub x sub points; points on water (land(x_m, y_m) false) dropped and
+    the pixel's value kept on its land points (all points if none). Pixels whose centre is outside
+    `near` (a prepared lon/lat shape) are skipped. Returns {h3 int: value}; for a list of grids on one
+    window, a list of them from one pass."""
+    _, inv = _moll()
+    arrs = list(arr) if isinstance(arr, (list, tuple)) else [arr]
+    support = arrs[0] > 0
+    for a in arrs[1:]:
+        support |= a > 0
+    rows, cols = np.nonzero(support)
+    del support
+    if near is not None:
+        plon, plat = inv.transform(X0 + (cols + 0.5) * PIX_M, Y0 - (rows + 0.5) * PIX_M)
+        ok = shapely.contains_xy(near, np.asarray(plon), np.asarray(plat))
+        rows, cols = rows[ok], cols[ok]
+    k = sub * sub
+    off = (np.arange(sub) + 0.5) / sub * PIX_M
+    dx, dy = np.meshgrid(off, off)
+    x = (X0 + cols[:, None] * PIX_M + dx.ravel()[None, :]).ravel()
+    y = (Y0 - rows[:, None] * PIX_M - dy.ravel()[None, :]).ravel()
+    lon, lat = inv.transform(x, y)
+    lon, lat = np.asarray(lon), np.asarray(lat)
+    w = np.full((len(rows), k), 1.0 / k)
+    if land is not None:
+        lon0, lat0 = origin
+        xm = b.R_EARTH * np.radians(lon - lon0) * np.cos(np.radians(lat0))
+        ym = b.R_EARTH * np.radians(lat - lat0)
+        ok = land(xm, ym).reshape(-1, k)
+        n_ok = ok.sum(1)
+        w = np.where(n_ok[:, None] > 0, ok / np.maximum(n_ok, 1)[:, None], 1.0 / k)
+    keep = w.ravel() > 0
+    lon, lat = lon[keep], lat[keep]
+    ids = np.fromiter((h3.str_to_int(h3.latlng_to_cell(la, lo, 9)) for la, lo in zip(lat, lon)), np.uint64, len(lat))
+    u, i = np.unique(ids, return_inverse=True)
+    out = []
+    for a in arrs:
+        s = np.bincount(i, weights=(a[rows, cols][:, None] * w).ravel()[keep], minlength=len(u))
+        pos = s > 0
+        out.append(dict(zip(u[pos].tolist(), s[pos].tolist())))
+    return out if isinstance(arr, (list, tuple)) else out[0]
+
+
+def bounded_population(pop, resv, k=POP_BOUND, sigma_m=POP_BOUND_SIGMA_M, block=1024):
+    """GHS-POP with each pixel's people per m3 of residential volume (resv: GHS-BUILT-V total less
+    NRES) held within a factor k of its neighbourhood's (Gaussian, sigma_m), then scaled back to the
+    window's people; float32. Pixels without residential volume keep GHS-POP's figure. Done in
+    bands of rows with the filter's reach on each side, so a desert zone's window costs one more
+    array, not five."""
+    from scipy import ndimage
+    sigma = sigma_m / PIX_M
+    reach = int(4.0 * sigma + 0.5)  # gaussian_filter's default truncate
+    out = np.empty(pop.shape, np.float32)
+    H = pop.shape[0]
+    for r0 in range(0, H, block):
+        a, z = max(r0 - reach, 0), min(r0 + block + reach, H)
+        p = pop[a:z].astype(np.float32)
+        v = resv[a:z].astype(np.float32, copy=False)
+        rate = ndimage.gaussian_filter(p, sigma, mode="constant")
+        rate /= np.maximum(ndimage.gaussian_filter(v, sigma, mode="constant"), 1e-6)
+        has = v > 0
+        r = np.divide(p, v, out=np.zeros_like(p), where=has)
+        np.clip(r, rate / k, rate * k, out=r)
+        i, j = r0 - a, min(r0 + block, H) - a
+        out[r0:r0 + (j - i)] = np.where(has[i:j], v[i:j] * r[i:j], p[i:j])
+    s = out.sum(dtype=np.float64)
+    if s > 0:
+        out *= np.float32(pop.sum(dtype=np.float64) / s)
+    return out
+
+
+def ghsl_pop_name(sig, epoch=2020):
+    """The population source's words for GHS-POP as this signal cache holds it."""
+    name = f"GHSL GHS-POP E{epoch} R2023A 100 m"
+    if "pop_ghs" in sig:
+        name += f", people per residential m3 held within {POP_BOUND:g}x of the {POP_BOUND_SIGMA_M / 1000:g} km neighbourhood's (T-1150)"
+    return name
+
+
+def land_function(mask):
+    """A fast vectorised `not water` over the mask's dense raster."""
+    d = mask.dense()
+
+    def land(x, y):
+        c = np.floor((x - mask.x0) / mask.cell).astype(np.int64)
+        r = np.floor((y - mask.y0) / mask.cell).astype(np.int64)
+        inside = (c >= 0) & (c < mask.W) & (r >= 0) & (r < mask.H)
+        out = np.ones(len(x), bool)
+        out[inside] = ~d[r[inside], c[inside]]
+        return out
+    return land
+
+
+# ---------------------------------------------------------------- national figures (World Bank)
+
+# places the World Bank leaves out: (employment-to-population ratio 15+, share aged 0-14, year, source)
+NATIONAL = {
+    "TW": (0.5616, 0.1172, 2024, "DGBAS manpower survey 2024, 11.61M employed over 20.66M aged 15+; Ministry of the "
+                                 "Interior household registration end 2024, 2,742,386 aged 0-14 of 23,400,220 (T-897)"),
+}
+
+
+def worldbank(iso2):
+    """(jobs per resident, share aged 0-14) from the World Bank's ILO employment-to-population
+    ratio (15+) and population ages 0-14, the latest year with both."""
+    if iso2 in NATIONAL:
+        emp, kids, year, _ = NATIONAL[iso2]
+        return emp * (1 - kids), kids, year
+    path = netget.cached_json(WORLDBANK.format(iso2=iso2), raw(f"worldbank_{iso2}.json"), timeout=60)
+    with open(path) as f:
+        rows = json.load(f)[1]
+    by = {}
+    for x in rows:
+        if x["value"] is not None:
+            by.setdefault(x["date"], {})[x["indicator"]["id"]] = x["value"] / 100.0
+    if not any(len(v) == 2 for v in by.values()):
+        # no ILO modelled ratio (Kosovo, T-788): the national estimate in its place
+        path = netget.cached_json(WORLDBANK_NE.format(iso2=iso2), raw(f"worldbank_ne_{iso2}.json"), timeout=60)
+        with open(path) as f:
+            for x in json.load(f)[1] or []:
+                if x["value"] is not None and x["date"] in by:
+                    by[x["date"]]["SL.EMP.TOTL.SP.ZS"] = x["value"] / 100.0
+    year = max(y for y, v in by.items() if len(v) == 2)
+    emp, kids = by[year]["SL.EMP.TOTL.SP.ZS"], by[year]["SP.POP.0014.TO.ZS"]
+    return emp * (1 - kids), kids, int(year)
+
+
+WB_TERTIARY = "https://api.worldbank.org/v2/country/{iso2}/indicator/{ind}?format=json&date=2010:2025&per_page=100"
+# places UNESCO leaves out: (tertiary students a resident, year, source, url)
+NATIONAL_TERTIARY = {
+    "TW": (1_094_829 / 23_400_220, 2023, "Ministry of Education, students in universities and colleges in school year 112 "
+           "(2023-24), 1,094,829 (doctoral, master's, bachelor's and junior college), over the registered population "
+           "at end 2024, 23,400,220 (T-3274)", "https://stats.moe.gov.tw/files/analysis/113_st_report.pdf"),
+}
+
+
+def tertiary_source(iso2):
+    """(how the national figure is described, its url) for the header."""
+    if iso2 in NATIONAL_TERTIARY:
+        return NATIONAL_TERTIARY[iso2][2], NATIONAL_TERTIARY[iso2][3]
+    return "UNESCO via World Bank SE.TER.ENRL", WB_TERTIARY.format(iso2=iso2, ind="SE.TER.ENRL")
+
+
+def tertiary_share(iso2):
+    """Tertiary students a resident, nationally: UNESCO's enrolment in tertiary education, all
+    programmes (World Bank SE.TER.ENRL) over the population (SP.POP.TOTL) of the latest year with
+    both, or NATIONAL_TERTIARY's; (share, year), or (None, None) where neither has a figure (T-288)."""
+    if iso2 in NATIONAL_TERTIARY:
+        return NATIONAL_TERTIARY[iso2][0], NATIONAL_TERTIARY[iso2][1]
+    by = {}
+    for ind in ("SE.TER.ENRL", "SP.POP.TOTL"):
+        path = netget.cached_json(WB_TERTIARY.format(iso2=iso2, ind=ind), raw(f"worldbank_{iso2}_{ind}.json"), timeout=60)
+        with open(path) as f:
+            for x in json.load(f)[1] or []:
+                if x["value"] is not None:
+                    by.setdefault(x["date"], {})[ind] = x["value"]
+    years = [y for y, v in by.items() if len(v) == 2]
+    if not years:
+        return None, None
+    y = max(years)
+    return by[y]["SE.TER.ENRL"] / by[y]["SP.POP.TOTL"], int(y)
+
+
+# ---------------------------------------------------------------- boundary and water
+
+_OUTLINES = {}  # city: (cfg, outline); a build asks four times (T-1083)
+
+
+def build_boundary(city, cfg):
+    if city in _OUTLINES and _OUTLINES[city][0] is cfg:
+        return _OUTLINES[city][1]
+    if callable(cfg["boundary_file"]):  # T-288: a country module writes it from admin units
+        cfg["boundary_file"] = cfg["boundary_file"]()
+    with open(cfg["boundary_file"]) as f:
+        fc = json.load(f)
+    feats = fc["features"] if "features" in fc else [fc]
+    merged = union_all([make_valid(shape(f["geometry"])) for f in feats])
+
+    def rnd(c):
+        if isinstance(c, (list, tuple)) and c and isinstance(c[0], (int, float)):
+            return [round(c[0], 6), round(c[1], 6)]
+        return [rnd(x) for x in c]
+
+    if cfg.get("boundary_drawn"):  # a country's own drawn outline, kept as given (T-1016: TIGER counties)
+        drawn, source = cfg["boundary_drawn"]()
+        geom = mapping(drawn)
+    else:
+        geom = mapping(merged.simplify(0.0003, preserve_topology=True))
+        source = f"tier 0: {os.path.basename(cfg['boundary_file'])}"
+    out = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"city": city, "source": source},
+        "geometry": {"type": geom["type"], "coordinates": rnd(geom["coordinates"])}}]}
+    os.makedirs(b.PACKS, exist_ok=True)
+    path = os.path.join(b.PACKS, f"{city}.boundary.geojson")
+    with open(path + ".part", "w") as f:
+        json.dump(out, f, separators=(",", ":"))
+    os.replace(path + ".part", path)
+    _OUTLINES[city] = (cfg, merged)
+    return merged
+
+
+def build_water(cfg, boundary):
+    import water
+    if "water_source" not in cfg:
+        raise ValueError("tier 0 needs a water_source, such as osm_water.source([<Geofabrik extract>]) (T-041)")
+    lon0, lat0 = cfg["origin"]
+    wc = cfg["water"]
+    mask, info = water.build_mask(lon0, lat0, boundary.bounds, wc["cell_m"], b.fetch, None, source=cfg["water_source"])
+    if wc["min_width_px"] > 1:
+        mask = mask.without_narrow(wc["min_width_px"])
+    info["min_width_m"] = wc["min_width_px"] * wc["cell_m"]
+    print(f"water: {mask.W} x {mask.H} pixels, water {mask.water_pixels() / (mask.W * mask.H):.1%} of the extent", flush=True)
+    return mask, info
+
+
+# ---------------------------------------------------------------- the cells
+
+def inside(cells, geom):
+    ll = np.array([h3.cell_to_latlng(h3.int_to_str(int(c))) for c in cells])
+    shapely.prepare(geom)
+    return shapely.contains_xy(geom, ll[:, 1], ll[:, 0]), ll
+
+
+def near_outline(boundary, km=1.0):
+    """The outline grown by at least `km` every way, in degrees (prepared). T-1083: a pixel farther out
+    than about 0.4 km (a res-9 cell's radius plus half a pixel) reaches no cell whose centre is inside,
+    so the cells and their sums are the same without it; a ring round a metro skips the metro's pixels."""
+    lat = min(max(abs(boundary.bounds[1]), abs(boundary.bounds[3])), 85.0)
+    g = boundary.buffer(km / (111.32 * np.cos(np.radians(lat))), 4)
+    shapely.prepare(g)
+    return g
+
+
+def signals(city, cfg, boundary, mask):
+    """Per cell (inside the boundary): GHSL population (bounded, then scaled to admin totals; as
+    published in pop_ghs), GHSL residential volume (res_v), non-residential volume and surface, OSM job places, errand and
+    leisure places. Cached: a pack picks up a change here only once its cache is deleted."""
+    cache = os.path.join(b.WORK, f"{city}.tier0_signals.npz")
+    if os.path.exists(cache):
+        z = np.load(cache)
+        return {k: z[k] for k in z.files}
+    t0 = time.time()
+    epoch = cfg.get("epoch", 2020)
+    land = land_function(mask)
+    near = near_outline(boundary)
+    grids = {}
+    nres_v, X0, Y0 = ghsl_window("nres_v", boundary.bounds, epoch)
+    grids["nres_v"] = grid_to_cells(nres_v, X0, Y0, cfg["origin"], None, near=near)
+    resv = ghsl_window("tot_v", boundary.bounds, epoch, dtype=np.float32)[0]
+    resv -= nres_v
+    np.maximum(resv, 0.0, out=resv)
+    del nres_v
+    pop = ghsl_window("pop", boundary.bounds, epoch, dtype=np.float32)[0]
+    bounded = bounded_population(pop, resv)
+    grids["pop"], pop_ghs, res_v = grid_to_cells([bounded, pop, resv], X0, Y0, cfg["origin"], land, near=near)
+    del bounded, pop, resv
+    arr, X0, Y0 = ghsl_window("nres_s", boundary.bounds, epoch)
+    grids["nres_s"] = grid_to_cells(arr, X0, Y0, cfg["origin"], None, near=near)
+    print(f"  GHSL: {arr.shape[1]} x {arr.shape[0]} pixels; cells with people {len(grids['pop']):,}, "
+          f"non-residential volume {len(grids['nres_v']):,}, surface {len(grids['nres_s']):,}; {time.time() - t0:.0f} s", flush=True)
+    del arr
+    import canada
+    lc = cfg.get("land_cap_km2", LAND_CAP_KM2)
+    places = canada.osm_places(city, boundary, cfg["extract"], cache=raw(f"osm_jobs_{city}.csv.gz"),
+                               land_cap_m2=lc * 1e6 if lc else None, land_spread_deg=cfg.get("land_spread_deg", LAND_SPREAD_DEG))
+    pids = np.fromiter((h3.str_to_int(h3.latlng_to_cell(la, lo, 9)) for la, lo in zip(places.lat, places.lon)), np.uint64, len(places))
+    extra = []
+    if cfg.get("cell_points"):  # a country's small areas, so each has a cell where GHSL has none (T-1016)
+        la, lo = cfg["cell_points"](boundary)
+        extra = [np.fromiter((h3.str_to_int(h3.latlng_to_cell(a, o, 9)) for a, o in zip(la, lo)), np.uint64, len(la))]
+    cells = np.unique(np.concatenate([np.fromiter(g.keys(), np.uint64) for g in grids.values()] + [pids] + extra))
+    ok, ll = inside(cells, boundary)
+    cells, ll = cells[ok], ll[ok]
+    index = {int(c): i for i, c in enumerate(cells)}
+    out = {"h3": cells, "lat": ll[:, 0], "lon": ll[:, 1]}
+    for kind, g in grids.items():
+        out[kind] = np.array([g.get(int(c), 0.0) for c in cells])
+    # GHS-POP as published, per cell; the bounded people keep its total over the pack's cells
+    out["pop_ghs"] = np.array([pop_ghs.get(int(c), 0.0) for c in cells])
+    out["res_v"] = np.array([res_v.get(int(c), 0.0) for c in cells])  # residential m3 (China's townships)
+    have = out["pop"].sum()
+    if have > 0:
+        out["pop"] *= out["pop_ghs"].sum() / have
+    print(f"  GHSL people {out['pop_ghs'].sum():,.0f}; bounded within {POP_BOUND:g}x of the {POP_BOUND_SIGMA_M / 1000:g} km neighbourhood, "
+          f"{0.5 * np.abs(out['pop'] - out['pop_ghs']).sum() / max(out['pop_ghs'].sum(), 1.0):.1%} of them change cell", flush=True)
+    pk = places.kind.to_numpy()
+    place_w = places.w.to_numpy()
+    blend_osm = cfg.get("job_blend", JOB_BLEND)
+    blend_osm = (blend_osm() if callable(blend_osm) else blend_osm)["osm"]
+    if not cfg.get("jobs") and blend_osm > 0:  # jobs from the proxy alone: T-583's place cap
+        in_pack = np.array([int(c) in index for c in pids], bool)
+        place_w, out["osm_w0"], out["osm_wcap"] = cap_places(places, in_pack, blend_osm)
+    for kind in ("errand", "leisure", "job", "land"):
+        out["osm_" + kind] = np.zeros(len(cells))
+        sel = pk == kind
+        rows = np.array([index.get(int(c), -1) for c in pids[sel]], np.int64)
+        w = place_w[sel]
+        np.add.at(out["osm_" + kind], rows[rows >= 0], w[rows >= 0])
+    out["pop_ghsl"] = out["pop"].copy()
+    if cfg.get("admin_totals"):
+        scale_to_units(out, boundary, cfg["admin_totals"](boundary), epoch)
+    os.makedirs(b.WORK, exist_ok=True)
+    np.savez_compressed(cache, **out)
+    print(f"signals: {len(cells):,} cells, {time.time() - t0:.0f} s", flush=True)
+    return out
+
+
+def scale_to_units(out, boundary, units, epoch=2020, people=None):
+    """out["pop"] scaled by census unit (T-2084): the cells whose centre is in a unit take its total
+    times the share of GHSL's people over the whole unit that they hold (GHS-POP as published,
+    pop_ghs), so a unit the outline cuts brings only its part (the factor census / GHSL over the whole
+    unit); a unit with no GHSL people outside the outline (by pixel centre) takes its whole total.
+    `units` are (name, lon/lat geometry, total); `people(geoms, inside)` gives GHSL's (whole, part
+    inside) people (ghsl_people). A unit GHSL puts no one in counts as wholly inside or out by its
+    representative point. Returns one row per unit."""
+    if not units:
+        return []
+    names = [u[0] for u in units]
+    geoms = np.array([make_valid(u[1]) for u in units], dtype=object)
+    totals = np.array([float(u[2]) for u in units])
+    whole, part = (people or (lambda g, i: ghsl_people(g, epoch, inside=i)))(geoms, boundary)
+    shapely.prepare(boundary)
+    tree = shapely.STRtree(shapely.points(out["lon"], out["lat"]))
+    ghs = out.get("pop_ghs", out["pop"])
+    rows, flagged, lost = [], 0, 0.0
+    for name, geom, total, gw, gp in zip(names, geoms, totals, whole, part):
+        sel = tree.query(geom, predicate="contains")
+        have = out["pop"][sel].sum()
+        # the cells' own GHSL people, not the pixel centres inside the outline: a shore clipped tighter
+        # than the census polygon leaves coastal pixels outside that the cells still gather (Jolo, 85%)
+        if gw <= 0:
+            share = float(shapely.contains(boundary, geom.representative_point()))
+        else:
+            share = 1.0 if gp >= 0.999 * gw else min(ghs[sel].sum() / gw, 1.0)
+        target = total * share
+        if have > 0:
+            out["pop"][sel] *= target / have
+        else:
+            lost += target
+        factor = total / gw if gw > 0 else math.inf
+        flag = not (1.0 / ADMIN_FLAG <= factor <= ADMIN_FLAG)
+        flagged += flag
+        rows.append({"name": name, "census": total, "ghsl": gw, "share": share, "before": have,
+                     "after": target if have > 0 else 0.0, "flag": flag})
+        if flag or share < 0.999 or len(units) <= 50:
+            print(f"  admin total {name}: census {total:,.0f}, GHSL {gw:,.0f} over the unit ({factor:.2f}x), "
+                  f"{share:.0%} of it here: {have:,.0f} -> {target:,.0f}{'  FLAG' if flag else ''}", flush=True)
+    print(f"  admin totals: {len(units)} units, {sum(r['before'] for r in rows):,.0f} -> {sum(r['after'] for r in rows):,.0f} "
+          f"people in their cells; {sum(0.02 < r['share'] < 0.98 for r in rows)} cut by the outline; {flagged} FLAG "
+          f"(census over {ADMIN_FLAG:g}x GHSL either way); {lost:,.0f} people of units with no cell left out", flush=True)
+    return rows
+
+
+def nres_signal(sig, height_pow=HEIGHT_POW, height_cap=HEIGHT_CAP_M):
+    """GHSL non-residential volume weighted by the cell's mean non-residential height (volume over
+    surface, at most height_cap) to the power height_pow: an office tower holds far more jobs per
+    cubic metre than a warehouse of the same volume. Above the cap jobs grow with volume alone."""
+    v, s = sig["nres_v"], sig["nres_s"]
+    h = np.where(s > 0, v / np.maximum(s, 1e-9), 0.0)
+    if height_cap:
+        h = np.minimum(h, height_cap)
+    return v * np.power(np.maximum(h, 1e-9) / 10.0, height_pow)
+
+
+def cell_job_cap(total):
+    """The most jobs one cell takes through the building parts: CELL_JOBS_K times the square root of
+    the pack's jobs in thousands (the densest cell of real packs, 38 thousand to 18 million jobs, is
+    100-575 times it)."""
+    return CELL_JOBS_K * (total / 1000.0) ** 0.5
+
+
+def place_keys(pl):
+    """One key per OSM place of a job-place table: the area's ref when the row has one (a land area's
+    spread rows share it), else its point."""
+    ref = pl["ref"].fillna("").astype(str).to_numpy() if "ref" in pl else np.full(len(pl), "")
+    # astype(float): an empty table's columns come as object (T-2111, Maker)
+    own = np.char.add(np.char.add(pl.lat.astype(float).round(5).astype(str).to_numpy(), ","),
+                      pl.lon.astype(float).round(5).astype(str).to_numpy())
+    return np.where(ref != "", ref, own)
+
+
+def job_shares(sig, blend, height_pow=HEIGHT_POW, capped=False, total=1.0):
+    """Each part of the proxy per cell, as shares of all jobs (the three sum to 1). Capped (T-583):
+    the OSM part is read against the weight the pack's places had before `signals` capped each place,
+    a cell takes at most cell_job_cap(total) jobs through the two building parts, and what the caps
+    leave over goes to the population part."""
+    osm = sig["osm_errand"] + sig["osm_leisure"] + sig["osm_job"] + sig["osm_land"]
+    nres = nres_signal(sig, height_pow)
+    w0 = float(sig["osm_w0"]) if capped and "osm_w0" in sig else osm.sum()
+    s_nres = blend["nres"] * nres / max(nres.sum(), 1e-9)
+    s_osm = blend["osm"] * osm / max(w0, 1e-9)
+    s_pop = blend["pop"] * sig["pop"] / max(sig["pop"].sum(), 1e-9)
+    if capped:
+        build = s_nres + s_osm
+        cap = cell_job_cap(total) / total
+        k = np.where(build > cap, cap / np.maximum(build, 1e-12), 1.0)
+        s_nres, s_osm = s_nres * k, s_osm * k
+        s_pop = s_pop + (1.0 - s_nres.sum() - s_osm.sum() - s_pop.sum()) * sig["pop"] / max(sig["pop"].sum(), 1e-9)
+    return s_nres, s_osm, s_pop
+
+
+def jobs_from(sig, total, blend=None, height_pow=HEIGHT_POW, capped=False):
+    """The jobs proxy: total jobs over cells by the blend of the three normalised signals. `capped`
+    is for a pack whose jobs are this proxy alone (see job_shares); a proxy that only spreads a
+    table's jobs inside its units is not."""
+    blend = blend or JOB_BLEND
+    if capped:
+        return total * sum(job_shares(sig, blend, height_pow, True, total))
+    osm = sig["osm_errand"] + sig["osm_leisure"] + sig["osm_job"] + sig["osm_land"]
+    parts = {"nres": nres_signal(sig, height_pow), "osm": osm, "pop": sig["pop"]}
+    return total * sum(blend[k] * parts[k] / max(parts[k].sum(), 1e-9) for k in blend)
+
+
+def cap_places(places, in_pack, blend_osm):
+    """T-583: the weight of each OSM place, none above PLACE_JOBS_CAP of all jobs once the OSM part
+    is scaled by blend_osm; (the new weights, the pack's weight before capping, the cap in weight)."""
+    w = places.w.to_numpy(float).copy()
+    w0 = float(w[in_pack].sum())
+    cap_w = PLACE_JOBS_CAP / blend_osm * w0
+    tot = pd.Series(w[in_pack]).groupby(place_keys(places)[in_pack]).transform("sum").to_numpy()
+    w[in_pack] *= np.minimum(1.0, cap_w / np.maximum(tot, 1e-12))
+    return w, w0, cap_w
+
+
+def osm_signal_line(city, sig, jobs, blend=None):
+    """The OSM job-place signal's make-up and its largest single place, as one line the pack gate
+    reads (T-460, docs/adding-a-city-by-hand.md "Outside the US"): `osm_signal: key=value ...`, values without spaces, the
+    place name last and percent-encoded. A place is one OSM area (its spread rows together, when the
+    cached rows carry the area's id), else one row; its jobs share is what it brings through the
+    OSM part of the blend."""
+    import urllib.parse
+    blend = blend or JOB_BLEND
+    kinds = {k: float(sig["osm_" + k].sum()) for k in ("errand", "leisure", "job", "land")}
+    total = max(sum(kinds.values()), 1e-9)
+    top = {"id": "", "name": "", "w": 0.0}
+    path = raw(f"osm_jobs_{city}.csv.gz")
+    if os.path.exists(path):
+        pl = pd.read_csv(path, keep_default_na=False)
+        cells = set(sig["h3"].tolist())
+        pid = [int(h3.str_to_int(h3.latlng_to_cell(la, lo, 9))) for la, lo in zip(pl.lat, pl.lon)]
+        pl = pl.loc[np.array([c in cells for c in pid], dtype=bool)].reset_index(drop=True)  # an empty list would select no columns
+        key = place_keys(pl)
+        w = pl.groupby(key, sort=False).w.sum()
+        if "osm_w0" in sig:  # signals capped each place at osm_wcap, against the weight before capping
+            w = w.clip(upper=float(sig["osm_wcap"]))
+            total = max(float(sig["osm_w0"]), 1e-9)  # a zone with no OSM job place at all (T-2111, Maker)
+        if len(w):
+            top["id"], top["w"] = str(w.idxmax()), float(w.max())
+            if "name" in pl:
+                nm = pl.name.astype(str).to_numpy()[key == top["id"]]
+                top["name"] = next((n for n in nm if n), "")
+    j = np.asarray(jobs, float)
+    ic = int(np.argmax(j))
+    return ("osm_signal: " + " ".join(f"{k}={v:.0f}" for k, v in kinds.items())
+            + f" land_share={kinds['land'] / total:.4f} top_place={top['id'] or '-'}"
+            + f" top_place_jobs_share={blend['osm'] * top['w'] / total:.5f}"
+            + f" top_cell={sig['lat'][ic]:.4f},{sig['lon'][ic]:.4f} top_cell_jobs_share={j[ic] / max(j.sum(), 1e-9):.5f}"
+            + f" top_place_name={urllib.parse.quote(top['name']) or '-'}")
+
+
+# ---------------------------------------------------------------- the curve without flows
+
+def zones_of(x_m, y_m):
+    gx, gy = np.floor(x_m / ZONE_M).astype(np.int64), np.floor(y_m / ZONE_M).astype(np.int64)
+    # offset to non-negative, or the key's decoding folds zones south of the origin far away (T-360)
+    gx0, gy0 = gx.min(), gy.min()
+    key = (gx - gx0) * 100000 + (gy - gy0)
+    u, zone = np.unique(key, return_inverse=True)
+    return zone, (u // 100000 + gx0).astype(np.float64), (u % 100000 + gy0).astype(np.float64)
+
+
+def gravity(home, work, d, pw, km, iters=300, tol=1e-4):
+    """Doubly constrained gravity in numpy (Furness), the game's form: f(d) = d^-pw exp(-d/km)."""
+    F = (np.exp(-d / np.float32(km)) * d ** np.float32(-pw)).astype(np.float32)
+    o = home * work.sum() / home.sum()
+    col = work.astype(np.float32)
+    has = o > 0
+    row = np.ones(len(o), np.float32)
+    for it in range(iters):
+        s = (F @ col).astype(np.float64)
+        if it > 0 and np.max(np.abs(row[has] * s[has] / o[has] - 1)) < tol:
+            break
+        row = np.where(has, o / np.maximum(s, 1e-30), 0.0).astype(np.float32)
+        t = (row @ F).astype(np.float64)
+        col = np.where(work > 0, work / np.maximum(t, 1e-30), 0.0).astype(np.float32)
+    return F * row[:, None] * col[None, :]
+
+
+def zone_distances(gx, gy):
+    d = ZONE_M / 1000.0 * np.sqrt((gx[:, None] - gx[None, :]) ** 2 + (gy[:, None] - gy[None, :]) ** 2).astype(np.float32)
+    d[d == 0] = INTRAZONAL_KM
+    return d
+
+
+def trip_stats(T, d):
+    w = T.ravel().astype(np.float64)
+    dd = d.ravel()
+    order = np.argsort(dd)
+    c = np.cumsum(w[order])
+    return float((w * dd).sum() / w.sum()), float(dd[order][np.searchsorted(c, c[-1] / 2)])
+
+
+def fit_curve(x_m, y_m, home, work, target, pw=DEFAULT_CURVE_POW):
+    """The curve's length (km) at power pw so the model's median (or mean) commute between 2 km
+    zones matches a published figure, by bisection on log km. target: {"median_km": x} or
+    {"mean_km": x}; straight-line distances, so a road-distance figure should be divided by ~1.3."""
+    zone, gx, gy = zones_of(x_m, y_m)
+    H = np.bincount(zone, weights=home)
+    J = np.bincount(zone, weights=work)
+    d = zone_distances(gx, gy)
+    key, want = ("median_km", target["median_km"]) if "median_km" in target else ("mean_km", target["mean_km"])
+    lo, hi = math.log(2.0), math.log(300.0)
+    got = None
+    for _ in range(18):
+        km = math.exp((lo + hi) / 2)
+        mean, med = trip_stats(gravity(H, J, d, pw, km), d)
+        got = med if key == "median_km" else mean
+        if got < want:
+            lo = math.log(km)
+        else:
+            hi = math.log(km)
+    km = math.exp((lo + hi) / 2)
+    mean, med = trip_stats(gravity(H, J, d, pw, km), d)
+    print(f"curve fitted to the published {key} {want} km: d^-{pw:g} exp(-d/{km:.1f} km), model median {med:.1f} km, "
+          f"mean {mean:.1f} km over {len(H):,} zones", flush=True)
+    return pw, round(km, 1)
+
+
+FITTED_CURVES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fitted_curves.json")
+
+
+def borrowed_curve(path=FITTED_CURVES, zones=False):
+    """The curve for a city with no flows or distance table (config "curve": "borrowed"): of the
+    fitted cities' curves, the one that misplaces the fewest commuters beyond each city's own,
+    averaged by country (T-314: it won a leave-one-country-out test against nearest by population
+    and vehicles, by income group, a world median and a length scaled to the city's size).
+    `zones` ("curve": "borrowed_zone", T-723): the same rule over the fitted non-city zones only
+    (Japan's prefecture zones, pipeline/japan_zones.json), for countryside zones.
+    Returns (power, length km)."""
+    with open(path) as f:
+        t = json.load(f)
+    cities = t["cities"]
+    if zones:
+        with open(os.path.join(os.path.dirname(path), "japan_zones.json"), encoding="utf-8") as f:
+            zids = set(json.load(f)["zones"])
+        cities = {k: c for k, c in cities.items() if k in zids}
+    cands = [tuple(c) for c in t["candidates"]]
+    excess = {}
+    for c in cities.values():
+        own = c["misplaced"][cands.index((c["pow"], c["km"]))]
+        excess.setdefault(c["country"], []).append(np.asarray(c["misplaced"]) - own)
+    score = np.mean([np.mean(v, axis=0) for v in excess.values()], axis=0)
+    pw, km = cands[int(np.argmin(score))]
+    print(f"curve borrowed{' from fitted zones (T-723)' if zones else ''} (T-314): d^-{pw:g} exp(-d/{km:g} km), "
+          f"{100 * score.min():.1f} points over each fitted {'zone' if zones else 'city'}'s own "
+          f"on average by country ({len(cities)} {'zones' if zones else 'cities'}, {len(excess)} countries)", flush=True)
+    return pw, km
+
+
+def fit_curve_bands(x_m, y_m, home, work, target):
+    """Both parameters (power, length) fitted to a census table of commuters by distance band
+    (T-292, India's B-28): the model's share of trips in each band against the table's, by the
+    Kullback-Leibler divergence, between 2 km zones. target["bands"]: a callable returning (band
+    edges in km, commuters per band, ...); target["road_factor"] divides reported (travel)
+    distances into straight-line ones (default 1, for a table already straight-line)."""
+    edges, counts = target["bands"]()[:2]
+    edges = np.asarray(edges, np.float64) / target.get("road_factor", 1.0)
+    obs = np.asarray(counts, np.float64) / sum(counts)
+    zone, gx, gy = zones_of(x_m, y_m)
+    H = np.bincount(zone, weights=home)
+    J = np.bincount(zone, weights=work)
+    d = zone_distances(gx, gy)
+    band = np.clip(np.searchsorted(edges, d.ravel(), side="right") - 1, 0, len(obs) - 1)
+
+    def shares(pw, km):
+        w = gravity(H, J, d, pw, km).ravel().astype(np.float64)
+        return np.bincount(band, weights=w, minlength=len(obs)) / w.sum()
+
+    def kl(pw, km):
+        m = np.maximum(shares(pw, km), 1e-12)
+        return float((obs * np.log(obs / m)).sum())
+
+    def best_km(pw):
+        g = (math.sqrt(5) - 1) / 2
+        a, c = math.log(2.0), math.log(300.0)
+        x1, x2 = c - g * (c - a), a + g * (c - a)
+        f1, f2 = kl(pw, math.exp(x1)), kl(pw, math.exp(x2))
+        for _ in range(14):
+            if f1 < f2:
+                c, x2, f2 = x2, x1, f1
+                x1 = c - g * (c - a)
+                f1 = kl(pw, math.exp(x1))
+            else:
+                a, x1, f1 = x1, x2, f2
+                x2 = a + g * (c - a)
+                f2 = kl(pw, math.exp(x2))
+        km = math.exp((a + c) / 2)
+        return km, kl(pw, km)
+
+    fits = {round(pw, 2): best_km(pw) for pw in np.arange(0.2, 2.41, 0.2)}
+    p0 = min(fits, key=lambda p: fits[p][1])
+    for pw in np.arange(p0 - 0.15, p0 + 0.151, 0.05):
+        if pw > 0 and round(pw, 2) not in fits:
+            fits[round(pw, 2)] = best_km(pw)
+    for pw in sorted(fits):
+        print(f"  bands fit: d^-{pw:g} best length {fits[pw][0]:.1f} km, KL {fits[pw][1]:.4f}", flush=True)
+    pw = min(fits, key=lambda p: fits[p][1])
+    km = fits[pw][0]
+    if DEFAULT_CURVE_POW not in fits:
+        fits[DEFAULT_CURVE_POW] = best_km(DEFAULT_CURVE_POW)
+    for label, (p, k) in (("fitted", (pw, km)), (f"power {DEFAULT_CURVE_POW:g}", (DEFAULT_CURVE_POW, fits[DEFAULT_CURVE_POW][0]))):
+        mean, med = trip_stats(gravity(H, J, d, p, k), d)
+        print(f"curve {label}: d^-{p:g} exp(-d/{k:.1f} km), KL {kl(p, k):.4f}, band shares "
+              + " ".join(f"{s:.3f}" for s in shares(p, k)) + f" against " + " ".join(f"{s:.3f}" for s in obs)
+              + f"; model mean {mean:.1f} km, median {med:.1f} km over {len(H):,} zones", flush=True)
+    return float(pw), round(km, 1)
+
+
+# ---------------------------------------------------------------- everyday destinations (T-453, T-456)
+
+EVERYDAY_SHARE = {"errand": ERRAND_SHARE, "leisure": LEISURE_SHARE}
+# OSM places per 1,000 residents at which a pack's OSM counts are taken as complete (notes/T-456.md 6)
+EVERYDAY_R = {"errand": 5.0, "leisure": 3.0}
+# residents' part of the base beside jobs (DECISIONS 2026-10-16)
+EVERYDAY_B = {"errand": 0.25, "leisure": 0.0}
+# a published sector source's plausible share of all jobs, and its concentration limit (notes/T-456.md 7)
+SECTOR_LEVEL = {"errand": (0.08, 0.20), "leisure": (0.04, 0.15)}
+SECTOR_CONC, SECTOR_CONC_MIN_C = 0.05, 0.3
+EVERYDAY_OSM = {"errand": "OSM shops and services", "leisure": "OSM restaurants, bars, venues and hotels"}
+
+
+def osm_completeness(kind, pop, osm):
+    return min(1.0, 1000.0 * float(osm.sum()) / max(float(pop.sum()), 1.0) / EVERYDAY_R[kind])
+
+
+def everyday_fallback(kind, pop, jobs, zone, osm):
+    """Per cell, the purpose's attraction (sum 1) where no sector source is used: each 2 km zone's
+    jobs share (with EVERYDAY_B of residents) blended geometrically with its OSM places (one
+    pseudo-place a zone) as far as OSM is complete; inside a zone by OSM places, else jobs."""
+    c = osm_completeness(kind, pop, osm)
+    n = int(zone.max()) + 1
+    P, J, O = (np.bincount(zone, weights=v, minlength=n) for v in (pop, jobs, osm))
+    present = np.bincount(zone, minlength=n) > 0
+    bb = EVERYDAY_B[kind]
+    base = (1 - bb) * J / max(J.sum(), 1e-30) + bb * P / max(P.sum(), 1e-30)
+    oz = np.where(present, O + 1.0, 0.0)
+    oz /= oz.sum()
+    w = base ** (1 - c / 2) * oz ** (c / 2)
+    w /= w.sum()
+    by = np.where(O[zone] > 0, osm, np.where(J[zone] > 0, jobs, np.where(P[zone] > 0, pop, 1.0)))
+    s = np.bincount(zone, weights=by, minlength=n)
+    return w[zone] * by / s[zone], c
+
+
+def sector_check(kind, S, unit, pop, osm, jobs, c):
+    """T-456 7's two tests on a published sector source (per cell S), the concentration test over
+    the pack's 2 km zones (`unit`; T-453: at LSOAs it failed BRES on noise, at zones it fails only
+    Japan's mesh with wholesale left in): (reason it fails or None, share of jobs, concentrated share
+    or None)."""
+    level = float(S.sum() / max(jobs.sum(), 1e-30))
+    lo, hi = SECTOR_LEVEL[kind]
+    if not lo <= level <= hi:
+        return f"{level:.1%} of jobs, outside {lo:.0%}-{hi:.0%}", level, None
+    if c < SECTOR_CONC_MIN_C:
+        return None, level, None
+    ok = unit >= 0
+    n = int(unit.max()) + 1
+    Su, Pu, Ou = (np.bincount(unit[ok], weights=v[ok], minlength=n) for v in (S, pop, osm))
+    Ou = np.where(np.bincount(unit[ok], minlength=n) > 0, Ou + 1.0, 0.0)
+    s, p, o = Su / Su.sum(), Pu / max(Pu.sum(), 1e-30), Ou / Ou.sum()
+    conc = float(s[(s > 3 * p) & (s > 3 * o)].sum())
+    if conc >= SECTOR_CONC:
+        return f"{conc:.1%} of it in units with over 3 times their share of residents and of OSM places", level, conc
+    return None, level, conc
+
+
+def osm_on_cells(city, cells):
+    """OSM errand and leisure places per pack cell: tier 0's signal cache, else the city's OSM
+    place list (Canada's) counted by res-9 cell."""
+    npz = os.path.join(b.WORK, f"{city}.tier0_signals.npz")
+    out = {k: np.zeros(len(cells)) for k in ("errand", "leisure")}
+    if os.path.exists(npz):
+        z = np.load(npz)
+        idx = {int(c): i for i, c in enumerate(z["h3"])}
+        rows = np.array([idx.get(int(c), -1) for c in cells])
+        for k in out:
+            out[k][rows >= 0] = z["osm_" + k][rows[rows >= 0]]
+        return out
+    import canada
+    places = pd.read_csv(os.path.join(canada.RAW_CA, f"osm_jobs_{city}.csv.gz"))
+    pids = np.fromiter((h3.str_to_int(h3.latlng_to_cell(la, lo, 9)) for la, lo in zip(places.lat, places.lon)), np.uint64, len(places))
+    idx = {int(c): i for i, c in enumerate(cells)}
+    rows = np.array([idx.get(int(c), -1) for c in pids], np.int64)
+    for k in out:
+        sel = (places.kind.to_numpy() == k) & (rows >= 0)
+        np.add.at(out[k], rows[sel], places.w.to_numpy()[sel])
+    return out
+
+
+def everyday_pack(city, stem=None):
+    """T-453: the pack's errand_jobs and leisure_jobs from jobs, rewritten in place (the pack at
+    `stem`, default data/packs/<city>, a res-9 pack with its 2 km zones). Per purpose: the config's
+    `everyday` sector source where it passes sector_check, else everyday_fallback; scaled to
+    EVERYDAY_SHARE of the pack's jobs (scale only, the kernel normalises)."""
+    import canada
+    cfg = b.CITIES[city]
+    stem = stem or os.path.join(b.PACKS, city)
+    with open(stem + ".json", encoding="utf-8") as f:
+        header = json.load(f)
+    with open(stem + ".bin", "rb") as f:
+        buf = bytearray(f.read())
+    assert "merged" not in header, f"{city}: everyday attraction is set on the res-9 pack"
+    from read_pack import DTYPES
+    arr = {a["name"]: a for a in header["arrays"]}
+
+    def get(k):
+        a = arr[k]
+        return np.frombuffer(buf, DTYPES[a["dtype"]], a["count"], a["offset"])
+    cells = get("h3").astype(np.uint64)
+    pop, jobs = get("pop").astype(np.float64), get("jobs").astype(np.float64)
+    zone = get("zone").astype(np.int64)
+    ll = np.array([h3.cell_to_latlng(h3.int_to_str(int(c))) for c in cells])
+    osm = osm_on_cells(city, cells)
+    sectors = cfg["everyday"](city, ll[:, 0], ll[:, 1], jobs) if cfg.get("everyday") else {}
+    J = float(jobs.sum())
+    texts, tot = [], {}
+    for kind, name in (("errand", "errand_jobs"), ("leisure", "leisure_jobs")):
+        c = osm_completeness(kind, pop, osm[kind])
+        label = "errands" if kind == "errand" else "leisure"
+        w, why = None, None
+        if kind in sectors:
+            S, src, *judged = sectors[kind]
+            why, level, conc = sector_check(kind, S, zone, pop, osm[kind], jobs, c)
+            if judged and conc is not None:
+                why, src = None, f"{src} (concentration judged on {judged[0]})"
+            print(f"  everyday {label}: {src}: {level:.1%} of jobs, concentrated {'-' if conc is None else f'{conc:.1%}'}"
+                  f"{'; not used: ' + why if why else ''}", flush=True)
+            if why is None:
+                w = S
+                texts.append(f"{label}: {src}, {level:.1%} of jobs")
+        if w is None:
+            w, c = everyday_fallback(kind, pop, jobs, zone, osm[kind])
+            bb = EVERYDAY_B[kind]
+            base = f"jobs {1 - bb:.0%} and residents {bb:.0%}" if bb else "jobs"
+            texts.append(f"{label}: each 2 km zone's {base} blended with {EVERYDAY_OSM[kind]} at completeness "
+                         f"{c:.2f} ({1000 * osm[kind].sum() / max(pop.sum(), 1):.2f} a 1,000 residents), inside a zone by those places"
+                         + (f" (sector source not used: {why})" if why else ""))
+        v = (w * (EVERYDAY_SHARE[kind] * J / max(w.sum(), 1e-30))).astype("<f4")
+        a = arr[name]
+        assert a["dtype"] == "f32" and a["count"] == len(v)
+        buf[a["offset"]:a["offset"] + v.nbytes] = v.tobytes()
+        tot[name] = float(v.sum(dtype=np.float64))
+    src = "; ".join(texts) + f"; scaled to {ERRAND_SHARE:.0%} and {LEISURE_SHARE:.0%} of jobs (T-453)"
+    header["everyday"] = {**header.get("everyday", {}), "enabled": True, "source": src, **tot}
+    for s in header.get("sources", []):
+        if s.get("what") == "everyday destinations":
+            s["name"] = src
+    canada.rewrite(stem, header, bytes(buf))
+    return src
+
+
+# ---------------------------------------------------------------- build
+
+def work_rule(cfg, wfh):
+    """The pack header's line for the work end of the commute."""
+    if cfg.get("at_home"):
+        return (f"tier 0 jobs x (1 - the census's at-home share of the municipality of work) x (1 - {cfg['telework']:.3f} "
+                f"teleworking); {wfh:.3f} of jobs in all")
+    return f"tier 0 jobs x (1 - {wfh:.3f} working at home)"
+
+
+def main(city):
+    t0 = time.time()
+    cfg = b.CITIES[city]
+    for d in (b.WORK, b.PACKS, raw()):
+        os.makedirs(d, exist_ok=True)
+    boundary = build_boundary(city, cfg)
+    mask, mask_info = build_water(cfg, boundary)
+    sig = signals(city, cfg, boundary, mask)
+    jpr, kids, wb_year = worldbank(cfg["iso2"])
+    at = cfg.get("admin_totals")
+    pop_name = ghsl_pop_name(sig, cfg.get("epoch", 2020)) + (f", scaled to {getattr(at, 'source', 'admin totals')}" if at else "")
+    if cfg.get("population"):
+        sig["pop"], pop_name = cfg["population"](city, boundary, sig)
+    P = float(sig["pop"].sum())
+    if callable(cfg.get("wfh")):  # a share the module reads from a census table (T-1016)
+        cfg["wfh"] = cfg["wfh"]()
+    wfh = cfg.get("wfh", 0.0)
+    if callable(cfg.get("job_blend")):  # a planned city's rule (plan_config.job_blend, T-537)
+        cfg["job_blend"] = cfg["job_blend"]()
+    job_blend = cfg.get("job_blend", JOB_BLEND)
+    blend =", ".join(f"{k} {v:.0%}" for k, v in job_blend.items())
+    proxy = f"spread by {blend} (GHSL GHS-BUILT-V NRES x (height up to {HEIGHT_CAP_M:.0f} m / 10 m)^{HEIGHT_POW}, OSM job places, population)"
+    if cfg.get("jobs"):
+        jobs, jobs_name = cfg["jobs"](city, boundary, sig, jobs_from(sig, 1.0, job_blend))
+        jobs_name += f", {proxy} inside each unit"
+        J = float(jobs.sum())
+        jpr = J / P
+    else:
+        J = P * jpr
+        jobs = jobs_from(sig, J, job_blend, capped=True)
+        jobs_name = f"tier 0 proxy: population x {jpr:.3f} jobs a resident (World Bank SL.EMP.TOTL.SP.ZS x 15+ share, {wb_year}), {proxy}"
+        s_nres, s_osm, _ = job_shares(sig, job_blend, capped=True, total=J)
+        moved = job_blend["nres"] + job_blend["osm"] - s_nres.sum() - s_osm.sum()
+        if moved >= 0.0005:
+            jobs_name += f"; {moved:.1%} of the jobs moved to population from places and cells over the caps"
+    print(osm_signal_line(city, sig, jobs, job_blend), flush=True)
+    pop = sig["pop"]
+    if cfg.get("at_home"):  # per cell (T-465): at home by municipality of work, then telework on the rest
+        h = cfg["at_home"](sig["lat"], sig["lon"])
+        wfh_cell = h + (1 - h) * cfg["telework"]
+        work_c = jobs * (1 - wfh_cell)
+        wfh = 1 - work_c.sum() / max(J, 1.0)
+    else:
+        work_c = jobs * (1 - wfh)
+    home_c = pop * (work_c.sum() / P)
+    errand = sig["osm_errand"] * (ERRAND_SHARE * J / max(sig["osm_errand"].sum(), 1.0))
+    leisure = sig["osm_leisure"] * (LEISURE_SHARE * J / max(sig["osm_leisure"].sum(), 1.0))
+    keep = (pop > 0) | (jobs > 0)
+    cells = sig["h3"][keep]
+    lon0, lat0 = cfg["origin"]
+    x = b.R_EARTH * np.radians(sig["lon"][keep] - lon0) * np.cos(np.radians(lat0))
+    y = b.R_EARTH * np.radians(sig["lat"][keep] - lat0)
+    print(f"tier 0: {len(cells):,} cells, pop {P:,.0f}, jobs {J:,.0f} ({jpr:.3f} a resident, World Bank {wb_year}), "
+          f"commuters {work_c.sum():,.0f} (work from home {wfh:.1%})", flush=True)
+    if "decay_km" not in cfg and cfg["curve"] in ("borrowed", "borrowed_zone"):
+        cfg["decay_pow"], cfg["decay_km"] = borrowed_curve(zones=cfg["curve"] == "borrowed_zone")
+    elif "decay_km" not in cfg and "bands" in cfg["curve"]:
+        cfg["decay_pow"], cfg["decay_km"] = fit_curve_bands(x, y, home_c[keep], work_c[keep], cfg["curve"])
+    elif "decay_km" not in cfg:
+        cfg["decay_pow"], cfg["decay_km"] = fit_curve(x, y, home_c[keep], work_c[keep], cfg["curve"], cfg["curve"].get("pow", DEFAULT_CURVE_POW))
+    cfg.setdefault("border_factor", 1.0)
+    totals = {"pop": int(round(P)), "jobs": int(round(jobs.sum())),
+              "commute_home": int(round(home_c.sum())), "commute_work": int(round(work_c.sum()))}
+    sources = [
+        {"what": "population", "name": pop_name,
+         "url": "https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php"},
+        {"what": "jobs", "name": jobs_name, "url": cfg.get("jobs_url", "https://human-settlement.emergency.copernicus.eu/ghs_buC2023.php")},
+        {"what": "everyday destinations", "name": "OpenStreetMap shops and services (errands), restaurants, bars, venues and hotels (leisure), per cell",
+         "url": "https://www.openstreetmap.org/copyright"},
+        {"what": "boundary", "name": f"tier 0 boundary {os.path.basename(cfg['boundary_file'])}", "url": ""},
+        {"what": "water", "name": mask_info.get("source", ""), "url": ""},
+    ]
+    commute = {"home": "population x commuters per resident (no source of where workers live)",
+               "work": work_rule(cfg, wfh), "region_share": wfh}
+    if cfg.get("regions"):  # each cell's admin-1 region, for the gravity's zones and border factor (T-1016)
+        region, region_block = cfg["regions"](sig["lat"][keep], sig["lon"][keep])
+    else:
+        region = np.zeros(int(keep.sum()), np.uint8)
+        region_block = {"level": "admin-1", "ids": ["00"], "names": [cfg.get("region_name", city.upper())],
+                        "source": "tier 0: one region for the whole pack, no border factor"}
+    cells_json = b.write_cells(city, cfg, {"h3": cells, "x_m": x, "y_m": y, "pop": pop[keep], "jobs": jobs[keep],
+                                           "errand_jobs": errand[keep], "leisure_jobs": leisure[keep],
+                                           "commute_home": home_c[keep], "commute_work": work_c[keep],
+                                           "region": region},
+                               totals, sources, mask, mask_info, commute, region_block)
+    print(f"cells written in {time.time() - t0:.0f} s", flush=True)
+    finish(city, kids)
+    print(f"done in {time.time() - t0:.0f} s", flush=True)
+
+
+def finish(city, kids=None):
+    """From data/work/<city>.cells.* on: gravity, everyday header, schools, universities,
+    airports, medical, parks."""
+    cfg = b.CITIES[city]
+    if kids is None:
+        kids = worldbank(cfg["iso2"])[1]
+    cfg.setdefault("border_factor", 1.0)
+    b.add_gravity(os.path.join(b.WORK, f"{city}.cells.json"), city)
+    import canada
+    print("everyday:", everyday_pack(city), flush=True)  # needs the gravity's 2 km zones
+    boundary = build_boundary(city, cfg)
+    education_osm(city, boundary, kids)
+    # the Overpass-shaped caches (terminals, medical, parks) from the extract, before the readers
+    els, names = canada.osm_caches(city, boundary, cfg["extract"])
+    airports(city, boundary)
+    medical_parks(city, els, names)
+
+
+# ---------------------------------------------------------------- schools and universities
+
+def osm_education(city, boundary, extract):
+    """OSM schools, universities and colleges: (kind, name, lat, lon, site m2 or 0, wikidata, wkt),
+    wkt a university's or college's outline (T-3214), "" for points and schools. A cache made before
+    it keeps its schools and takes its universities and colleges from Overpass's answer in
+    data/raw/tier0/campus (campus_outlines.py, T-3244) when there is one, else stays at their points."""
+    cache = raw(f"osm_education_{city}.csv.gz")
+    if os.path.exists(cache):
+        out = pd.read_csv(cache, keep_default_na=False)
+        if "wkt" not in out.columns:
+            out["wkt"] = ""
+            import campus_outlines
+            staged = campus_outlines.rows(city)
+            if staged is not None:
+                out = pd.concat([out[out.kind == "school"], staged], ignore_index=True)
+                print(f"  OSM education: schools from the cache, {len(staged):,} universities and colleges from "
+                      f"Overpass ({(staged.wkt != '').sum():,} outlines)", flush=True)
+        return out
+    import osm_features
+    import overpass
+    t0 = time.time()
+    bb = boundary.bounds
+    kinds = ("school", "university", "college")
+    mp = osm_features.read(extract, "multipolygons", columns=["name", "amenity", "other_tags"], bbox=bb,
+                           where="amenity IN ('school','university','college')")
+    pts = osm_features.read(extract, "points", columns=["name", "other_tags"], bbox=bb,
+                            where=" OR ".join(f"other_tags LIKE '%\"amenity\"=>\"{k}\"%'" for k in kinds))
+    import routes as rt
+    rows = []
+    polys = {k: [] for k in kinds}
+    for r in mp.itertuples():
+        try:
+            g = shapely.make_valid(r.geometry)  # a self-crossing site breaks the query (T-431)
+            c = g.representative_point()
+            a = overpass.area_m2(g)
+        except shapely.errors.GEOSException:  # a ring of under 4 points (Guayaquil, T-2695)
+            continue
+        wkt = ""
+        if r.amenity != "school":
+            wkt = shapely.to_wkt(g.simplify(0.00003), rounding_precision=6)  # ~3 m
+        rows.append((r.amenity, r.name or "", c.y, c.x, a, rt.tag(r.other_tags, "wikidata"), wkt))
+        polys[r.amenity].append(g)
+    trees = {k: shapely.STRtree(v) for k, v in polys.items() if v}
+    n_dup = 0
+    for r in pts.itertuples():
+        k = rt.tag(r.other_tags, "amenity")
+        if k in trees and len(trees[k].query(r.geometry, predicate="within")):
+            n_dup += 1  # a point inside a mapped site of the same kind: the site counts
+            continue
+        rows.append((k, r.name or "", r.geometry.y, r.geometry.x, 0.0, rt.tag(r.other_tags, "wikidata"), ""))
+    out = pd.DataFrame(rows, columns=["kind", "name", "lat", "lon", "m2", "wikidata", "wkt"])
+    out.to_csv(cache, index=False)
+    print(f"  OSM education: {len(mp):,} sites, {len(pts):,} points ({n_dup} inside a site); {time.time() - t0:.0f} s", flush=True)
+    return out
+
+
+def wikidata_students(qids):
+    """{QID: (students, year)} from Wikidata P2196 (latest point in time)."""
+    path = raw("wikidata_students.json")
+    have = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            have = json.load(f)
+    # OSM tags hold the odd malformed id ("Q1; Q2"), which makes the whole query a 400 (T-788, Mons)
+    need = sorted(q for q in set(qids) if re.fullmatch(r"Q\d+", q or "") and q not in have)
+    for i in range(0, len(need), 200):
+        part = need[i:i + 200]
+        q = ("SELECT ?item ?v ?t WHERE { VALUES ?item { " + " ".join(f"wd:{x}" for x in part) + " } "
+             "?item p:P2196 ?s. ?s ps:P2196 ?v. OPTIONAL { ?s pq:P585 ?t } }")
+        # 429 when several builds query at once (T-420 stage 3), and for minutes at a time (T-788)
+        r = netget.request(WIKIDATA, method="post", data={"query": q, "format": "json"}, timeout=120,
+                           waits=(10, 30, 60, 120, 300, 600))
+        best = {}
+        for row in r.json()["results"]["bindings"]:
+            qid = row["item"]["value"].rsplit("/", 1)[1]
+            t = row.get("t", {}).get("value", "")
+            if row["v"].get("type") != "literal":  # "unknown value": a blank node, no number (T-613, Toulouse)
+                continue
+            v = float(row["v"]["value"])
+            if qid not in best or t > best[qid][1]:
+                best[qid] = (v, t)
+        for qid in part:
+            have[qid] = best.get(qid, (None, ""))
+    have = _merge_cache(path, have, need)
+    return {q: tuple(have[q]) for q in qids if q in have}
+
+
+def _merge_cache(path, have, need):
+    """Several builds run at once: the new ids go into the file as it is now, under its lock (T-3217)."""
+    if not need:
+        return have
+    import shared_lock
+    with shared_lock.held("wikidata-cache", "tier0 " + os.path.basename(path)):
+        disk = shared_lock.read_json(path) if os.path.exists(path) else {}
+        disk.update({q: have[q] for q in need})
+        shared_lock.write_atomic(path, json.dumps(disk))
+    return {**disk, **have}
+
+
+def wikidata_parents(qids):
+    """{QID: {parent QID: students}}: the item's institutions with a Wikidata student count, by part
+    of (P361), parent organisation (P749), occupant (P466, how a campus item names its university:
+    UBC Vancouver's is UBC) or operator (P137); {} for none (T-3216)."""
+    path = raw("wikidata_parents.json")
+    have = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            have = json.load(f)
+    need = sorted(q for q in set(qids) if re.fullmatch(r"Q\d+", q or "") and q not in have)
+    for i in range(0, len(need), 200):
+        part = need[i:i + 200]
+        q = ("SELECT ?item ?p ?v WHERE { VALUES ?item { " + " ".join(f"wd:{x}" for x in part) + " } "
+             "?item wdt:P361|wdt:P749|wdt:P466|wdt:P137 ?p. ?p wdt:P2196 ?v. }")
+        r = netget.request(WIKIDATA, method="post", data={"query": q, "format": "json"}, timeout=120,
+                           waits=(10, 30, 60, 120, 300, 600))
+        got = {}
+        for row in r.json()["results"]["bindings"]:
+            if row["v"].get("type") != "literal":
+                continue
+            qid, p = row["item"]["value"].rsplit("/", 1)[1], row["p"]["value"].rsplit("/", 1)[1]
+            got.setdefault(qid, {})[p] = max(float(row["v"]["value"]), got.get(qid, {}).get(p, 0.0))
+        for qid in part:
+            have[qid] = got.get(qid, {})
+    have = _merge_cache(path, have, need)
+    return {q: have[q] for q in qids if q in have}
+
+
+def wikidata_labels(qids):
+    """{QID: [its labels in every language, distinct]} (T-3273: campus_pools finds an institution's
+    untagged campuses by name and its open universities by label)."""
+    path = raw("wikidata_labels.json")
+    have = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            have = json.load(f)
+    need = sorted(q for q in set(qids) if re.fullmatch(r"Q\d+", q or "") and q not in have)
+    for i in range(0, len(need), 200):
+        part = need[i:i + 200]
+        q = "SELECT ?item ?l WHERE { VALUES ?item { " + " ".join(f"wd:{x}" for x in part) + " } ?item rdfs:label ?l. }"
+        r = netget.request(WIKIDATA, method="post", data={"query": q, "format": "json"}, timeout=120,
+                           waits=(10, 30, 60, 120, 300, 600))
+        got = {}
+        for row in r.json()["results"]["bindings"]:
+            got.setdefault(row["item"]["value"].rsplit("/", 1)[1], set()).add(row["l"]["value"])
+        for qid in part:
+            have[qid] = sorted(got.get(qid, ()))
+    have = _merge_cache(path, have, need)
+    return {q: have[q] for q in qids if q in have}
+
+
+def school_site_pupils(pupils, sizes, cell=None, cap=SCHOOL_SITE_MAX, cell_cap=SCHOOL_CELL_MAX):
+    """Pupils per site in proportion to sizes, no site over cap and no cell's sites together over
+    cell_cap (one compound mapped as several schools): the excess to the other sites in proportion
+    (as T-387's hospitals). `cell` is each site's cell, -1 for none. Returns (per site, the rest no
+    site can hold), the rest where OSM maps too few schools for the children (Lagos: 861 sites for
+    5M pupils)."""
+    p = pupils * sizes / sizes.sum()
+    n = len(p)
+    cell = np.arange(-n, 0) if cell is None else np.where(np.asarray(cell) >= 0, cell, np.arange(-n, 0))
+    _, grp = np.unique(cell, return_inverse=True)
+    fixed = np.zeros(n, bool)
+    for _ in range(200):
+        over = (p > cap * (1 + 1e-9)) & ~fixed
+        p[over] = cap
+        fixed |= over
+        tot = np.bincount(grp, weights=p)
+        hot = tot > cell_cap * (1 + 1e-9)
+        if hot.any():
+            s = hot[grp]
+            p[s] *= (cell_cap / tot)[grp][s]
+            fixed |= s
+        if not (over.any() or hot.any()):
+            break
+        free = p[~fixed].sum()
+        if free <= 0:
+            break
+        p[~fixed] *= max(pupils - p[fixed].sum(), 0.0) / free
+    return p, max(pupils - float(p.sum()), 0.0)
+
+
+def campus_spread(wkt, m2, index, nres_of):
+    """(pack cell indices, shares summing to 1) of a campus's students over the cells under its
+    outline (T-3214): CAMPUS_BUILT_SHARE by the GHSL non-residential volume of each res-9 cell's
+    part of the outline, the rest by area. None when there is no outline or none of its sample
+    points falls in a pack cell (a site too small for a res-11 centre: its point instead). A
+    sample in a merged cell (res 8, merge_cells) counts there."""
+    if not wkt:
+        return None
+    parts = [p for p in shapely.get_parts(shapely.from_wkt(wkt)) if p.geom_type in ("Polygon", "MultiPolygon")]
+    if not parts:
+        return None
+    res = CAMPUS_RES if m2 < 1e7 else CAMPUS_RES - 1 if m2 < 7e7 else CAMPUS_RES - 2  # at most ~30,000 samples
+    per9 = {}
+    for part in parts:
+        for c in h3.geo_to_cells(part, res):
+            p = h3.cell_to_parent(c, 9)
+            per9[p] = per9.get(p, 0) + 1
+    area, built, cell = [], [], []
+    for p, k in per9.items():
+        i = index.get(h3.str_to_int(p))
+        if i is None:
+            i = index.get(h3.str_to_int(h3.cell_to_parent(p, 8)))
+        if i is None:
+            continue  # outside the pack
+        frac = k / 7 ** (res - 9)
+        cell.append(i)
+        area.append(float(k))
+        built.append(nres_of.get(h3.str_to_int(p), 0.0) * frac)
+    if not cell:
+        return None
+    cell, area, built = np.asarray(cell), np.asarray(area), np.asarray(built)
+    w = area / area.sum()
+    if built.sum() > 0:
+        w = (1 - CAMPUS_BUILT_SHARE) * w + CAMPUS_BUILT_SHARE * built / built.sum()
+    u, inv = np.unique(cell, return_inverse=True)
+    return u, np.bincount(inv, weights=w)
+
+
+def not_campus(name):
+    """Sites named as an open, distance or online university or a research centre (NOT_CAMPUS)."""
+    return pd.Series(name).fillna("").astype(str).str.contains(NOT_CAMPUS).to_numpy()
+
+
+def institution_of(q, counts, parents):
+    """(institution, its count, how) of a site's Wikidata id: the id when it has a count, else its
+    smallest counted parent (T-3216), else ("", nan, "area")."""
+    own = (counts.get(q) or (None,))[0] if q else None
+    if own:
+        return q, float(own), "count"
+    ps = (parents.get(q) or {}) if q else {}
+    if ps:
+        p = min(ps, key=ps.get)
+        return p, float(ps[p]), f"parent {p}"
+    return "", np.nan, "area"
+
+
+def site_inside(uni):
+    """Each site's smallest bigger site (index into `uni`) whose outline (column wkt) holds its
+    point, or -1."""
+    out = np.full(len(uni), -1)
+    if "wkt" not in uni.columns or not len(uni):
+        return out
+    k_poly = [k for k, w in enumerate(uni.wkt) if w]
+    if not k_poly:
+        return out
+    tree = shapely.STRtree(shapely.make_valid(shapely.from_wkt([uni.wkt.iloc[k] for k in k_poly])))
+    pt, g = tree.query(shapely.points(uni.lon.to_numpy(float), uni.lat.to_numpy(float)), predicate="within")
+    m2 = uni.m2.to_numpy(float)
+    best = np.full(len(uni), np.inf)
+    for p, k in zip(pt, np.asarray(k_poly)[g]):
+        if k != p and m2[p] < m2[k] < best[p]:
+            best[p], out[p] = m2[k], k
+    return out
+
+
+def university_sizes(uni, counts, parents, table=None, boundary=None):
+    """Each university or college site's weight and the most students it may take (T-3226,
+    T-3216, T-3273). `uni` the OSM sites (kind, name, lat, lon, m2, wikidata, ...), `counts`
+    wikidata_students' answer, `parents` wikidata_parents'. A site named as an open or distance
+    university or a research centre (NOT_CAMPUS) is left out. An institution is
+    `campus_pools.assign`'s: `institution_of`'s, or with `table` (campus_pools.load) a counted one
+    whose name the site's holds, the smallest; a site of an open university (by its Wikidata
+    label) is left out too. With `table` and `boundary`, an institution in the table takes its
+    count for the world, less its counted members' and what `campus_pools.allot` gives its campuses
+    outside the pack, split over its sites here by hectares (points CAMPUS_POINT_HA each), each but
+    its main campus at most the curve; otherwise its whole count, by hectares. That part is cut to
+    CAMPUS_SIZE_SPREAD times the curve of its sites in the pack together and to CAMPUS_SITE_MAX:
+    each site's share is both its weight and its cap. Other
+    sites with an area weigh their area at the median students a m² of the counted institutions
+    (0.01 with none), capped at CAMPUS_AREA_SPREAD times the curve and CAMPUS_AREA_MAX; points
+    with no count are left out. A site with no institution whose point lies in a bigger site's
+    outline is a building of that campus (T-3275: IU Indianapolis's "Lecture Hall", 0.4 ha, took
+    7,318 students as a campus of its own): it takes the outer site's institution, or with none is
+    left out, the outer site's area holding its land; and a site with none drawn around a counted
+    one is the same campus, of its institution. Returns (the sites with columns inst, count,
+    sized_by, weight and cap, the sites left out with column why)."""
+    import campus_pools
+    uni = uni.copy()
+    inst, count, how, opened = campus_pools.assign(uni, counts, parents, table)
+    holder = site_inside(uni)
+    inside = np.zeros(len(uni), bool)
+    first, firstc = list(inst), list(count)
+    for k in np.nonzero(holder >= 0)[0]:
+        h = holder[k]
+        if first[k] and not first[h] and not opened[k]:  # the same campus drawn bigger around a counted one
+            inst[h], count[h], how[h] = first[k], firstc[k], f"around {uni.name.iloc[k] or first[k]}"
+    for k in np.nonzero((holder >= 0) & np.array([not q for q in inst], bool))[0]:
+        h = holder[k]
+        if inst[h] and not opened[h]:
+            inst[k], count[k], how[k] = inst[h], count[h], f"inside {uni.name.iloc[h] or inst[h]}"
+        else:
+            inside[k] = True
+    named_out = not_campus(uni.name)
+    out = named_out | opened | inside
+    why = np.where(named_out, "left out by name", np.where(opened, "an open university's", "inside a site with no count"))
+    left_out = uni[out].assign(why=why[out])
+    uni = uni[~out].copy()
+    uni["inst"], uni["count"], uni["sized_by"] = [np.asarray(v, object)[~out] for v in (inst, count, how)]
+    uni["count"] = uni["count"].astype(float)
+    world = campus_pools.outside(boundary, set(uni.inst) - {""}, table) if table and boundary is not None else {}
+    m2 = uni.m2.to_numpy(float)
+    ha = np.where(m2 > 0, m2 / 1e4, CAMPUS_POINT_HA)
+    weight = np.full(len(uni), np.nan)
+    cap = np.full(len(uni), np.nan)
+    dens = []
+    counted = (uni.inst != "").to_numpy()
+    sized_by = uni.sized_by.to_numpy().copy()
+    for key, idx in uni[counted].groupby("inst").indices.items():
+        i = np.nonzero(counted)[0][idx]
+        c = float(uni["count"].to_numpy()[i[0]])
+        share = c * ha[i] / ha[i].sum()
+        if key in world:
+            pool, far, main = world[key]
+            part = max(pool - far, 0.0)
+            caps = CAMPUS_SIZE_C * ha[i] ** CAMPUS_SIZE_POW  # a branch: at most the curve (campus_pools.allot)
+            if main is not None:
+                lat, lon = uni.lat.to_numpy(float)[i], uni.lon.to_numpy(float)[i]
+                caps[np.argmin((lat - main[0]) ** 2 + ((lon - main[1]) * np.cos(np.radians(main[0]))) ** 2)] = np.inf
+            share = campus_fill(part, ha[i], caps)[0]
+            if abs(part - c) >= 0.5:
+                sized_by[i] = [s + f", {share.sum():,.0f} of {pool:,.0f} for the world" for s in sized_by[i]]
+            c = float(share.sum())
+        n = min(c, CAMPUS_SITE_MAX, CAMPUS_SIZE_SPREAD * CAMPUS_SIZE_C * ha[i].sum() ** CAMPUS_SIZE_POW)
+        if n < c:
+            sized_by[i] = [s + f", cut to {n:,.0f}" for s in sized_by[i]]
+        weight[i] = cap[i] = share * (n / c) if c > 0 else 0.0
+        if m2[i].sum() > 0 and n > 0:
+            dens.append(n / m2[i].sum())
+    uni["sized_by"] = sized_by
+    # students a m² of the counted institutions, the area-sized sites' level (T-432: the national
+    # total sets the pack's level; also when every counted one is denser than 1 a m²)
+    dens = np.asarray(dens)
+    per_m2 = float(np.median(dens[dens < 1])) if (dens < 1).any() else 0.01
+    by_area = ~counted & (m2 > 0)
+    weight[by_area] = m2[by_area] * per_m2
+    cap[by_area] = np.minimum(CAMPUS_AREA_SPREAD * CAMPUS_SIZE_C * ha[by_area] ** CAMPUS_SIZE_POW, CAMPUS_AREA_MAX)
+    keep = ~np.isnan(weight)
+    uni = uni[keep].copy()
+    uni["weight"], uni["cap"] = weight[keep], cap[keep]
+    return uni, left_out
+
+
+def campus_fill(total, weight, cap):
+    """`total` students over the sites in proportion to `weight`, none over its `cap`, what a capped
+    site cannot take going to the others in proportion. Returns (per site, the rest none can take)."""
+    weight, cap = np.asarray(weight, float), np.asarray(cap, float)
+    out = np.zeros(len(weight))
+    free = weight > 0
+    left = float(total)
+    for _ in range(len(weight) + 1):
+        if left <= 0 or not free.any():
+            break
+        share = left * weight * free / weight[free].sum()
+        over = free & (out + share >= cap)
+        if not over.any():
+            out += share
+            left = 0.0
+            break
+        left -= float((cap[over] - out[over]).sum())
+        out[over] = cap[over]
+        free &= ~over
+    return out, max(left, 0.0)
+
+
+def education_osm(city, boundary, kids):
+    import canada
+    cfg = b.CITIES[city]
+    ed = osm_education(city, boundary, cfg["extract"])
+    stem, header, buf, cells = canada.pack_cells(city)
+    arr = {a["name"]: a for a in header["arrays"]}
+    pop = np.frombuffer(buf, "<f4", arr["pop"]["count"], arr["pop"]["offset"]).astype(np.float64)
+    index = {int(c): i for i, c in enumerate(cells)}
+
+    def cell_of(rows):
+        import enrich_airports as air
+        return np.array([-1 if c is None else c for c in (air.cell_of(index, r.lat, r.lon, 500.0)[0] for r in rows.itertuples())], np.int64)
+
+    def place(rows, values, at=None):
+        at = cell_of(rows) if at is None else at
+        out = np.zeros(len(cells), "<f4")
+        ok = at >= 0
+        np.add.at(out, at[ok], np.asarray(values, float)[ok].astype("<f4"))
+        return out, int(ok.sum())
+
+    # schools: pupils from the national child share, spread over sites by sqrt(area)
+    shapely.prepare(boundary)
+    inb = shapely.contains_xy(boundary, ed.lon.to_numpy(float), ed.lat.to_numpy(float))
+    sch = ed[(ed.kind == "school").to_numpy() & inb]
+    sizes = np.sqrt(sch.m2.to_numpy(float))
+    med = np.median(sizes[sizes > 0]) if (sizes > 0).any() else 1.0
+    sizes = np.where(sizes > 0, sizes, med)
+    children = pop * kids
+    pupils = children.sum() * SCHOOL_ENROL
+    near_home = 0.0
+    coverage = ("tier 0: OSM amenity=school sites in the boundary (public and private), pupils = population x national share aged 0-14 "
+                f"x {SCHOOL_ENROL}, spread by the square root of site area, at most {SCHOOL_SITE_MAX:,.0f} a site and "
+                f"{SCHOOL_CELL_MAX:,.0f} a cell")
+    school_src = ["https://www.openstreetmap.org/copyright", WORLDBANK.format(iso2=cfg["iso2"])]
+    if cfg.get("schools"):
+        sch, coverage, url = cfg["schools"](boundary)
+        school_src = [url]
+        pupils = float(sch.pupils.sum())
+        enr, n_s = place(sch, sch.pupils.to_numpy(float))
+    else:
+        at = cell_of(sch)
+        site, near_home = school_site_pupils(pupils, sizes, at)
+        enr, n_s = place(sch, site, at)
+        if near_home > 0:
+            enr = (enr + children * (near_home / max(children.sum(), 1e-9))).astype("<f4")
+            coverage += f"; the {near_home / pupils:.1%} of pupils the sites cannot hold by children, at school where they live"
+    # universities and colleges: Wikidata students by institution (or its parent's), other sites by area
+    uni = ed[ed.kind.isin(["university", "college"]).to_numpy() & inb].copy()
+    ids = uni.wikidata[uni.wikidata != ""].tolist()
+    wd = wikidata_students(ids)
+    parents = wikidata_parents([q for q in set(ids) if not wd.get(q, (None,))[0]])
+    import campus_pools
+    rows, left_out = university_sizes(uni, wd, parents, campus_pools.load(), boundary)
+    how = rows.sized_by.astype(str)  # an empty column (every site left out by name) is not str dtype
+    n_count = int(how.str.startswith("count").sum())
+    n_parent = int(how.str.startswith("parent").sum())
+    n_named = int(how.str.startswith("named").sum())
+    n_inside = int(how.str.startswith(("inside", "around")).sum())
+    n_world = int(how.str.contains("for the world").sum())
+    n_cut = int(how.str.contains("cut").sum())
+    # T-288: the total from the national tertiary enrolment a resident; Wikidata counts and site
+    # areas only spread it. Unscaled, London's counted institutions were dense central buildings
+    # (1,925 students a hectare at the median), which put 50-150k students on suburban campuses.
+    # T-3226: no site past its cap (a count is one), the students no site can take study near home.
+    ter, ter_year = tertiary_share(cfg["iso2"])
+    weight, ucap = rows.weight.to_numpy(float), rows.cap.to_numpy(float)
+    raw_total = float(weight.sum())
+    uni_home = 0.0
+    if ter and raw_total > 0:
+        site_students, uni_home = campus_fill(pop.sum() * ter, weight, ucap)
+    else:
+        site_students = np.minimum(weight, ucap)
+    rows["students"] = site_students
+    n_capped = int((site_students >= ucap * (1 - 1e-9)).sum())
+    sig_path = os.path.join(b.WORK, f"{city}.tier0_signals.npz")
+    nres_of = {}
+    if os.path.exists(sig_path):
+        with np.load(sig_path) as z:
+            nres_of = dict(zip(z["h3"].astype(np.int64).tolist(), z["nres_v"].tolist()))
+    at = cell_of(rows)
+    acc = np.zeros(len(cells), np.float64)
+    n_u = n_spread = 0
+    site_cells = []
+    for k, r in enumerate(rows.itertuples()):
+        sp = campus_spread(r.wkt, r.m2, index, nres_of)
+        if sp is not None:
+            np.add.at(acc, sp[0], site_students[k] * sp[1])
+            n_spread += 1
+            site_cells.append(len(sp[0]))
+        elif at[k] >= 0:
+            acc[at[k]] += site_students[k]
+            site_cells.append(1)
+        else:
+            site_cells.append(0)
+            continue
+        n_u += 1
+    adults = pop * (1 - kids)
+    if uni_home > 0:
+        acc += adults * (uni_home / max(adults.sum(), 1e-9))
+    uenr = acc.astype("<f4")
+    buf = packio.replace_cell_arrays(header, buf, {"school_children": children.astype("<f4"), "school_enrollment": enr,
+                                                      "university_adults": adults.astype("<f4"), "university_enrollment": uenr})
+    header["school"] = {
+        "coverage": coverage,
+        "enrolled": float(enr.sum(dtype=np.float64)), "matched_buildings": int(n_s), "location_match_share": float(enr.sum() / max(pupils, 1)),
+        "child_weight": float(children.sum()), "child_origin": f"population x {kids:.3f} (World Bank, ages 0-14)",
+        "attendance_factor": 0.9, "sources": school_src}
+    header["university"] = dict(
+        coverage="tier 0: OSM amenity=university|college less open and distance universities and research centres by name, a site inside "
+                 "a bigger one's outline its building (of its institution, else left out), one drawn around a counted site that "
+                 "site's; Wikidata P2196 "
+                 "students by institution (or its counted parent's: part of, parent organisation, occupant, operator; or a counted site's "
+                 "whose name the site's holds), less its counted members' and shared by area over its sites in the world, the pack's part cut to "
+                 f"{CAMPUS_SIZE_SPREAD:.0f} times {CAMPUS_SIZE_C:.0f} x hectares^{CAMPUS_SIZE_POW} and to {CAMPUS_SITE_MAX:,.0f}, split over its sites "
+                 f"by area; other sites by area at the counted ones' median students a m², at most {CAMPUS_AREA_SPREAD} times that curve and "
+                 f"{CAMPUS_AREA_MAX:,.0f}; a mapped campus's students over the cells under its outline, "
+                 f"{CAMPUS_BUILT_SHARE:.0%} by GHSL non-residential volume and the rest by area ({n_spread} sites; the others at their point)"
+                 + (f"; scaled to population x {ter:.4f} tertiary students a resident ({tertiary_source(cfg['iso2'])[0]}, {ter_year}), "
+                    f"no site past its cap (a count is one: {n_capped} sites at theirs), {uni_home:,.0f} students no site can take near home" if ter else ""),
+        enrolled=float(uenr.sum(dtype=np.float64)), institutions=int(rows.inst[rows.inst != ""].nunique()), sites=int(n_u),
+        sized=dict(count=n_count, parent=n_parent, named=n_named, inside=n_inside,
+                   area=int(len(rows) - n_count - n_parent - n_named - n_inside), cut=n_cut,
+                   world_share=n_world, left_out=int(len(left_out)), at_cap=n_capped), near_home=float(uni_home),
+        location_match_share=1.0, adult_weight=float(adults.sum()), adult_origin=f"population x {1 - kids:.3f} (ages 15+, World Bank)",
+        attendance_factor=0.6, decay_m=6000, limitations="Wikidata counts are of mixed years and definitions; sites without a count sized by area",
+        sources=["https://www.openstreetmap.org/copyright", WIKIDATA, tertiary_source(cfg["iso2"])[1]])
+    canada.rewrite(stem, header, buf)
+    with open(os.path.join(b.WORK, city + ".universities.audit.json"), "w") as f:
+        json.dump([dict(name=r.name, wikidata=r.wikidata, m2=r.m2, students=s, weight=r.weight, cap=r.cap, sized_by=r.sized_by,
+                        institution=r.inst, cells=n) for r, s, n in zip(rows.itertuples(), site_students, site_cells)]
+                  + [dict(name=r.name, wikidata=r.wikidata, m2=r.m2, students=0.0, sized_by=r.why) for r in left_out.itertuples()],
+                  f, indent=1)
+    print(f"schools: {len(sch):,} sites, {enr.sum():,.0f} pupils of {pupils:,.0f} ({near_home:,.0f} near home); universities: "
+          f"{n_count} sites by their Wikidata count, {n_parent} by a parent's, {n_named} by a counted site's in their name, "
+          f"{n_inside} inside or around a counted site, {len(rows) - n_count - n_parent - n_named - n_inside} by area ({n_world} on a part of "
+          f"a world count, {n_cut} counts cut, {len(left_out)} sites left out), {raw_total:,.0f} students before "
+          f"scaling, {uenr.sum():,.0f} after" + (f" ({ter:.4f} a resident, {ter_year}; {n_capped} sites at their cap, "
+                                                 f"{uni_home:,.0f} near home)" if ter else " (no national figure, unscaled)")
+          + f"; {n_spread} campuses spread over their outlines", flush=True)
+
+
+# ---------------------------------------------------------------- airports, medical, parks
+
+def airports(city, boundary):
+    import canada
+    import enrich_airports as air
+    cfg = b.CITIES[city]
+    aps = air.airports_in(boundary)
+    found = air.terminals(city, boundary, aps) if aps else {}
+    # pack share: GHSL population around the airport within 300 km at exp(-d/20 km); in the
+    # boundary or not. A 60 km pad is enough (exp(-3) beyond it).
+    arr, X0, Y0 = ghsl_window("pop", boundary.bounds, cfg.get("epoch", 2020), pad_m=60000.0)
+    f = 10
+    h, w = arr.shape[0] // f, arr.shape[1] // f
+    blk = arr[:h * f, :w * f].reshape(h, f, w, f).sum(axis=(1, 3))
+    rr, cc = np.nonzero(blk > 0)
+    _, inv = _moll()
+    lon, lat = inv.transform(X0 + (cc + 0.5) * f * PIX_M, Y0 - (rr + 0.5) * f * PIX_M)
+    lon, lat, pp = np.asarray(lon), np.asarray(lat), blk[rr, cc]
+    shapely.prepare(boundary)
+    ins = shapely.contains_xy(boundary, lon, lat)
+    stem, header, buf, cells = canada.pack_cells(city)
+    index = {int(c): i for i, c in enumerate(cells)}
+    trips = np.zeros(len(cells), "<f4")
+    audit, sites_out = [], []
+    air.fill_wikidata_boardings([ap["iata"] for ap in aps])  # one query for the zone's airports
+    for ap in aps:
+        given = cfg.get("boardings", {}).get(ap["ident"])  # a city's own figure first (T-291)
+        if given:
+            boardings, when, source = given[0], given[1], "config"
+        else:  # a national authority's count or Wikidata's, the newer (T-2896)
+            boardings, when, source = air.best_boardings(ap)
+        if not boardings:
+            audit.append(ap | dict(skipped="no passenger count"))
+            continue
+        d = air.metres(ap["lat"], ap["lon"], lat, lon)
+        wgt = pp * np.exp(-d / air.DECAY_M)
+        share = float(wgt[ins].sum() / wgt.sum())
+        od, od_from = air.od_share_of(ap, cfg)
+        daily = boardings * od * share / air.DAYS
+        sites = found.get(ap["ident"]) or [(ap["lat"], ap["lon"], 1.0, "airport point", None)]
+        placed = air.place_sites(index, sites)
+        for c, a, _ in placed:
+            trips[c] += daily * a
+        if not placed:
+            print(f"  WARNING {ap['ident']} {ap['name']}: {daily:,.0f} outings a day and no cell within "
+                  f"{air.SNAP_M / 1000:g} km of the airport or a terminal: nothing placed", flush=True)
+        else:  # T-2896 (5): what the airport's people outside the zone send, for cross_everyday
+            sites_out.append(dict(ident=ap["ident"], iata=ap["iata"], lat=ap["lat"], lon=ap["lon"],
+                                  outside_outings=boardings * od * (1.0 - share) / air.DAYS,
+                                  outside_weight=float(wgt[~ins].sum())))
+        audit.append(ap | dict(boardings=boardings, when=when, source=source, od_share=od, od_from=od_from, pack_share=share, daily_outings=daily,
+                               placed=len(placed), max_snap_m=max((p[2] for p in placed), default=None)))
+        print(f"  {ap['ident']} {ap['name']}: {boardings:,.0f} boardings ({source} {when}), O&D {od:.2f} ({od_from}), pack {share:.2f}, "
+              f"{daily:,.0f} outings a day", flush=True)
+    buf = packio.replace_cell_arrays(header, buf, {"airport_trips": trips})
+    header["airport"] = dict(
+        coverage="tier 0: OurAirports scheduled-service airports in the boundary", year=None,
+        airports=sum(1 for r in audit if r.get("placed")), outings=float(trips.sum(dtype=np.float64)), decay_m=air.DECAY_M,
+        origin_mix="half residents, half visitors (jobs and leisure/hotel jobs, a quarter each)",
+        formula="daily outings = passengers / 2 (a national authority's count, else Wikidata patronage; the newer year, "
+                "the lower within one) x O&D share (1, or judgement for hubs) x pack share (GHSL population x exp(-d/20 km)) / 366",
+        limitations="no connecting-share source", sources=[air.OURAIRPORTS, WIKIDATA, "pipeline/airport_passengers.csv"],
+        # per airport, the outings of the people outside the boundary (the pack share's rest) and their GHSL weight
+        # (people x exp(-d/20 km)): cross_everyday draws them over the neighbouring packs (T-2896)
+        sites=sites_out)
+    canada.rewrite(stem, header, buf)
+    with open(os.path.join(b.WORK, city + ".airports.audit.json"), "w") as f:
+        json.dump(audit, f, indent=1, default=str)
+
+
+def medical_parks(city, els, names):
+    import enrich_medical
+    import enrich_parks
+    enrich_medical.main(city)
+    keep = enrich_parks.fetch_all
+    enrich_parks.fetch_all = lambda c, bd: (els, names)
+    try:
+        enrich_parks.main(city)
+    finally:
+        enrich_parks.fetch_all = keep
+
+
+if __name__ == "__main__":
+    import sys
+    args = [x for x in sys.argv[1:] if not x.startswith("--")]
+    _edu, _air = "--education" in sys.argv, "--airports" in sys.argv
+    if _edu or _air:  # steps alone on a res-9 pack (merge_cells --through, T-3214, T-3244), both in one process
+        _cfg = b.CITIES[args[0]]
+        _bd = build_boundary(args[0], _cfg)
+        if _edu:
+            education_osm(args[0], _bd, worldbank(_cfg["iso2"])[1])
+        if _air:
+            airports(args[0], _bd)
+    else:
+        (finish if "--finish" in sys.argv else main)(args[0])

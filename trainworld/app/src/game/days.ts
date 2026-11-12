@@ -1,0 +1,110 @@
+// Kinds of day (T-260, T-262, docs/demand-timing.md): weekday, Saturday and Sunday. The calendar is
+// `day_kind_at` in sim/src/track/params.rs (the boarding account reads it); this is its copy for
+// the main thread and the clock worker. Game day 1, a new game's first, is a Monday, so days 6 and
+// 7 of each week are Saturday and Sunday where a place's country says nothing else (its holidays
+// and own weekend, game/holidayCalendar.ts). The demand result is a weekday's; a Saturday and a
+// Sunday are worked out from it per purpose and period (sim/src/demand/days.rs,
+// workers/demandClient.ts). Plain data and one signal: the clock worker imports it too.
+
+import { signal } from "@preact/signals";
+import { t } from "../i18n";
+import { lazyTexts } from "./lazyText";
+
+/** 0 weekday, 1 Saturday, 2 Sunday, 3 a superholiday's away day (T-264, a scaled Sunday), 4 its
+ * going-out day and 5 its coming-back day (T-1373: a weekday and a Sunday with twice a weekday's
+ * longer trips, leaning out of big places and back): an index into the per-day results. */
+export type DayKind = 0 | 1 | 2 | 3 | 4 | 5;
+export const DAY_KINDS: DayKind[] = [0, 1, 2, 3, 4, 5];
+export const AWAY_DAY = 3;
+export const OUT_DAY = 4;
+export const BACK_DAY = 5;
+export const DAY_KIND_NAME = lazyTexts(["days.kindWeekday", "days.kindSaturday", "days.kindSunday", "days.kindHoliday", "days.kindGoingOut", "days.kindComingBack"]);
+
+/** The days a demand view can show (T-464): the six kinds, then the average day (5 weekdays, a
+ * Saturday and a Sunday over 7, sim/src/demand/days.rs). The index into `demandByDay` and the `day`
+ * of every demand query. The clock and the boarding account only ever see the six kinds. */
+export type DemandDay = DayKind | 6;
+export const DEMAND_DAYS: DemandDay[] = [0, 1, 2, 3, 4, 5, 6];
+export const AVERAGE_DAY = 6;
+/** How a figure for the day shown ends: "12,400 trip legs per day". The Day choice names the day. */
+export const DEMAND_DAY_PHRASE = lazyTexts(["days.perWeekday", "days.perSaturday", "days.perSunday", "days.perHoliday", "days.perGoingOut", "days.perComingBack", "days.perDay"]);
+/** "points on a weekday": the same, as the points hovers end */
+export const DEMAND_DAY_ON = lazyTexts(["days.onWeekday", "days.onSaturday", "days.onSunday", "days.onHoliday", "days.onGoingOut", "days.onComingBack", "days.perDay"]);
+/** The ordinary kind a superholiday's day stands in for while none is near (T-1373): a day away and a
+ * coming-back day a Sunday, a going-out day a weekday. */
+export const PLAIN_KIND: DayKind[] = [0, 1, 2, 2, 0, 2];
+const WEEKDAY_NAME = lazyTexts(["days.shortMonday", "days.shortTuesday", "days.shortWednesday", "days.shortThursday", "days.shortFriday", "days.shortSaturday", "days.shortSunday"]);
+/** "Monday" to "Sunday", indexed by `weekdayOf`. */
+export const WEEKDAY_LONG = lazyTexts(["days.longMonday", "days.longTuesday", "days.longWednesday", "days.longThursday", "days.longFriday", "days.longSaturday", "days.longSunday"]);
+
+/** Day of the week of game day `day`, 0 Monday. */
+export const weekdayOf = (day: number): number => ((day - 1) % 7 + 7) % 7;
+export const weekdayName = (day: number): string => WEEKDAY_NAME[weekdayOf(day)];
+export const dayKindOf = (day: number): DayKind => { const w = weekdayOf(day); return w === 5 ? 1 : w === 6 ? 2 : 0; };
+/** T-861, T-862: the calendar is a 365-day year with no leap day. Game day 1 is Monday January 27
+ * (T-862's pick, DECISIONS.md). The weekday stays the day number's (above), so
+ * each year starts a weekday later, as real non-leap years do. */
+export const DAY1_OF_YEAR = 26;
+const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const MONTH_SHORT = lazyTexts(["days.shortMonthJanuary", "days.shortMonthFebruary", "days.shortMonthMarch", "days.shortMonthApril", "days.shortMonthMay", "days.shortMonthJune", "days.shortMonthJuly", "days.shortMonthAugust", "days.shortMonthSeptember", "days.shortMonthOctober", "days.shortMonthNovember", "days.shortMonthDecember"]);
+export const MONTH_LONG = lazyTexts(["days.longMonthJanuary", "days.longMonthFebruary", "days.longMonthMarch", "days.longMonthApril", "days.longMonthMay", "days.longMonthJune", "days.longMonthJuly", "days.longMonthAugust", "days.longMonthSeptember", "days.longMonthOctober", "days.longMonthNovember", "days.longMonthDecember"]);
+/** Day of the year of game day `day`, 0 January 1. */
+export const dayOfYear = (day: number): number => ((day - 1 + DAY1_OF_YEAR) % 365 + 365) % 365;
+/** T-2684: the game's year, 1 from the first day to the first December 31, then 2 from the next
+ * January 1 (calendar years, so the year turns with the date). */
+export const yearOf = (day: number): number => Math.floor((day - 1 + DAY1_OF_YEAR) / 365) + 1;
+/** "Feb 24, year 2": a date with its year */
+export const withYear = (text: string, day: number): string => t("days.withYear", { date: text, year: yearOf(day) });
+/** The weekday (0 Monday) of January 1 of game day `day`'s year: which real year's holidays it
+ * takes (game/holidays.ts). */
+export const newYearWeekday = (day: number): number => weekdayOf(day - dayOfYear(day));
+/** Month (0 January) and day of the month of game day `day`. */
+export function dateOf(day: number): { month: number; date: number } {
+  let d = dayOfYear(day), month = 0;
+  while (d >= MONTH_DAYS[month]) d -= MONTH_DAYS[month++];
+  return { month, date: d + 1 };
+}
+/** "Feb 24" */
+export function shortDate(day: number): string {
+  const { month, date } = dateOf(day);
+  return t("days.shortDate", { month: MONTH_SHORT[month], day: date });
+}
+/** "Mon Feb 24" */
+export function dateName(day: number): string {
+  return t("days.dateName", { weekday: weekdayName(day), date: shortDate(day) });
+}
+
+/** The kind of day at time `t` (seconds). Callers pass local time (T-309, game/localTime.ts): a
+ * line's or a view's, never the bare game clock outside New York's time zone. */
+export const dayKindAt = (t: number): DayKind => dayKindOf(Math.floor(t / 86400));
+
+/** The kind of day it is in the local time in view (T-309), kept by game/clock.ts as the minutes
+ * pass and the view pans (main thread only). */
+export const currentDay = signal<DayKind>(0);
+
+/** T-264, kept by game/holidays.ts where the player has built: the superholiday whose away days are
+ * within the next 21 days (its name, the first if several; null for none), and whether one is within
+ * the next 8. The away day's fares and points are worked out apart from Sunday's only while one is
+ * near, and its boarding account only while one is soon; otherwise they are Sunday's, which no line
+ * reads meanwhile. */
+export const awayNear = signal<string | null>(null);
+export const awaySoon = signal(false);
+/** T-1373: the same for the going-out and coming-back days ("rush days"): the superholiday whose rush days are
+ * within the next 21 days (null for none), and whether one is within the next 8. While none is near
+ * those days' views are the weekday's and Sunday's (`PLAIN_KIND`), and no line reads them. */
+export const rushRun = signal<string | null>(null);
+export const rushSoon = signal(false);
+/** T-1697: when each superholiday part is, as the player reads it, "Golden Week, May 3-5" (the run
+ * `awayNear` / `rushRun` names; null with it). Out and back are the days either side of the holiday. */
+export const whenAway = signal<string | null>(null);
+export const whenOut = signal<string | null>(null);
+export const whenBack = signal<string | null>(null);
+/** Game days `from` up to but not including `to`, "May 3", "May 3-5", "Apr 30-May 2". */
+export function dateRange(from: number, to: number): string {
+  const a = dateOf(from), b = dateOf(to - 1);
+  if (to - from <= 1) return shortDate(from);
+  return a.month === b.month ? t("days.rangeSameMonth", { month: MONTH_SHORT[a.month], from: a.date, to: b.date }) : t("days.rangeAcross", { from: shortDate(from), to: shortDate(to - 1) });
+}
+/** Whether kind `k`'s own figures are made now (T-264, T-1373): the ordinary kinds always, a
+ * superholiday's only while one is near. */
+export const kindMade = (k: number, near = awayNear.value, rush = rushRun.value): boolean => (k === AWAY_DAY ? near !== null : k === OUT_DAY || k === BACK_DAY ? rush !== null : true);

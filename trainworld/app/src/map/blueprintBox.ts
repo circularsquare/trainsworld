@@ -1,0 +1,526 @@
+// The blueprint tool (T-333): a drag draws a box on the map, and the blueprint track with both ends
+// inside it and the blueprint stations inside it are picked (game/blueprintPick.ts, T-2019);
+// dragging the pick moves the nodes that were inside the box (T-1898). Shift adds to what is picked.
+// A click picks the piece under the pointer, a click on nothing clears. Shift+click adds the track on
+// the shortest way there from the pick, or takes a picked piece out; a double click picks the run
+// junction to junction (T-1680).
+//
+// Why a tool: a plain drag on the map is the map's pan and shift+drag is MapLibre's zoom box, so a
+// box needs a mode of its own. While the tool is on the left button draws the box; the right or
+// middle button drags the map instead (the wheel and the arrow keys work as always). A finger pans
+// as always; a tap adds or takes out a piece, a hold then drag adds a box (T-1260).
+// Construct and the quote leave out switched-off pieces; they are drawn grey (renderer.ts).
+
+import { t } from "../i18n";
+import type { Map as MlMap } from "maplibre-gl";
+import { bpHover } from "../game/blueprintStretches";
+import { rebuildQuote } from "../game/rebuild";
+import { bpPicked, dragNodes, onlyOneKind, pathTo, removePicked, runOf, togglePicked, unionPicked, withoutPicked, type BpPicked } from "../game/blueprintPick";
+import { SWITCH_PICK_KEY } from "../ui/toolKeys";
+import { designSpeed, selection, tool } from "../game/ui";
+import { lngLatToPack } from "../game/coords";
+import { describeIssues } from "../game/issues";
+import { touchInput } from "./touch";
+import { edit, say, world } from "../game/world";
+import type { ClockClient } from "../workers/clockClient";
+import { effect } from "@preact/signals";
+import { toLocal } from "./geo";
+import { previewStrokes, strokesFromEdges } from "./network";
+import { endDrag, setGrabbing } from "./nodeDrag";
+import type { Overlay } from "./overlay";
+import { SLOP_PX, topSeg } from "./pick";
+import { STATIONS_ZOOM } from "./stationGeometry";
+import { packToLngLat } from "../game/coords";
+import type { PreviewAnswer } from "../workers/clockClient";
+import { MARKS_ZOOM, NODE_HIT_PX } from "./dragHandles";
+import { marksLayer, onScreen, placeAt } from "./screenPlace";
+import { curveLabels, CurveLabelPool } from "./trackTagRows";
+
+/** A click, not a drag: the pointer moved less than this (px). */
+const CLICK_PX = 4;
+
+/** The part of an edge's polyline (x, y, z triples, a to b) within `frac` of its length from its a end
+ * (`fromA`) or its b end. */
+function stretchOf(pts: Float32Array, fromA: boolean, frac: number): Float32Array {
+  const n = pts.length / 3;
+  if (frac >= 1 || n < 2) return pts;
+  const at = (i: number) => (fromA ? i : n - 1 - i) * 3;
+  let total = 0;
+  for (let i = 1; i < n; i++) total += Math.hypot(pts[at(i)] - pts[at(i - 1)], pts[at(i) + 1] - pts[at(i - 1) + 1]);
+  const want = total * Math.max(0, frac), out: number[] = [pts[at(0)], pts[at(0) + 1], pts[at(0) + 2]];
+  let s = 0;
+  for (let i = 1; i < n; i++) {
+    const p = at(i - 1), q = at(i), d = Math.hypot(pts[q] - pts[p], pts[q + 1] - pts[p + 1]);
+    if (s + d >= want) {
+      const t = d > 0 ? (want - s) / d : 0;
+      out.push(pts[p] + (pts[q] - pts[p]) * t, pts[p + 1] + (pts[q + 1] - pts[p + 1]) * t, pts[p + 2] + (pts[q + 2] - pts[p + 2]) * t);
+      break;
+    }
+    out.push(pts[q], pts[q + 1], pts[q + 2]);
+    s += d;
+  }
+  return new Float32Array(out);
+}
+/** T-1260: a finger held this long without moving more than HOLD_SLOP_PX draws a box (ms) */
+const HOLD_MS = 450;
+const HOLD_SLOP_PX = 8;
+/** at most this many squares on the pick's nodes, as map/endMarkers.ts */
+const MAX_SQUARES = 400;
+
+type Rect = [number, number, number, number];
+
+export class BlueprintBox {
+  private box: HTMLDivElement;
+  private drag: { x0: number; y0: number; x: number; y: number; add: boolean; base: BpPicked; pan: boolean; moved: boolean } | null = null;
+  private frame = 0;
+  /** T-475: a press on a picked node or picked track moves every movable node of the pick; `px, py`
+   * the pointer, `preview` the last answer (T-1869: its curve speeds and why not are shown) */
+  private move: { x0: number; y0: number; nodes: number[]; at: { x: number; y: number }; dx: number; dy: number; moved: boolean; ok: boolean; issues: string[]; px?: number; py?: number; preview?: PreviewAnswer } | null = null;
+  /** T-1869: a square on every movable node of the pick, following a drag; the curves' speeds and
+   * why it cannot be moved while dragging */
+  private marks: HTMLDivElement;
+  private squares: HTMLDivElement[] = [];
+  private labels: CurveLabelPool;
+  private tag: HTMLDivElement;
+
+  constructor(private map: MlMap, private overlay: Overlay, private client: ClockClient) {
+    this.box = document.createElement("div");
+    this.box.className = "bp-box";
+    this.box.style.display = "none";
+    map.getContainer().appendChild(this.box);
+    this.marks = marksLayer(map);
+    this.labels = new CurveLabelPool(this.marks);
+    this.tag = document.createElement("div");
+    this.tag.className = "tool-tag bad";
+    this.tag.style.display = "none";
+    this.marks.appendChild(this.tag);
+    overlay.afterMapFrame.push(() => this.place());
+    const host = map.getCanvasContainer();
+    host.addEventListener("pointerdown", (e) => this.onDown(e as PointerEvent));
+    host.addEventListener("dblclick", (e) => this.onDblClick(e));
+    host.addEventListener("contextmenu", (e) => { if (tool.peek() === "blueprint") e.preventDefault(); });
+    addEventListener("pointermove", (e) => this.onMove(e));
+    // a finger's box or pick drag over, the map pans again (T-1260)
+    addEventListener("pointerup", (e) => void this.onUp(e).finally(() => {
+      if (e.pointerType === "touch" && touchInput.peek() && !this.drag && !this.move) this.map.dragPan.enable();
+    }));
+    // the left button is the box's while the tool is on; the map's own drag would pan under it. A
+    // finger pans as everywhere, and draws a box after a hold (T-1260)
+    effect(() => {
+      if (tool.value === "blueprint" && !touchInput.value) map.dragPan.disable();
+      else map.dragPan.enable();
+      if (tool.value !== "blueprint") this.cancel();
+    });
+    host.addEventListener("pointercancel", (e) => this.endTouch(e));
+    // the highlight follows the pick and the world (a new network has new buffers)
+    effect(() => {
+      bpPicked.value;
+      bpHover.value;
+      rebuildQuote.value;
+      selection.value;
+      world.value;
+      tool.value;
+      this.refreshHighlight();
+      this.place();
+    });
+  }
+
+  /** The pick's squares, moved with a drag, and while dragging each curve's speed and why not. */
+  place() {
+    const w = world.peek();
+    const nodes = w && tool.peek() === "blueprint" && this.map.getZoom() >= MARKS_ZOOM ? this.movable() : [];
+    const m = this.move?.moved ? this.move : null;
+    const cw = this.overlay.cssW, ch = this.overlay.cssH;
+    let k = 0;
+    for (const id of nodes) {
+      const n = w!.nodes.get(id);
+      if (!n) continue;
+      const [x, y] = this.overlay.toScreen(...(m ? toLocal(...packToLngLat(n.x + m.dx, n.y + m.dy)) : toLocal(n.lng, n.lat)));
+      if (!onScreen(x, y, cw, ch, 8)) continue;
+      if (k >= MAX_SQUARES) break;
+      placeAt(this.square(k++), x, y);
+    }
+    for (let i = k; i < this.squares.length; i++) this.squares[i].style.display = "none";
+    const pv = m?.preview;
+    this.labels.place(pv ? curveLabels(pv.verts) : [], (x, y) => this.overlay.toScreen(x, y), cw, ch);
+    if (m && pv && !pv.ok && m.px !== undefined) {
+      this.tag.textContent = describeIssues(pv.issues) || t("blueprintBox.cannotMove");
+      this.tag.style.display = "";
+      placeAt(this.tag, m.px, m.py!, 14, -30);
+    } else this.tag.style.display = "none";
+  }
+
+  private square(i: number): HTMLDivElement {
+    let e = this.squares[i];
+    if (!e) {
+      e = this.squares[i] = document.createElement("div");
+      e.className = "pi-mark";
+      this.marks.appendChild(e);
+    }
+    e.style.display = "";
+    return e;
+  }
+
+  private movableOf: { pick: BpPicked | null; version: number; nodes: number[] } = { pick: null, version: -1, nodes: [] };
+  /** The pick's nodes that can move: every edge there blueprint, no crossover, station not
+   * constructed (of `dragNodes`: those a box held, or the ends of picked track and picked stations). */
+  private movable(): number[] {
+    const w = world.peek(), p = bpPicked.peek();
+    if (!w || (!p.edges.length && !p.stations.length)) return [];
+    const was = this.movableOf;
+    if (was.pick === p && was.version === w.version) return was.nodes;
+    const ids = dragNodes(p);
+    const fixed = new Set<number>();
+    for (const e of w.edges) if (e.crossover) fixed.add(e.a), fixed.add(e.b);
+    const built = new Set(w.save.stations.filter((s) => s.built).map((s) => s.num));
+    const nodes: number[] = [];
+    for (const id of ids) {
+      const n = w.nodes.get(id);
+      if (!n || n.builtPorts > 0 || fixed.has(id) || built.has(id)) continue;
+      nodes.push(id);
+    }
+    this.movableOf = { pick: p, version: w.version, nodes };
+    return nodes;
+  }
+
+  /** The pick's movable nodes, when a press at (x, y) px is on one of them or on picked track; else null. */
+  private grabAt(x: number, y: number): number[] | null {
+    const w = world.peek(), nodes = this.movable();
+    if (!w || !nodes.length) return null;
+    for (const id of nodes) {
+      const n = w.nodes.get(id)!;
+      const [sx, sy] = this.overlay.toScreen(...toLocal(n.lng, n.lat));
+      if ((sx - x) ** 2 + (sy - y) ** 2 < NODE_HIT_PX * NODE_HIT_PX) return nodes;
+    }
+    const under = this.under(x, y).edges[0];
+    return under !== undefined && bpPicked.peek().edges.includes(under) ? nodes : null;
+  }
+
+  /** Esc while dragging the pick: it goes back, nothing changes. */
+  private cancelMove(): boolean {
+    if (!this.move) return false;
+    this.move = null;
+    this.client.dropPreview();
+    this.endMove();
+    return true;
+  }
+
+  private endMove() {
+    endDrag(this.overlay);
+    this.place();
+  }
+
+  /** Esc while dragging a box: the box goes away and the pick goes back. */
+  cancel(): boolean {
+    if (this.cancelMove()) return true;
+    const d = this.drag;
+    if (!d) return false;
+    this.drag = null;
+    this.box.style.display = "none";
+    if (!d.pan) bpPicked.value = d.base;
+    return true;
+  }
+
+  /** The picked track as an ink band under the track (renderer `setHighlight`); call after the
+   * network buffers were replaced. */
+  refreshHighlight() {
+    const n = this.overlay.renderer.net;
+    // T-1679: the track inspector's piece too; T-2269: the Build tab's breakdown row under the pointer first
+    const sel = selection.peek();
+    const edges = bpHover.peek().length ? bpHover.peek() : bpPicked.peek().edges.length ? bpPicked.peek().edges : sel?.kind === "track" ? [sel.edge] : [];
+    if (!n || !edges.length) {
+      this.overlay.renderer.setHighlight(null);
+    } else {
+      const pts: Float32Array[] = [];
+      for (const e of edges) {
+        const a = n.edgePts.get(e);
+        if (a) pts.push(a);
+      }
+      // T-3241: the track beyond the pick that the stations' ramps take, as far as it changes
+      const q = rebuildQuote.peek(), w = world.peek();
+      if (q && w && !bpHover.peek().length) for (const b of q.beyond) {
+        const a = n.edgePts.get(b.edge), e = w.edges.find((x) => x.id === b.edge);
+        if (a && e && e.lengthM > 0) pts.push(stretchOf(a, e.a === b.from, b.m / e.lengthM));
+      }
+      this.overlay.renderer.setHighlight(strokesFromEdges(pts));
+    }
+    // T-3059: the pieces a rebuild would refuse for their own sake, in red over the pick (T-3088)
+    const refused = rebuildQuote.peek()?.red ?? [];
+    const rp: Float32Array[] = [];
+    if (n && !bpHover.peek().length) for (const e of refused) {
+      const a = n.edgePts.get(e);
+      if (a) rp.push(a);
+    }
+    this.overlay.renderer.setRefused(rp.length ? strokesFromEdges(rp) : null);
+    this.overlay.invalidate();
+  }
+
+  private point(e: PointerEvent): [number, number] {
+    const r = this.map.getCanvasContainer().getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+
+  /** T-1260, a finger: the press waiting to become a box (held still HOLD_MS) or a tap, and the fingers down */
+  private hold: { x0: number; y0: number; timer: number } | null = null;
+  private fingers = new Set<number>();
+
+  /** A finger on the map with the tool on: a tap adds or takes out the piece under it, a hold then
+   * drag adds what a box holds, a press on the pick drags it, anything else pans or zooms. */
+  private touchDown(e: PointerEvent) {
+    this.fingers.add(e.pointerId);
+    if (this.fingers.size > 1) return void this.dropHold(); // a pinch
+    if (this.drag || this.move) return;
+    const [x, y] = this.point(e);
+    const grab = this.grabAt(x, y);
+    if (grab) {
+      this.map.dragPan.disable();
+      const ll = this.map.unproject([x, y]);
+      this.move = { x0: x, y0: y, nodes: grab, at: lngLatToPack(ll.lng, ll.lat), dx: 0, dy: 0, moved: false, ok: true, issues: [] };
+      return;
+    }
+    this.hold = { x0: x, y0: y, timer: setTimeout(() => {
+      const h = this.hold;
+      if (!h) return;
+      this.hold = null;
+      this.map.dragPan.disable();
+      this.drag = { x0: h.x0, y0: h.y0, x: h.x0, y: h.y0, add: true, base: bpPicked.peek(), pan: false, moved: false };
+    }, HOLD_MS) as unknown as number };
+  }
+
+  private dropHold() {
+    if (this.hold) clearTimeout(this.hold.timer);
+    this.hold = null;
+  }
+
+  /** A finger lifted or lost: a tap if it was still waiting, and the map pans again. */
+  private endTouch(e: PointerEvent): boolean {
+    if (e.pointerType !== "touch") return false;
+    this.fingers.delete(e.pointerId);
+    const h = this.hold;
+    if (h && e.type === "pointerup") {
+      this.dropHold();
+      const [x, y] = this.point(e);
+      const hit = this.under(x, y);
+      if (hit.edges.length || hit.stations.length) this.toggle(hit);
+      return true;
+    }
+    this.dropHold();
+    if (e.type === "pointercancel") this.cancel();
+    return false;
+  }
+
+  private onDown(e: PointerEvent) {
+    if (tool.peek() !== "blueprint") return;
+    if (e.pointerType === "touch") return this.touchDown(e);
+    if (this.drag || this.move) return;
+    const [x, y] = this.point(e);
+    const grab = e.button === 0 && !e.shiftKey ? this.grabAt(x, y) : null;
+    if (grab) {
+      e.preventDefault();
+      const ll = this.map.unproject([x, y]);
+      this.move = { x0: x, y0: y, nodes: grab, at: lngLatToPack(ll.lng, ll.lat), dx: 0, dy: 0, moved: false, ok: true, issues: [] };
+    } else if (e.button === 0) {
+      e.preventDefault();
+      this.drag = { x0: x, y0: y, x, y, add: e.shiftKey, base: e.shiftKey ? bpPicked.peek() : { edges: [], stations: [] }, pan: false, moved: false };
+    } else if (e.button === 1 || e.button === 2) {
+      e.preventDefault();
+      this.drag = { x0: x, y0: y, x, y, add: false, base: bpPicked.peek(), pan: true, moved: false };
+    }
+  }
+
+  private onMove(e: PointerEvent) {
+    const h = this.hold;
+    if (h && e.pointerType === "touch") {
+      const [x, y] = this.point(e);
+      if (Math.hypot(x - h.x0, y - h.y0) > HOLD_SLOP_PX) this.dropHold(); // a pan
+      return;
+    }
+    const m = this.move;
+    if (m) return this.moveTo(m, ...this.point(e));
+    const d = this.drag;
+    if (!d) {
+      // the grab cursor over what a press would drag (T-474)
+      if (tool.peek() === "blueprint" && e.buttons === 0 && e.target === this.map.getCanvas()) {
+        const c = this.grabAt(...this.point(e)) ? "grab" : "crosshair";
+        if (this.map.getCanvas().style.cursor !== c) this.map.getCanvas().style.cursor = c;
+      }
+      return;
+    }
+    const [x, y] = this.point(e);
+    if (d.pan) {
+      this.map.panBy([d.x - x, d.y - y], { animate: false });
+      d.x = x;
+      d.y = y;
+      return;
+    }
+    d.x = x;
+    d.y = y;
+    if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < CLICK_PX) return;
+    d.moved = true;
+    const [l, t, r, b] = [Math.min(d.x0, x), Math.min(d.y0, y), Math.max(d.x0, x), Math.max(d.y0, y)];
+    Object.assign(this.box.style, { display: "", left: `${l}px`, top: `${t}px`, width: `${r - l}px`, height: `${b - t}px` });
+    // the pick follows the box, at most once a frame
+    if (!this.frame)
+      this.frame = requestAnimationFrame(() => {
+        this.frame = 0;
+        if (this.drag && !this.drag.pan && this.drag.moved) bpPicked.value = unionPicked(this.drag.base, this.within([l, t, r, b]));
+      });
+  }
+
+  private moveTo(m: NonNullable<BlueprintBox["move"]>, x: number, y: number) {
+    if (!m.moved && Math.hypot(x - m.x0, y - m.y0) < CLICK_PX) return;
+    if (!m.moved) setGrabbing(true);
+    m.moved = true;
+    const ll = this.map.unproject([x, y]);
+    const p = lngLatToPack(ll.lng, ll.lat);
+    m.dx = p.x - m.at.x;
+    m.dy = p.y - m.at.y;
+    m.px = x;
+    m.py = y;
+    this.client.previewNodes(m.nodes, m.dx, m.dy, (a) => {
+      if (this.move !== m) return;
+      m.ok = a.ok;
+      m.issues = a.issues;
+      m.preview = a;
+      this.overlay.renderer.setPreview(previewStrokes(a));
+      this.overlay.invalidate();
+      this.place();
+    });
+    this.place();
+  }
+
+  private async onUp(e: PointerEvent) {
+    if (this.endTouch(e)) return;
+    const m = this.move;
+    if (m) {
+      this.move = null;
+      if (!m.moved) {
+        // a press without a drag is a click, as without the pick under it (a finger's adds or takes out)
+        const add = e.pointerType === "touch";
+        this.drag = { x0: m.x0, y0: m.y0, x: m.x0, y: m.y0, add, base: add ? bpPicked.peek() : { edges: [], stations: [] }, pan: false, moved: false };
+      } else {
+        this.client.dropPreview();
+        const a = await edit({ op: "moveNodes", nodes: m.nodes, dx: m.dx, dy: m.dy, design: designSpeed.peek() });
+        if (!a.ok && !a.issues.length) say(m.issues.length ? describeIssues(m.issues) : t("blueprintBox.cannotMoveThis"), true);
+        this.endMove();
+        return;
+      }
+    }
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    this.box.style.display = "none";
+    if (d.pan) return;
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
+    const [x, y] = this.point(e);
+    if (d.moved) {
+      bpPicked.value = unionPicked(d.base, this.within([Math.min(d.x0, x), Math.min(d.y0, y), Math.max(d.x0, x), Math.max(d.y0, y)]));
+      return;
+    }
+    // a click: the piece under the pointer
+    const hit = this.under(x, y);
+    if (!hit.edges.length && !hit.stations.length) {
+      if (!d.add) bpPicked.value = { edges: [], stations: [] };
+      return;
+    }
+    if (!d.add) {
+      bpPicked.value = hit;
+      return;
+    }
+    // T-1680: Shift+click on track adds the shortest way there from the pick
+    const cur = bpPicked.peek();
+    if (hit.edges.length && !cur.edges.includes(hit.edges[0])) {
+      bpPicked.value = unionPicked(cur, { edges: pathTo(cur, hit.edges[0]), stations: [] });
+      return;
+    }
+    this.toggle(hit);
+  }
+
+  /** T-1680: a double click on track picks its run, junction to junction (Shift adds it). */
+  private onDblClick(e: MouseEvent) {
+    if (tool.peek() !== "blueprint" || e.button !== 0) return;
+    const n = this.overlay.renderer.net;
+    if (!n) return;
+    // the track under the pointer, even where a station is drawn over it
+    const [ti] = topSeg(this.overlay, n.track.seg, n.track.count, ...this.point(e as PointerEvent), SLOP_PX * SLOP_PX + 1);
+    if (ti < 0) return;
+    const run: BpPicked = { edges: runOf(n.track.edge[ti]), stations: [] };
+    bpPicked.value = e.shiftKey ? unionPicked(bpPicked.peek(), run) : onlyOneKind(run);
+  }
+
+  /** The piece hit added to the pick, or taken out if it is in it. */
+  private toggle(hit: BpPicked) {
+    const cur = bpPicked.peek();
+    const has = hit.edges.length ? cur.edges.includes(hit.edges[0]) : cur.stations.includes(hit.stations[0]);
+    bpPicked.value = has ? withoutPicked(cur, hit) : unionPicked(cur, hit);
+  }
+
+  /** What a box holds: the track with both its ends inside it and the stations (drawn, so zoomed in
+   * enough) inside it; the blueprint ones if there are any, else the constructed ones (T-829). Track
+   * only partly inside is not picked (T-2019, Anita), so the pick shows what a drag moves: the
+   * nodes inside the box (T-1898, "only move the waypoints that are in the selection box"). */
+  private within(r: Rect): BpPicked {
+    const n = this.overlay.renderer.net, w = world.peek();
+    const out: BpPicked = { edges: [], stations: [], nodes: [] };
+    if (!n || !w) return out;
+    const p = new Float64Array(4);
+    if (this.map.getZoom() >= STATIONS_ZOOM) {
+      for (let i = 0; i < n.stationCount; i++) {
+        this.overlay.toScreenInto(n.stations[i * 3], n.stations[i * 3 + 1], p, 0);
+        if (p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]) out.stations.push(Number(n.stationIds[i]));
+      }
+    }
+    const inside = new Set(out.stations);
+    const held = new Map<number, boolean>();
+    const holds = (id: number) => {
+      let v = held.get(id);
+      if (v === undefined) {
+        const node = w.nodes.get(id);
+        if (!node) v = false;
+        else {
+          const [x, y] = this.overlay.toScreen(...toLocal(node.lng, node.lat));
+          v = x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+        }
+        held.set(id, v);
+      }
+      return v;
+    };
+    for (const e of w.edges) {
+      if (!holds(e.a) || !holds(e.b) || !n.edgePts.has(e.id)) continue;
+      out.edges.push(e.id);
+      inside.add(e.a);
+      inside.add(e.b);
+    }
+    out.nodes = [...inside];
+    return onlyOneKind(out);
+  }
+
+  /** The station or track piece under a point (px), a station first, blueprint before constructed. */
+  private under(x: number, y: number): BpPicked {
+    const n = this.overlay.renderer.net, w = world.peek();
+    const none: BpPicked = { edges: [], stations: [] };
+    if (!n || !w) return none;
+    const hits: BpPicked[] = [];
+    if (this.map.getZoom() >= STATIONS_ZOOM) {
+      const i = this.overlay.renderer.stationAt(x, y, (a, b) => this.overlay.toScreen(a, b), SLOP_PX);
+      if (i >= 0) hits.push({ edges: [], stations: [Number(n.stationIds[i])] });
+    }
+    const [ti] = topSeg(this.overlay, n.track.seg, n.track.count, x, y, SLOP_PX * SLOP_PX + 1);
+    if (ti >= 0) hits.push({ edges: [n.track.edge[ti]], stations: [] });
+    const bp = hits.map(onlyOneKind);
+    return bp.find((h) => !h.built && (h.edges.length || h.stations.length)) ?? bp[0] ?? none;
+  }
+
+  /** The E key: switch the pick on, or off when all of it is on (T-2338); Delete removes it (T-829). True if used. */
+  key(e: KeyboardEvent): boolean {
+    if (tool.peek() !== "blueprint" || e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === "Delete" || e.key === "Backspace") {
+      void removePicked();
+      return true;
+    }
+    if (e.key.toLowerCase() !== SWITCH_PICK_KEY) return false;
+    void togglePicked();
+    return true;
+  }
+}

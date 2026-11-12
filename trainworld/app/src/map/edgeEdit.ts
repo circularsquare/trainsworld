@@ -1,0 +1,240 @@
+// Reshaping blueprint track (T-064, T-092): with a stretch of blueprint track selected, its points
+// of intersection (PIs, the corners the track turns at) show as squares that can be dragged, each
+// curve labelled with its speed. While dragging, the clock worker previews the new
+// shape as a trial edit (the same check an edit gets, one request in flight); letting go commits
+// it as one undoable edit, Escape puts the square back. Constructed track cannot be reshaped (SPEC
+// 6.4). Track drawn while the track ran through the clicked points (T-079) shows its clicks as
+// the squares; its first reshape makes them corners like on any other track.
+//
+// T-2951: a double click on blueprint track (the select tool, a mouse) adds a point there, a plain
+// node that then drags as any node does (map/nodeDrag.ts); a finger has the track inspector's button.
+
+import { t } from "../i18n";
+import type { Map as MlMap } from "maplibre-gl";
+import { lngLatToPack, packToLngLat } from "../game/coords";
+import { describeIssues } from "../game/issues";
+import { designSpeed, selection, tool } from "../game/ui";
+import { edit, world } from "../game/world";
+import type { ClockClient, PreviewAnswer } from "../workers/clockClient";
+import { queryClock } from "../workers/clockClient";
+import type { PiInput } from "../workers/protocol";
+import type { Level } from "../game/types";
+import { toLocal } from "./geo";
+import { live } from "./live";
+import { strokesFromPreview } from "./network";
+import { endDrag, setGrabbing } from "./nodeDrag";
+import type { Overlay } from "./overlay";
+import { trackAt } from "./pick";
+import { marksLayer, placeAt } from "./screenPlace";
+import { touchInput } from "./touch";
+import { curveLabelled, curveLabels, CurveLabelPool, type CurveLabel } from "./trackTagRows";
+
+/** A PI of a stretch, pack metres. */
+export interface EdgePi {
+  x: number;
+  y: number;
+  /** set radius m, 0 = auto (SPEC 6.1) */
+  radius: number;
+  level: number;
+  /** the radius the curve has (0 = no curve) and its speed limit */
+  used: number;
+  kmh: number;
+  /** the middle of its curve, pack metres */
+  mx: number;
+  my: number;
+}
+
+export interface EdgePis {
+  /** drawn while the track ran through the clicks (T-079): the PIs are those clicks, and the
+   * curves are what the first reshape will make */
+  legacy: boolean;
+  pis: EdgePi[];
+}
+
+/** `TrackApi.edge_pis` in objects. */
+export function parseEdgePis(d: Float64Array): EdgePis {
+  const pis: EdgePi[] = [];
+  for (let i = 1; i + 8 <= d.length; i += 8)
+    pis.push({ x: d[i], y: d[i + 1], radius: d[i + 2], level: d[i + 3], used: d[i + 4], kmh: d[i + 5], mx: d[i + 6], my: d[i + 7] });
+  return { legacy: d[0] === 1, pis };
+}
+
+const toInput = (p: EdgePi): PiInput => ({ x: p.x, y: p.y, level: p.level as Level, radius: p.radius });
+
+export class EdgeEditor {
+  private box: HTMLDivElement;
+  private marks: HTMLDivElement[] = [];
+  private labels: CurveLabelPool;
+  private tag: HTMLDivElement;
+  private edge = -1;
+  private version = -1;
+  private loading = false;
+  private shape: EdgePis = { legacy: false, pis: [] };
+  private drag: { i: number; moved: boolean; from: EdgePi } | null = null;
+  private preview: PreviewAnswer | null = null;
+
+  constructor(private map: MlMap, private overlay: Overlay, private client: ClockClient) {
+    this.box = marksLayer(map);
+    this.labels = new CurveLabelPool(this.box);
+    this.tag =document.createElement("div");
+    this.tag.className = "tool-tag";
+    this.tag.style.display = "none";
+    this.box.appendChild(this.tag);
+    overlay.afterMapFrame.push(() => this.place());
+    addEventListener("pointermove", (e) => this.onMove(e));
+    addEventListener("pointerup", () => void this.onUp());
+    map.getCanvasContainer().addEventListener("dblclick", (e) => this.addPoint(e));
+  }
+
+  /** A double click on track: a point there (T-2951). Not on a node, a platform's end or a station,
+   * which already have their own. */
+  private addPoint(e: MouseEvent) {
+    if (tool.peek() !== "select" || touchInput.peek() || e.target !== this.map.getCanvas()) return;
+    const r = this.map.getContainer().getBoundingClientRect();
+    const px = e.clientX - r.left, py = e.clientY - r.top;
+    const ov = this.overlay;
+    if (live.nodeDrag?.hit(px, py) || ov.renderer.stationAt(px, py, (x, y) => ov.toScreen(x, y)) >= 0) return;
+    const edge = trackAt(ov, px, py);
+    if (edge < 0) return;
+    const ll = this.map.unproject([px, py]), at = lngLatToPack(ll.lng, ll.lat);
+    void edit({ op: "addPoint", edge, x: at.x, y: at.y });
+  }
+
+  /** The blueprint edge being edited, or -1: a selected blueprint stretch with the select tool. */
+  private target(): number {
+    const s = selection.peek();
+    if (tool.peek() !== "select" || s?.kind !== "track") return -1;
+    const e = world.peek()?.edges.find((x) => x.id === s.edge);
+    return e && !e.built && !e.crossover ? e.id : -1; // a crossover keeps its shape (T-338)
+  }
+
+  /** Call when the selection, tool or world changes. */
+  async refresh() {
+    const e = this.target();
+    const v = world.peek()?.version ?? -1;
+    if (e === this.edge && v === this.version) return;
+    this.edge = e;
+    this.version = v;
+    if (this.drag) return;
+    this.loading = e >= 0;
+    this.place();
+    const shape = e >= 0 ? parseEdgePis((await queryClock({ what: "edgePis", edge: e })) ?? new Float64Array(0)) : { legacy: false, pis: [] };
+    if (this.edge !== e || this.version !== v || this.drag) return;
+    this.loading = false;
+    this.shape = shape;
+    this.place();
+  }
+
+  /** Escape while dragging: the square goes back, nothing changes. */
+  cancel(): boolean {
+    const d = this.drag;
+    if (!d) return false;
+    this.drag = null;
+    this.shape.pis[d.i] = d.from;
+    this.client.dropPreview();
+    this.endPreview();
+    return true;
+  }
+
+  private local(p: { x: number; y: number }): [number, number] {
+    const [lng, lat] = packToLngLat(p.x, p.y);
+    return toLocal(lng, lat);
+  }
+
+  private onDown(i: number, e: PointerEvent) {
+    if (this.loading || this.target() !== this.edge) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.drag = { i, moved: false, from: { ...this.shape.pis[i] } };
+    this.map.dragPan.disable();
+    setGrabbing(true);
+  }
+
+  private onMove(e: PointerEvent) {
+    if (!this.drag || this.edge < 0) return;
+    const r = this.map.getContainer().getBoundingClientRect();
+    const ll = this.map.unproject([e.clientX - r.left, e.clientY - r.top]);
+    const p = lngLatToPack(ll.lng, ll.lat);
+    const pis = this.shape.pis;
+    pis[this.drag.i] = { ...pis[this.drag.i], x: p.x, y: p.y };
+    this.drag.moved = true;
+    const edge = this.edge;
+    this.client.previewEdge(edge, pis.map(toInput), (a) => {
+      if (!this.drag || this.edge !== edge) return;
+      this.preview = a;
+      const d = world.peek()?.edges.find((x) => x.id === edge);
+      this.overlay.renderer.setPreview(a.pts.length >= 6 ? strokesFromPreview(a.pts, !a.ok, undefined, false, a.marks, a.lanes ?? (d?.tracks === 1 ? 0 : 255), !!d?.hsr, !!d?.kind) : null);
+      this.overlay.invalidate();
+      this.place();
+    });
+    this.place();
+  }
+
+  private async onUp() {
+    const d = this.drag;
+    if (!d) return;
+    this.drag = null;
+    const edge = this.edge;
+    if (d.moved && edge >= 0) await edit({ op: "edgePis", edge, pis: this.shape.pis.map(toInput), design: designSpeed.peek() });
+    this.endPreview();
+  }
+
+  private endPreview() {
+    this.map.dragPan.enable();
+    endDrag(this.overlay);
+    this.preview = null;
+    this.version = -1; // reload the PIs as the worker has them (refused or not)
+    void this.refresh();
+  }
+
+  private mark(i: number): HTMLDivElement {
+    let m = this.marks[i];
+    if (!m) {
+      m = this.marks[i] = document.createElement("div");
+      this.box.appendChild(m);
+      m.addEventListener("pointerdown", (e) => this.onDown(this.marks.indexOf(m!), e));
+    }
+    m.className = "pi-mark drag";
+    m.style.display = "";
+    return m;
+  }
+
+  /** Squares and curve labels to the camera. */
+  place() {
+    // hidden while a node of the stretch is being dragged (map/nodeDrag.ts): they would be stale
+    const on = !this.loading && this.edge >= 0 && this.target() === this.edge && !live.nodeDrag?.dragging;
+    const pis = on ? this.shape.pis : [];
+    for (let i = 0; i < pis.length; i++) {
+      const [x, y] = this.overlay.toScreen(...this.local(pis[i]));
+      const m = this.mark(i);
+      // the game's own tag (ui/tip.ts, T-210), set only when it changes as this runs every frame
+      const tip = t("edgeEdit.dragCorner", { num: i + 1 });
+      if (m.dataset.tip !== tip) m.dataset.tip = tip;
+      placeAt(m, x, y);
+    }
+    for (let i = pis.length; i < this.marks.length; i++) this.marks[i].style.display = "none";
+    // curve labels: from the preview while dragging (local units), else the stretch's own (a
+    // T-079 stretch shows none until it is reshaped: its curves are not the ones listed)
+    const pv = this.drag ? this.preview : null;
+    const labels: CurveLabel[] = !on
+      ? []
+      : pv
+        ? curveLabels(pv.verts)
+        : this.shape.legacy
+          ? []
+          : this.shape.pis
+              .filter((c) => curveLabelled(c.used, c.kmh))
+              .map((c) => {
+                const [x, y] = this.local({ x: c.mx, y: c.my });
+                return { x, y, kmh: c.kmh };
+              });
+    this.labels.place(labels, (x, y) => this.overlay.toScreen(x, y), this.overlay.cssW, this.overlay.cssH);
+    if (pv && !pv.ok && this.drag) {
+      const [x, y] = this.overlay.toScreen(...this.local(pis[this.drag.i]));
+      this.tag.className = "tool-tag bad";
+      this.tag.textContent = describeIssues(pv.issues) || t("edgeEdit.cannotMove");
+      this.tag.style.display = "";
+      placeAt(this.tag, x, y, 14, -30);
+    } else this.tag.style.display = "none";
+  }
+}

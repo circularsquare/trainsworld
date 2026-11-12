@@ -1,0 +1,51 @@
+// The zones this game has started in, a station has reached (T-729) or built track crosses (T-1047),
+// kept in the save's header (`opened`) by the clock worker. Nothing reads it for loading (T-801):
+// every zone loads for the view on pan.
+
+import { signal } from "@preact/signals";
+import type { CityId } from "./cities";
+
+/** The game's list, in order; null until the clock worker has sent the list of the game in hand. */
+export const openedZones = signal<ReadonlySet<CityId> | null>(null);
+
+let sink: ((zones: CityId[]) => void) | null = null;
+/** Where an added zone is sent (the clock worker, for the save). */
+export function setOpenedSink(f: (zones: CityId[]) => void) {
+  sink = f;
+}
+
+/** Add zones to the list; the whole list goes to the clock worker when it grew. */
+export function addOpened(ids: Iterable<CityId>) {
+  const o = openedZones.peek();
+  if (o === null) return;
+  let next: Set<CityId> | null = null;
+  for (const id of ids) if (!o.has(id)) (next ??= new Set(o)).add(id);
+  if (!next) return;
+  openedZones.value = next;
+  sink?.([...next]);
+}
+
+let fineSink: ((zones: CityId[], built: CityId[][]) => void) | null = null;
+let lastFine = "";
+/** T-1223: where demand's fine set goes (the clock worker, for the save's `demandFine`), with the
+ * last two builds' zones (T-2153, `demandBuilt`). */
+export function setDemandFineSink(f: (zones: CityId[], built: CityId[][]) => void) {
+  fineSink = f;
+}
+/** T-1223: demand's fine set and last two builds, sent when they changed. */
+export function reportDemandFine(zones: CityId[], built: CityId[][]) {
+  const key = `${zones.join(",")}|${built.map((b) => b.join(",")).join(";")}`;
+  if (key === lastFine) return;
+  lastFine = key;
+  fineSink?.(zones, built);
+}
+
+/** The list of the game just loaded or started; null for a save from before T-729, which starts with
+ * the zone in view (`viewed`) and the zones its stations reach. */
+export function setGameOpened(zones: CityId[] | null, viewed: CityId | null) {
+  openedZones.value = new Set(zones ?? []);
+  lastFine = "";
+  if (zones) return;
+  if (viewed) addOpened([viewed]);
+  else sink?.([]);
+}

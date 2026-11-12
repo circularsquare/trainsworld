@@ -1,0 +1,305 @@
+// Public holidays (T-862, docs/world.md "Calendar"): each country's national public holidays from
+// holidays.json (pipeline/holidays_json.py), fetched after startup as its own chunk. A game year
+// takes the holidays of the real non-leap year whose January 1 falls on the same weekday, so a
+// holiday tied to a weekday keeps it. A holiday is a whole day of its country's local time.
+//
+// The top bar's sky marks them for the countries the player has built in. A holiday runs as a
+// weekend day for the lines in its country (T-872), and a country's own weekend decides its other
+// days (T-262): the clock worker sends the track model each line's days that differ from the day
+// number's and settles money by them; here, the view's Today and the line inspector.
+
+import { batch, computed, effect, signal } from "@preact/signals";
+import { clock } from "./clock";
+import { cityById, cityWithin, outlinesIn } from "./cities";
+import { awayNear, awaySoon, dateRange, rushRun, rushSoon, whenAway, whenBack, whenOut } from "./days";
+import { holidayName, kindOfIn, superPart, superRuns, type HolidayData, type SuperRun } from "./holidayCalendar";
+import { shiftAt, viewShift } from "./localTime";
+import { world } from "./world";
+import { t, type MessageKey } from "../i18n";
+import { countryName as countryNameIn } from "../i18n/intl";
+
+export const data = signal<HolidayData | null>(null);
+let asked = false, watching = false;
+/** Fetch the calendar once (about 240 kB, its own chunk). */
+export function loadHolidays() {
+  if (asked) return;
+  if (!watching) { watching = true; watchAway(); }
+  asked = true;
+  void import("./holidays.json").then((m) => { data.value = m.default as unknown as HolidayData; }, () => { asked = false; });
+}
+
+/** The holiday's name in `country` on its local game day `day`, or null. */
+export function holidayOn(country: string, day: number): string | null {
+  return holidayName(data.value, country, day);
+}
+
+/** The country at (lng, lat): its zone's, or null outside every zone. */
+export function countryAt(lng: number, lat: number): string | null {
+  const z = cityWithin(lng, lat);
+  return z ? cityById(z).country ?? null : null;
+}
+
+/** The kind of local game day `day` in `country` (T-872). Reads the calendar signal. */
+export const kindIn = (country: string | null, day: number) => kindOfIn(data.value, country)(day);
+
+/** A line's country (T-872): its first stop's, as its local time is. */
+export function lineCountry(stops: readonly string[]): string | null {
+  const st = world.value?.save.stations;
+  if (!stops.length || !st) return null;
+  // T-2404: asked per line on every state (the Lines tab), ~200 ms on all of Japan done by search
+  let byId = stationsById.get(st);
+  if (!byId) stationsById.set(st, (byId = new Map(st.map((x) => [x.id, x]))));
+  const s = byId.get(stops[0]);
+  if (!s) return null;
+  const outlines = outlinesIn.value;
+  let c = stationCountry.get(s);
+  if (!c || c.outlines !== outlines) stationCountry.set(s, (c = { outlines, country: countryAt(s.lng, s.lat) }));
+  return c.country;
+}
+/** the world's stations by id, and each station's country while the zone outlines stay (a moved
+ * station is a new object) */
+const stationsById = new WeakMap<readonly object[], Map<string, { lng: number; lat: number }>>();
+const stationCountry = new WeakMap<object, { outlines: unknown; country: string | null }>();
+
+const regionNames = typeof Intl !== "undefined" && "DisplayNames" in Intl ? new Intl.DisplayNames(["en"], { type: "region" }) : null;
+export const countryName = (cc: string): string => regionNames ? countryNameIn("en", cc) : cc;
+
+/** per station node: its zone's country and local time, kept while the node stays put */
+const placeOf = new Map<number, { lng: number; lat: number; outlines: number; country: string | null; shift: number }>();
+
+/** The countries the player has built track or stations in (blueprint left out, T-1098), each with
+ * the local times (seconds ahead of the game clock) its built nodes keep: "country shift" keys. */
+export const railCountries = computed<string[]>(() => {
+  const w = world.value;
+  if (!w) return [];
+  const out = new Set<string>();
+  const outlines = outlinesIn.value;
+  for (const n of w.nodes.values()) {
+    if (n.builtPorts <= 0) continue;
+    let p = placeOf.get(n.id);
+    if (!p || p.lng !== n.lng || p.lat !== n.lat || p.outlines !== outlines) {
+      const z = cityWithin(n.lng, n.lat);
+      p = { lng: n.lng, lat: n.lat, outlines, country: z ? cityById(z).country ?? null : null, shift: shiftAt(n.lng, n.lat) };
+      placeOf.set(n.id, p);
+    }
+    if (p.country) out.add(`${p.country} ${p.shift}`);
+  }
+  return [...out].sort();
+});
+
+export interface HolidaySpan {
+  country: string;
+  name: string;
+  /** the country's own local game day */
+  day: number;
+  /** the holiday's day in the local time in view, seconds: [t0, t1) */
+  t0: number;
+  t1: number;
+}
+
+let lastKey = "", last: HolidaySpan[] = [];
+/** Holidays in rail countries that meet the local day in view or the next one, in the local time in
+ * view. Changes at most once a game minute and keeps its identity while the list is the same. */
+export const holidaysNear = computed<HolidaySpan[]>(() => {
+  const now = clock.local.value * 60, vs = viewShift.value;
+  if (!data.value) return last;
+  const out: HolidaySpan[] = [];
+  const seen = new Set<string>();
+  for (const k of railCountries.value) {
+    const [country, s] = k.split(" "), shift = Number(s);
+    const here = now - vs + shift, d0 = Math.floor(here / 86400);
+    for (let d = d0 - 1; d <= d0 + 2; d++) {
+      const names = holidayOn(country, d);
+      if (!names) continue;
+      const t0 = d * 86400 - shift + vs, t1 = t0 + 86400;
+      if (t1 <= now - 6 * 3600 || t0 >= now + 30 * 3600) continue;
+      // two holidays on one day come as "Holy Saturday; Labor Day"
+      for (const name of names.split("; ")) {
+        const id = `${country} ${t0} ${name}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push({ country, name, day: d, t0, t1 });
+      }
+    }
+  }
+  out.sort((a, b) => a.t0 - b.t0 || a.country.localeCompare(b.country));
+  const key = out.map((h) => `${h.country}${h.t0}${h.name}`).join();
+  if (key !== lastKey) { lastKey = key; last = out; }
+  return last;
+});
+
+/** A superholiday run where the player has built (T-264), in its country's local game days
+ * (`SuperRun`), and its country's local time ahead of the game clock, seconds. */
+export interface NearRun extends SuperRun { country: string; shift: number }
+
+/** How far ahead the calendar icon looks, days (T-264). */
+export const SUPER_AHEAD = 21;
+
+let lastRunsKey = "", lastRuns: NearRun[] = [];
+/** Superholiday runs in rail countries under way or going out within `SUPER_AHEAD` local days, in
+ * order of their going-out day. Changes at most once a game day, keeping its identity otherwise. */
+export const supersNear = computed<NearRun[]>(() => {
+  const now = clock.local.value * 60 - viewShift.value;
+  if (!data.value) return lastRuns;
+  const out: NearRun[] = [];
+  const seen = new Set<string>();
+  for (const k of railCountries.value) {
+    const [country, s] = k.split(" "), shift = Number(s);
+    const d0 = Math.floor((now + shift) / 86400);
+    for (const r of superRuns(data.value, country, d0, d0 + SUPER_AHEAD + 1)) {
+      const id = `${country} ${r.out}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ ...r, country, shift });
+    }
+  }
+  out.sort((a, b) => a.out - b.out || a.country.localeCompare(b.country));
+  const key = out.map((r) => `${r.country}${r.out}`).join();
+  if (key !== lastRunsKey) { lastRunsKey = key; lastRuns = out; }
+  return lastRuns;
+});
+
+/** The local game day now in each of `supersNear`'s runs' countries, joined: changes when a day turns
+ * anywhere, so the calendar icon (ui/TopBar.tsx) re-renders daily without the clock's minutes. */
+export const superDays = computed(() => {
+  const now = clock.local.value * 60 - viewShift.value;
+  return supersNear.value.map((r) => Math.floor((now + r.shift) / 86400)).join();
+});
+
+/** The local game day now in a run's country. */
+export const runToday = (r: NearRun) => Math.floor((clock.local.peek() * 60 - viewShift.peek() + r.shift) / 86400);
+
+// T-264, T-1373: which superholiday's away days, and which one's going-out and coming-back days, the
+// Day choice offers (within SUPER_AHEAD days), and whether the boarding account needs their riders
+// (within 8 days, the window the clock worker sends the lines' days for). Started by
+// `loadHolidays`: game/clock.ts imports this module.
+const watchAway = () => effect(() => {
+  const runs = supersNear.value;
+  const now = clock.local.value * 60 - viewShift.value;
+  let near: string | null = null, soon = false, rush: string | null = null, rushing = false;
+  let nearWhen: string | null = null, outWhen: string | null = null, backWhen: string | null = null;
+  for (const r of runs) {
+    const today = Math.floor((now + r.shift) / 86400);
+    if (r.end <= today) continue;
+    // the next of its rush days still to come or under way
+    const next = r.out < r.away && today < r.away ? Math.max(today, r.out) : r.back < r.end ? Math.max(today, r.back) : null;
+    if (next !== null) {
+      if (rush === null) {
+        rush = r.name;
+        outWhen = r.out < r.away ? t("holidays.nameDates", { name: r.name, dates: dateRange(r.out, r.away) }) : null;
+        backWhen = r.back < r.end ? t("holidays.nameDates", { name: r.name, dates: dateRange(r.back, r.end) }) : null;
+      }
+      if (next <= today + 8) rushing = true;
+    }
+    if (r.back <= today || r.away >= r.back) continue;
+    if (near === null) { near = r.name; nearWhen = t("holidays.nameDates", { name: r.name, dates: dateRange(r.away, r.back) }); }
+    if (r.away <= today + 8) soon = true;
+  }
+  batch(() => {
+    if (whenAway.peek() !== nearWhen) whenAway.value = nearWhen;
+    if (whenOut.peek() !== outWhen) whenOut.value = outWhen;
+    if (whenBack.peek() !== backWhen) whenBack.value = backWhen;
+    if (awayNear.peek() !== near) awayNear.value = near;
+    if (awaySoon.peek() !== soon) awaySoon.value = soon;
+    if (rushRun.peek() !== rush) rushRun.value = rush;
+    if (rushSoon.peek() !== rushing) rushSoon.value = rushing;
+  });
+});
+
+export interface RushSpan {
+  country: string;
+  name: string;
+  /** 1 going out, 2 away, 3 coming back */
+  part: 1 | 2 | 3;
+  /** the dates of that part, "May 3-5" */
+  dates: string;
+  /** the country's local game day */
+  day: number;
+  /** the day in the local time in view, seconds: [t0, t1) */
+  t0: number;
+  t1: number;
+}
+
+let lastRushKey = "", lastRush: RushSpan[] = [];
+/** The days of superholiday runs that meet the local day in view or the next one, as
+ * `holidaysNear` (the sky's marks and hover). */
+export const rushNear = computed<RushSpan[]>(() => {
+  const now = clock.local.value * 60, vs = viewShift.value;
+  const out: RushSpan[] = [];
+  for (const r of supersNear.value) {
+    const here = now - vs + r.shift, d0 = Math.floor(here / 86400);
+    for (let d = Math.max(r.out, d0 - 1); d < Math.min(r.end, d0 + 3); d++) {
+      const t0 = d * 86400 - r.shift + vs, t1 = t0 + 86400;
+      if (t1 <= now - 6 * 3600 || t0 >= now + 30 * 3600) continue;
+      const part = d < r.away ? 1 : d < r.back ? 2 : 3;
+      out.push({ country: r.country, name: r.name, part, dates: part === 1 ? dateRange(r.out, r.away) : part === 2 ? dateRange(r.away, r.back) : dateRange(r.back, r.end), day: d, t0, t1 });
+    }
+  }
+  out.sort((a, b) => a.t0 - b.t0 || a.country.localeCompare(b.country));
+  const key = out.map((h) => `${h.country}${h.t0}${h.part}`).join();
+  if (key !== lastRushKey) { lastRushKey = key; lastRush = out; }
+  return lastRush;
+});
+
+/** What the calendar held at game-clock second `t` where the player has built (in `only`'s country
+ * alone when given), for the Money history's ticks (T-264): a line per holiday or superholiday day,
+ * "Thanksgiving Day, United States", "Golden Week, Apr 29-30, China"; `off` when one was a
+ * holiday or a day away, else only going out or coming back. */
+export function calendarAt(t: number, only: string | null): { lines: string[]; off: boolean } {
+  const lines: string[] = [];
+  let off = false;
+  const seen = new Set<string>();
+  for (const k of railCountries.value) {
+    const [country, s] = k.split(" ");
+    if (only && country !== only) continue;
+    const day = Math.floor((t + Number(s)) / 86400);
+    const add = (line: string) => { if (!seen.has(line)) { seen.add(line); lines.push(line); } };
+    const names = holidayOn(country, day);
+    for (const n of names?.split("; ") ?? []) add(`${n}, ${countryName(country)}`);
+    const [part, run] = superPart(data.value, country, day);
+    if (names || part === 2) off = true;
+    if (part === 1) add(`${run!.name}, ${dateRange(run!.out, run!.away)}, ${countryName(country)}`);
+    else if (part === 3) add(`${run!.name}, ${dateRange(run!.back, run!.end)}, ${countryName(country)}`);
+    else if (part === 2 && !names) add(`${run!.name}, ${dateRange(run!.away, run!.back)}, ${countryName(country)}`);
+  }
+  return { lines, off };
+}
+
+/** Names the calendar gives one holiday in different countries (T-1098), and the name it is shown by
+ * when several countries keep it on one date. */
+const SAME: [RegExp, MessageKey][] = [
+  [/^((international|national) )?(labou?r|workers'|worker's)( day)?$|^may day$|^labou?r day and international workers' solidarity day$|^international workers' solidarity day$|^holiday of spring and labou?r$|^festa dei lavoratori$/i, "holidays.laborDay"],
+  [/^(catholic )?christmas( day)?( \(by new style\))?$|^natale$/i, "holidays.christmasDay"],
+  [/^boxing day$|^saint stephen's day$|^santo stefano$|^second day of christmas$|^christmas second day$|^day (after|following) christmas$/i, "holidays.boxingDay"],
+  [/^new year's day$|^international new year day$|^capodanno$/i, "holidays.newYearsDay"],
+];
+const sameAs = (name: string) => { const key = SAME.find(([re]) => re.test(name))?.[1]; return key ? t(key) : name; };
+
+export interface HolidayGroup {
+  name: string;
+  /** country codes, by their names */
+  countries: string[];
+  /** from the first country's start to the last one's end, in the local time in view */
+  t0: number;
+  t1: number;
+}
+
+/** One entry per holiday kept on the same date in several countries (T-1098): the same name, or
+ * names `SAME` counts as one, on the same local date in each country. A holiday known by one name
+ * keeps it; one merged under several is shown by `SAME`'s. In order of start. */
+export function groupHolidays(list: readonly HolidaySpan[]): HolidayGroup[] {
+  const by = new Map<string, { names: Set<string>; g: HolidayGroup }>();
+  for (const h of list) {
+    const kind = sameAs(h.name), key = `${h.day} ${kind.toLowerCase()}`;
+    const e = by.get(key);
+    if (!e) { by.set(key, { names: new Set([h.name]), g: { name: kind, countries: [h.country], t0: h.t0, t1: h.t1 } }); continue; }
+    e.names.add(h.name);
+    if (!e.g.countries.includes(h.country)) e.g.countries.push(h.country);
+    e.g.t0 = Math.min(e.g.t0, h.t0);
+    e.g.t1 = Math.max(e.g.t1, h.t1);
+  }
+  return [...by.values()].map(({ names, g }) => {
+    g.countries.sort((a, b) => countryName(a).localeCompare(countryName(b)));
+    return names.size === 1 ? { ...g, name: [...names][0] } : g;
+  }).sort((a, b) => a.t0 - b.t0 || a.name.localeCompare(b.name));
+}

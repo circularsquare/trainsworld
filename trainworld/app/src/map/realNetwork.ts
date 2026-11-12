@@ -1,0 +1,220 @@
+// The real-network reference layer (T-682 stage 1): where railways run in the real world, faint, under
+// the game's own network and above the basemap's roads. View only; on by default, faint (Settings >
+// Real network; `realOpacity` in game/shadeTable.ts), at 0.4 while the track tool snaps to it (T-727).
+// The base map slider leaves it alone (T-1291).
+//
+// The lines come from noritetsu's per-region vector tiles (`noritetsu/dist/data/<region>.pmtiles`, one
+// `track` layer: k kind, r rank 0 main or 1 other, p confirmed by a passenger route, n no line runs over
+// it, x such track of a named line the model left out (T-3043), c colour; nm and w only from zoom 10). The tiles carry no line type, so the classes are what they
+// do carry: metro (subway), main line (rail, rank 0), other rail a line runs over (rank 1, T-3043), and light rail (S-Bahn, Stadtbahn, DLR; the tiles carry no usage, so all of it, T-3285). Trams, monorails, funiculars, narrow gauge, heritage and track no line runs over are
+// left out, unless Settings says All (T-3289). A region's source is added when the view first touches it, from zoom 6 up.
+//
+// Where the files are: beside the game at `../noritetsu/` when that answers with noritetsu's
+// regions.json (8800 serves it; the dev server proxies the path, vite.config.ts), else Cloudflare R2,
+// the way noritetsu's own page decides; the published page tries R2 first (T-941).
+
+import * as maplibregl from "maplibre-gl";
+import { effect, signal } from "@preact/signals";
+import { Protocol } from "pmtiles";
+import { SHADES, type ShadeColours } from "../game/shadeTable";
+import { display, mapShade, snapping } from "../game/ui";
+import { firstSymbolId } from "./basemap";
+import { styleUp } from "./styleReady";
+import { noritetsuBases, ringBox } from "../game/rings";
+import { PUBLISHED } from "../game/dataBase";
+import { perfOff } from "../perfFlags";
+import { patientFetch } from "../workers/patientFetch";
+
+const OSM_ATTRIBUTION = '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a> (ODbL)';
+/** below this the view spans too many regions and the lines are too small to follow; at 4 a view of
+ * Europe drew 41 regions' tiles, most of each frame's cost on the zoomed-out map (T-2748) */
+const MIN_ZOOM = perfOff("realZoom") ? 4 : 6;
+/** the zoom the line widths' stops count from */
+const WIDTH_ZOOM = 4;
+/** regions added in one pass, nearest the middle of the view first */
+const PER_PASS = 16;
+const ID = "tw-real-";
+
+const kind = (k: string) => ["==", ["get", "k"], k];
+const METRO = kind("subway");
+const MAIN = ["all", kind("rail"), ["==", ["get", "r"], 0]];
+const PASSENGER = ["all", ["any", ["!=", ["get", "n"], 1], ["==", ["get", "x"], 1]], ["any", METRO, kind("rail"), kind("light_rail")]];
+/** "All" draws every feature the tiles carry: track no line runs over, trams, monorails, funiculars, narrow gauge, heritage (yards and freight-only track are not in the tiles) */
+const EVERYTHING = ["has", "k"];
+
+/** line width (px) by zoom; main and metro the same, other rail thinner */
+const width = (...stops: number[]) => ["interpolate", ["exponential", 1.4], ["zoom"], ...stops.flatMap((v, i) => [WIDTH_ZOOM + [0, 4, 7, 10, 13, 16][i], ["case", ["any", METRO, MAIN], v, v * 0.7]])];
+const WIDTH = width(0.6, 1, 1.5, 2.4, 4, 8);
+/** T-727: stronger while the track tool snaps to it */
+const OPACITY_SNAP = 0.4;
+
+const colour = (c: ShadeColours) => ["case", METRO, c.realMetro, MAIN, c.realMain, c.realOther];
+
+/** T-839: the real track a snapped route from the first click could reach, drawn over the layer in
+ * the same colours at full strength and a little wider, the rest of the layer dimmed. Chain i's
+ * lon, lat pairs are `xy[off[i] * 2]` to `xy[off[i + 1] * 2]`, its class `cls[i]` (0 main line,
+ * 1 other rail, 2 metro); set by map/realSnap.ts. */
+export const realReach = signal<{ xy: Float32Array; off: Uint32Array; cls: Uint8Array } | null>(null);
+const REACH = "tw-reach";
+const OPACITY_DIM = 0.25;
+const REACH_OPACITY = 0.9;
+const reachWidth = (...stops: number[]) => ["interpolate", ["exponential", 1.4], ["zoom"], ...stops.flatMap((v, i) => [WIDTH_ZOOM + [0, 4, 7, 10, 13, 16][i], ["case", ["==", ["get", "c"], 1], v * 0.7, v]])];
+const REACH_WIDTH = reachWidth(1, 1.5, 2.2, 3.4, 5.5, 10);
+const reachColour = (c: ShadeColours) => ["match", ["get", "c"], 2, c.realMetro, 0, c.realMain, c.realOther];
+
+function reachData(r: { xy: Float32Array; off: Uint32Array; cls: Uint8Array } | null) {
+  const lines: number[][][][] = [[], [], []];
+  if (r)
+    for (let i = 0; i + 1 < r.off.length; i++) {
+      const l: number[][] = [];
+      for (let k = r.off[i]; k < r.off[i + 1]; k++) l.push([r.xy[k * 2], r.xy[k * 2 + 1]]);
+      if (l.length > 1) lines[r.cls[i]].push(l);
+    }
+  return {
+    type: "FeatureCollection" as const,
+    features: lines.map((coordinates, c) => ({ type: "Feature" as const, properties: { c }, geometry: { type: "MultiLineString" as const, coordinates } })),
+  };
+}
+
+interface Region {
+  cc: string;
+  /** bounding boxes of the region's outline parts: west, south, east, north */
+  parts: [number, number, number, number][];
+}
+
+export function startRealNetwork(map: maplibregl.Map) {
+  try {
+    maplibregl.addProtocol("pmtiles", new Protocol().tile as unknown as Parameters<typeof maplibregl.addProtocol>[1]);
+  } catch {
+    // already added
+  }
+  const added = new Set<string>();
+  let regions: Region[] | null = null;
+  let base = "";
+  let index: Promise<void> | null = null;
+  let on = false;
+  let painted: "light" | "dark" | null = null;
+  let opacity = SHADES[mapShade.peek()].realOpacity;
+  let filter: unknown = PASSENGER;
+
+  /** regions.json (about 1.5 MB, outlines in it): which regions exist and where, and which base serves them */
+  const load = () =>
+    (index ??= (async () => {
+      for (const b of noritetsuBases(document.baseURI, PUBLISHED)) {
+        try {
+          const r = await patientFetch(b + "regions.json"); // T-3314: a held request gives up, and the next base is tried
+          const j = r.ok ? await r.json() : null;
+          if (!j?.regions) continue;
+          base = b;
+          regions = Object.entries(j.regions as Record<string, { parts: [number, number][][] }>).map(([cc, r]) => ({
+            cc,
+            parts: r.parts.map((ring) => ringBox(ring.flat())),
+          }));
+          return;
+        } catch {
+          // not there, or not JSON: try the next
+        }
+      }
+      console.warn("Real network: noritetsu's data is not reachable");
+    })());
+
+  /** every region's layer ever added: a style restored after a lost context has them still (T-957), `added` starts over */
+  const everAdded = new Set<string>();
+  const layerIds = () => [...everAdded].map((cc) => ID + cc).filter((id) => map.getLayer(id));
+
+  const setShade = () => {
+    const s = mapShade.peek();
+    if (s === painted || !styleUp(map)) return;
+    painted = s;
+    for (const id of layerIds()) map.setPaintProperty(id, "line-color", colour(SHADES[s]) as never);
+  };
+
+  const ensure = async () => {
+    if (!on || map.getZoom() < MIN_ZOOM) return;
+    await load();
+    if (!on || !regions) return;
+    if (!styleUp(map)) return; // style.load runs it again
+    const b = map.getBounds(), c = map.getCenter();
+    const dist = (r: Region) => Math.min(...r.parts.map((p) => Math.hypot(Math.max(0, p[0] - c.lng, c.lng - p[2]), Math.max(0, p[1] - c.lat, c.lat - p[3]))));
+    const hits = regions
+      .filter((r) => !added.has(r.cc) && r.parts.some((p) => p[0] <= b.getEast() && p[2] >= b.getWest() && p[1] <= b.getNorth() && p[3] >= b.getSouth()))
+      .sort((x, y) => dist(x) - dist(y))
+      .slice(0, PER_PASS);
+    if (!hits.length) return;
+    const before = map.getLayer(REACH) ? REACH : firstSymbolId(map);
+    const colours = colour(SHADES[mapShade.peek()]);
+    for (const { cc } of hits) {
+      added.add(cc);
+      everAdded.add(cc);
+      // MapLibre's restored style after a lost context already has them (T-953)
+      if (map.getLayer(ID + cc)) {
+        map.setLayoutProperty(ID + cc, "visibility", "visible");
+        map.setFilter(ID + cc, filter as never);
+        map.setPaintProperty(ID + cc, "line-opacity", opacity);
+        map.setPaintProperty(ID + cc, "line-color", colours as never);
+        continue;
+      }
+      if (!map.getSource(ID + cc)) map.addSource(ID + cc, { type: "vector", url: `pmtiles://${base}data/${cc}.pmtiles`, attribution: OSM_ATTRIBUTION });
+      map.addLayer(
+        {
+          id: ID + cc, type: "line", source: ID + cc, "source-layer": "track", minzoom: MIN_ZOOM,
+          filter: filter as never,
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: { "line-color": colours as never, "line-width": WIDTH as never, "line-opacity": opacity },
+        },
+        before,
+      );
+    }
+    painted = mapShade.peek();
+    if (hits.length === PER_PASS) map.once("idle", ensure);
+  };
+
+  const showReach = () => {
+    const r = snapping.peek() ? realReach.peek() : null;
+    if (!styleUp(map)) return; // style.load runs it again
+    const src = map.getSource(REACH) as maplibregl.GeoJSONSource | undefined;
+    if (!src) {
+      if (!r) return;
+      map.addSource(REACH, { type: "geojson", data: reachData(r), tolerance: 0.3 });
+      map.addLayer(
+        {
+          id: REACH, type: "line", source: REACH,
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: { "line-color": reachColour(SHADES[mapShade.peek()]) as never, "line-width": REACH_WIDTH as never, "line-opacity": REACH_OPACITY },
+        },
+        firstSymbolId(map),
+      );
+      return;
+    }
+    src.setData(reachData(r));
+    map.setPaintProperty(REACH, "line-color", reachColour(SHADES[mapShade.peek()]) as never);
+  };
+
+  const apply = () => {
+    if (on) setShade(), void ensure();
+    if (styleUp(map))
+      for (const id of layerIds()) {
+        map.setLayoutProperty(id, "visibility", on ? "visible" : "none");
+        map.setFilter(id, filter as never);
+        map.setPaintProperty(id, "line-opacity", opacity);
+      }
+    showReach();
+  };
+  effect(() => {
+    // snapping shows the layer even when Settings has it off: nothing unseen is snapped to
+    const snap = snapping.value;
+    const reach = snap && !!realReach.value;
+    const shown = display.value.realNetwork;
+    // snapping goes only to passenger track, so while it is on only that is drawn
+    filter = shown === "all" && !snap ? EVERYTHING : PASSENGER;
+    on = shown !== "none" || snap;
+    opacity = snap ? (reach ? OPACITY_DIM : OPACITY_SNAP) : SHADES[mapShade.value].realOpacity;
+    apply();
+  });
+  map.on("moveend", ensure);
+  map.on("style.load", () => {
+    added.clear();
+    painted = null;
+    apply();
+  });
+}

@@ -1,0 +1,196 @@
+// The Issues list (T-1433, docs/ui-panels.md "Trouble list"): one list of what is wrong on the
+// network, at the map's lower right. Collapsed it is a red alert icon with a count (T-2932); open, a short list, worst first, each row a click from the place.
+// It reads what the map and the line panel already have: the world's capacity tags and reversals
+// (redrawn with the world) and the past 24 hours' counts, asked once a game hour.
+
+import { h, render, type ComponentChildren } from "preact";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { accountVersion } from "../game/boarding";
+import { capacityKind } from "../game/capacityKinds";
+import { clock } from "../game/clock";
+import { lngLatToPack } from "../game/coords";
+import { hasUpgrade, UPGRADE } from "../game/upgrades";
+import { count, duration } from "../game/format";
+import { nearestStation, stationNameNear } from "../game/places";
+import { readToday, type LineToday } from "../game/today";
+import { DEMAND_INDEX, type LineInput, type Selection, type WorldView } from "../game/types";
+import { selection, tool } from "../game/ui";
+import { world } from "../game/world";
+import { nearestJunction, tramSpot } from "../map/capacityMarkers";
+import { toLngLat } from "../map/geo";
+import { reversalsOf } from "../map/reversalMarks";
+import { queryClock } from "../workers/clockClient";
+import { locateLine, locateStation } from "./locate";
+import { vehicleOf } from "./inspector/schedule";
+import { Chip, Icon } from "./widgets";
+import { t, tNumber } from "../i18n";
+
+const STORE = "anitabuilder-trouble-open";
+const DEMAND_WORD = ["high", "medium", "low"];   // i18n-ignore (codes for troubleList.waits)
+/** capacity kinds tied to one station (`CAPACITY_KINDS`): platform, terminus, turning, reversing, sidings, a terminus on one platform */
+const AT_STATION = new Set([2, 3, 6, 8, 9, 10, 14]);
+
+/** Whether a station (by id) has a terminal, for advice that differs where it does. */
+const hasTerminal = (w: WorldView, id: string) => hasUpgrade(w.save.stations.find((s) => s.id === id)?.upgrades, UPGRADE.terminal);
+/** a line is listed for crowding past these: riders left at the platform as a share of those who
+ * wanted its trains, or trains that left full as a share of those that ran, in the past 24 hours */
+const LEFT_SHARE = 0.03, LEFT_MIN = 10, FULL_SHARE = 0.25;
+/** capacity tags from the map's "near full" orange up (`capacityMarkers.ts`) */
+const NEAR_RHO = 0.9;
+
+type Item = {
+  key: string;
+  /** worst first: 0 broken line, 1 reversal, 2 spot over capacity, 3 riders left behind, 4 delay, 5 full trains, 6 line with no stations */
+  tier: number;
+  size: number;
+  lead: ComponentChildren;
+  label: string;
+  value: ComponentChildren;
+  tip: string;
+  go: () => void;
+};
+
+/** the vehicle of a line by id, a train when unknown */
+const lineVehicle = (w: WorldView, id?: string) => { const st = id ? w.lineStats[id] : undefined; return st ? vehicleOf(st) : "train"; };
+const selecting = () => tool.peek() === "select";
+const pick = (s: Selection) => { if (selecting()) selection.value = s; };
+const goLine = (l: LineInput) => () => { locateLine(l.stops); pick({ kind: "line", line: l.id }); };
+
+function itemsOf(w: WorldView, level: number, day: Map<string, LineToday>): Item[] {
+  const out: Item[] = [];
+  for (const l of w.save.lines) {
+    if (!l.stops.length) {
+      out.push({ key: "n" + l.id, tier: 6, size: 0, lead: <Chip line={l} size="sm" plain />, label: l.name,
+        value: <span class="trouble-fig"><Icon.alert /></span>, tip: t("troubleList.noStations"), go: goLine(l) });
+      continue;
+    }
+    const st = w.lineStats[l.id];
+    if (!st) continue;
+    if (st.status === "broken") {
+      out.push({ key: "b" + l.id, tier: 0, size: 0, lead: <Chip line={l} size="sm" plain />, label: l.name,
+        value: <span class="crowd-bad"><Icon.alert /></span>, tip: t("troubleList.broken") + "\n" + t("troubleList.fixBroken"), go: goLine(l) });
+      continue;
+    }
+    const d = st.status === "running" ? day.get(l.id) : undefined;
+    const vehicle = vehicleOf(st);
+    if (!d) continue;
+    const wanted = d.riders + d.leftBehind;
+    if (d.leftBehind >= LEFT_MIN && d.leftBehind >= LEFT_SHARE * wanted) {
+      out.push({ key: "l" + l.id, tier: 3, size: d.leftBehind, lead: <Chip line={l} size="sm" plain />, label: t("troubleList.crowding", { name: l.name }),
+        value: <span class="trouble-fig bad"><Icon.person />{count(d.leftBehind)}</span>,
+        tip: t("troubleList.leftBehind", { left: count(d.leftBehind), wanted: count(wanted), full: count(d.fullTrains), trains: count(d.trains), vehicle }) + "\n" + t("troubleList.fixCrowded", { vehicle }),
+        go: goLine(l) });
+    } else if (d.trains > 0 && d.fullTrains >= FULL_SHARE * d.trains) {
+      out.push({ key: "f" + l.id, tier: 5, size: d.fullTrains / d.trains, lead: <Chip line={l} size="sm" plain />, label: t("troubleList.crowding", { name: l.name }),
+        value: <span class="trouble-fig"><Icon.train />{count(d.fullTrains)}/{count(d.trains)}</span>,
+        tip: t("troubleList.full", { full: count(d.fullTrains), trains: count(d.trains), vehicle }) + "\n" + t("troubleList.fixCrowded", { vehicle }), go: goLine(l) });
+    }
+  }
+  const lines = new Map(w.save.lines.map((l) => [l.id, l]));
+  for (const r of reversalsOf(w)) {
+    const ls = r.lines.map((x) => lines.get(x.id)).filter((x): x is LineInput => !!x);
+    out.push({ key: "r" + r.station, tier: 1, size: ls.length, lead: <i class="trouble-rev"><Icon.uturn /></i>, label: r.name,
+      value: <span class="trouble-chips">{ls.slice(0, 3).map((l) => <Chip line={l} size="sm" plain />)}</span>,
+      tip: [...r.lines.map((x) => t("troubleList.reverses", { name: x.name })), capacityKind(3, lineVehicle(w, r.lines[0]?.id), hasTerminal(w, r.station)).fix].join("\n"),
+      go: () => { locateStation(r.lng, r.lat); if (r.lines[0]) pick({ kind: "line", line: r.lines[0].id }); } });
+  }
+  // the orange and red tags only (90% and up) that are over capacity or make trains wait; a kind's tags by one station are one row, the worst
+  const spots = new Map<string, Item>();
+  for (const m of [...(w.capacity[level] ?? [])].sort((a, b) => b.delayS - a.delayS || b.rho - a.rho)) {
+    const d = Math.round(m.delayS), over = m.rho > 1 || m.held;
+    // a line alone has no wait until it is over capacity: a row with no wait is no problem (T-2945)
+    if (!over && (m.rho < NEAR_RHO || d < 2)) continue;
+    const vehicle = tramSpot(w, m.x, m.y) ? "tram" : "train";
+    // the tags are in the draw anchor's local units, the stations in the pack's
+    const [lng, lat] = toLngLat(m.x, m.y), p = lngLatToPack(lng, lat);
+    const near = nearestStation(p.x, p.y);
+    const k = capacityKind(m.kind, vehicle, AT_STATION.has(m.kind) && !!near && hasTerminal(w, near.id));
+    const place = AT_STATION.has(m.kind) ? near?.name ?? "" : stationNameNear(p.x, p.y);
+    const key = `c${m.kind},${place || m.x + "," + m.y}`;
+    if (spots.has(key)) continue;
+    const cls = over ? "over" : "near";
+    const tip = [t("troubleList.capacity", { name: k.name, pct: tNumber(Math.round(m.rho * 100)) })];
+    if (m.held) tip.push(t("troubleList.held", { vehicle }));
+    if (d >= 2) tip.push(t("troubleList.waits", { time: duration(d), level: DEMAND_WORD[level] ?? "other", vehicle }));
+    tip.push(k.fix); // T-2933: the last line of a hover is what to try
+    spots.set(key, { key, tier: over ? 2 : 4, size: d + m.rho, lead: <i class={"trouble-mark " + cls}><Icon.alert /></i>,
+      label: place ? t("troubleList.spot", { name: k.name, prep: k.prep, place }) : k.name,
+      value: <span class={"trouble-tag " + cls}>{d >= 2 ? `+${Math.floor(d / 60)}:${String(d % 60).padStart(2, "0")}` : `${Math.round(m.rho * 100)}%`}</span>,
+      tip: tip.join("\n"),
+      go: () => {
+        locateStation(lng, lat);
+        const j = m.kind === 4 ? nearestJunction(w, m.x, m.y) : null;
+        if (j !== null) pick({ kind: "junction", node: j });
+        else if (AT_STATION.has(m.kind) && near) pick({ kind: "station", station: near.id });
+      } });
+  }
+  out.push(...spots.values());
+  return out.sort((a, b) => a.tier - b.tier || b.size - a.size);
+}
+
+function readOpen(): boolean {
+  try { return localStorage.getItem(STORE) === "1"; } catch { return false; }
+}
+
+function TroubleList() {
+  const w = world.value;
+  if (!w || !clock) return null;
+  return <Trouble w={w} />;
+}
+
+function Trouble({ w }: { w: WorldView }) {
+  const hour = clock.hour.value, level = DEMAND_INDEX[clock.demand.value], acct = accountVersion.value;
+  const [day, setDay] = useState<Map<string, LineToday>>(new Map());
+  const [open, setOpen] = useState(readOpen);
+  // the past 24 hours once a game hour and when the riders are worked out again, not the panels'
+  // four times a second
+  useEffect(() => {
+    let live = true;
+    void queryClock({ what: "today" }).then((d) => { if (live && d) setDay(readToday(d)); });
+    return () => { live = false; };
+  }, [hour, acct]);
+  const items = useMemo(() => itemsOf(w, level, day), [w, level, day]);
+  // the map's attribution sits left of the button, whatever its width (a count of 10+ is wider)
+  const btn = useRef<HTMLButtonElement>(null);
+  const shown = items.length > 0;
+  useEffect(() => {
+    const el = btn.current;
+    if (!el || !shown) return;
+    const set = () => document.documentElement.style.setProperty("--trouble-px", el.getBoundingClientRect().width + "px");
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [shown, items.length]);
+  if (!items.length) return null;
+  const toggle = () => {
+    setOpen(!open);
+    try { localStorage.setItem(STORE, open ? "0" : "1"); } catch { /* remembered for this visit only */ }
+  };
+  return (
+    <div class={"trouble" + (open ? " open" : "")}>
+      {open && (
+        <ul class="rows pick trouble-list">
+          {items.map((it) => (
+            <li key={it.key} data-tip={it.tip} onClick={it.go}>
+              {it.lead}
+              <span class="grow">{it.label}</span>
+              <span class="val">{it.value}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button ref={btn} class={"btn trouble-btn" + (open ? " on" : "")} aria-expanded={open} aria-label={t("troubleList.label")}
+        data-tip={open ? t("troubleList.hide") : t("troubleList.show")} onClick={toggle}>
+        <Icon.alert />{count(items.length)}
+      </button>
+    </div>
+  );
+}
+
+/** Mount the trouble list in the map's container. */
+export function startTroubleList(container: HTMLElement) {
+  const root = document.createElement("div");
+  container.appendChild(root);
+  render(h(TroubleList, null), root);
+}

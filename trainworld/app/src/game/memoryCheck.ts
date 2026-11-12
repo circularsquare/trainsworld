@@ -1,0 +1,74 @@
+// T-1197: before a game loads, the memory it will take against what the device can spare. Demand's
+// solving workers each hold every zone the game reaches, so the estimate is per worker from the zones'
+// local trips, a stand-in for their packs' size known before anything downloads. A game is refused
+// when a worker would pass what one browser worker can hold, or, on a device that reports less than
+// 8 GB, when the whole game would take most of it. Thresholds: DECISIONS.md 2026-10-24 (T-1197).
+// T-1223: zones not looked at are held coarse (workers/demandLod.ts), so a game is judged at the least
+// it can take: its biggest zone fine and the rest coarse.
+
+import { t } from "../i18n";
+import { cityById, isCity } from "./cities";
+import { decodeSave, readStored, type SaveHeader } from "../workers/saveFile";
+import { poolSize } from "../workers/demandClient";
+import { deviceGB } from "../workers/deviceMemory";
+import { COARSE_SHARE, GB_PER_MTRIPS } from "../workers/demandLod";
+
+
+/** GB a solving worker takes outside its WebAssembly memory: its JS heap (0.1) and the allocator and
+ * peak slack that come with each extra worker. Fitted to the peaks of T-3071's runs (notes/T-3071.md) */
+const WORKER_BASE_GB = 0.2;
+/** GB of a solving worker's WebAssembly memory that no zone adds (the market and the network's set-up),
+ * then `GB_PER_MTRIPS` per million local trips a day held fine: 0.38 on New York, 1.29 on all of China */
+const WASM_BASE_GB = 0.29;
+/** GB the page takes besides the solving workers (map, network, the clock worker, the aux worker),
+ * and per zone (T-3071: New York's real save peaks 2.4 GB at one worker, all of China 4.5) */
+const PAGE_GB = 1.8, PAGE_GB_PER_ZONE = 0.005;
+/** a browser worker's memory cannot pass 4 GB; past this a solve stops partway */
+const WORKER_CAP_GB = 3.5;
+/** of a device reporting under 8 GB (`navigator.deviceMemory`, which never reports more than 8), the
+ * share a game may take */
+const DEVICE_SHARE = 0.75;
+
+/** `wasmGB`: a solving worker's WebAssembly memory; `workerGB` with its JS heap */
+export interface MemoryNeed { zones: number; wasmGB: number; workerGB: number; workers: number; totalGB: number }
+
+/** The memory a game reaching `zones` will take, its biggest zone fine and the others coarse. */
+export function memoryNeed(zones: readonly string[]): MemoryNeed {
+  let trips = 0, most = 0;
+  for (const id of zones) if (isCity(id)) { const t = cityById(id).localTrips ?? 0; trips += t; most = Math.max(most, t); }
+  const wasmGB = WASM_BASE_GB + GB_PER_MTRIPS * (most + COARSE_SHARE * (trips - most)) / 1e6;
+  const workerGB = WORKER_BASE_GB + wasmGB;
+  const workers = poolSize();
+  return { zones: zones.length, wasmGB, workerGB, workers, totalGB: PAGE_GB + PAGE_GB_PER_ZONE * zones.length + workers * workerGB };
+}
+
+const gb = (n: number) => (n < 10 ? n.toFixed(1) : n.toFixed(0));
+/** `soft`: a warning the player may load past. The browser rounds a device's memory down and stops at 8,
+ * so the device check is a guess; the worker cap is not (T-3061). */
+export interface Refusal { text: string; soft: boolean }
+/** Why a game reaching `zones` will not fit here; null if it will. The device's guess is judged only when
+ * `soft` (a caller that can offer to load anyway). */
+export function memoryRefusal(zones: readonly string[], soft = false): Refusal | null {
+  const need = memoryNeed(zones);
+  if (need.wasmGB > WORKER_CAP_GB) return { text: t("memoryCheck.zones", { zones: need.zones, gb: gb(need.wasmGB) }), soft: false };
+  const device = deviceGB();
+  if (soft && device !== undefined && device < 8 && need.totalGB > DEVICE_SHARE * device) return { text: t("memoryCheck.device", { need: gb(need.totalGB) }), soft: true };
+  return null;
+}
+
+/** The zones a saved game reaches: those its save lists as opened, else (a save from before T-729) the
+ * cities its slot's stations are in. */
+export function zonesOf(header: SaveHeader | null, cities?: string[]): string[] {
+  return header?.opened ?? cities ?? [];
+}
+
+/** T-1197: why the save in `bytes` (a file) or slot `key` will not fit here; null if it will or cannot be read. */
+export async function saveRefusal(src: { bytes: Uint8Array } | { key: string }, soft = false): Promise<Refusal | null> {
+  try {
+    const stored = "key" in src ? await readStored(src.key) : null;
+    const bytes = "bytes" in src ? src.bytes : stored?.bytes;
+    if (!bytes) return null;
+    const { header } = await decodeSave(bytes);
+    return memoryRefusal(zonesOf(header, stored?.cities), soft);
+  } catch { return null; }
+}

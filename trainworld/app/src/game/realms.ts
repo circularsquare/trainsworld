@@ -1,0 +1,215 @@
+// T-975: realms, the country-sized groups of zones the map shows or leaves dark as one (docs/zones.md
+// "Realms"; players see only their names). The list is the hand-edited realms.json; a zone's realm is
+// its registry row's `realm` (pipeline/realms.py), else its country's when the country is one realm.
+//
+// A realm is shown when the game has a station or track in it (blueprint or built; T-1047), it holds
+// the start zone, or the player showed it this session (`showRealm`; not saved); a game started on the
+// map with nothing built shows them all (T-1133). Only what is drawn and loaded for viewing follows:
+// demand, the market and money never read this. Everything is shown before the first game's
+// stations are read (T-1539: from its save, ahead of its first state), and for good when the zones'
+// coarse outlines are missing (T-1006: the shade is cut from them); a zone with no realm is always shown.
+
+import { computed, effect, signal } from "@preact/signals";
+import type { MultiPolygon } from "geojson";
+import realmsJson from "./realms.json";
+import { CITIES, cityById, cityNear, cityWithin, outlinesIn, zoneBox, zonesTouching, type CityId } from "./cities";
+import { world } from "./world";
+import { trackZones } from "./trackZones";
+import { coarseOutlines, inOutline } from "../map/coarseOutlines";
+import { makeFrame, type FrameSpec } from "./frame";
+
+export interface Realm { id: string; name: string; countries?: string[]; units?: Record<string, string[] | "*"> }
+export const REALMS = (realmsJson as { realms: Realm[] }).realms;
+const byId = new Map(REALMS.map((r) => [r.id, r]));
+export const realmName = (id: string) => byId.get(id)?.name ?? id;
+const byCountry = new Map(REALMS.flatMap((r) => (r.countries ?? []).map((cc) => [cc, r.id] as const)));
+
+/** A zone's realm, or null for one in none (a split country's zone the join has not given one). */
+export function zoneRealm(id: CityId): string | null {
+  const c = cityById(id);
+  if (!c) return null;
+  if (c.realm && byId.has(c.realm)) return c.realm;
+  return byCountry.get(c.country ?? "") ?? null;
+}
+
+type Box = [number, number, number, number];
+export interface RealmSpot {
+  id: string;
+  /** where its button sits: the centre of the zone nearest the mean of its zones' centres */
+  label: [number, number];
+  zones: number;
+  box: Box;
+}
+
+/** Each realm with zones: its count, box and button point, from the registry. */
+export const REALM_SPOTS: ReadonlyMap<string, RealmSpot> = (() => {
+  const groups = new Map<string, CityId[]>();
+  for (const c of CITIES) {
+    const r = zoneRealm(c.id);
+    if (r) groups.set(r, [...(groups.get(r) ?? []), c.id]);
+  }
+  const out = new Map<string, RealmSpot>();
+  for (const [id, zones] of groups) {
+    const box: Box = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const z of zones) {
+      const b = zoneBox(cityById(z)!);
+      box[0] = Math.min(box[0], b[0]); box[1] = Math.min(box[1], b[1]);
+      box[2] = Math.max(box[2], b[2]); box[3] = Math.max(box[3], b[3]);
+    }
+    let mx = 0, my = 0;
+    for (const z of zones) { const [x, y] = cityById(z)!.center; mx += x / zones.length; my += y / zones.length; }
+    const k = Math.cos((my * Math.PI) / 180);
+    let label: [number, number] = [mx, my], bd = Infinity;
+    for (const z of zones) {
+      const [x, y] = cityById(z)!.center, d = ((x - mx) * k) ** 2 + (y - my) ** 2;
+      if (d < bd) { bd = d; label = [x, y]; }
+    }
+    out.set(id, { id, label, zones: zones.length, box });
+  }
+  return out;
+})();
+
+/** Every zone's coarse outline (`packs/outlines.json`), the shade's edges; null while it loads. */
+export const zoneOutlines = signal<ReadonlyMap<string, MultiPolygon> | null>(null);
+/** No outlines to cut the shade from, or the checks' every-zone pages: every zone is shown. */
+export const realmsOff = signal(false);
+
+export async function loadRealms() {
+  // the checks' pages (`opened=all`: city-browser, every-pack-opens) visit zones in every realm,
+  // including new rows the join has not given a realm yet
+  if (new URLSearchParams(location.search).get("opened") === "all" || !REALM_SPOTS.size) { realmsOff.value = true; return; }
+  const zones = await coarseOutlines();
+  if (zones.size) zoneOutlines.value = zones;
+  else realmsOff.value = true;
+}
+
+/** The realm a station at (lon, lat) builds in: its zone's (`cityWithin`, by the coarse outlines once
+ * they are in), else the zone with the nearest centre. */
+export function realmOfPlace(lon: number, lat: number): string | null {
+  return zoneRealm(cityWithin(lon, lat) ?? cityNear(lon, lat));
+}
+
+/** The zone whose coarse outline holds (lon, lat); null outside them all or before they are in. */
+export function zoneHolding(lon: number, lat: number): CityId | null {
+  const outlines = zoneOutlines.peek();
+  if (outlines) for (const c of zonesTouching(lon, lat, lon, lat)) {
+    const g = outlines.get(c.id);
+    if (g && inOutline(c.id, g, lon, lat)) return c.id;
+  }
+  return null;
+}
+
+/** The realm not shown whose zone outline holds (lon, lat), for a click on its shade (T-1049); null
+ * elsewhere, in dead space and the sea too. */
+export function hiddenRealmAt(lon: number, lat: number): string | null {
+  const outlines = zoneOutlines.peek(), shown = shownRealms.peek();
+  if (!outlines || !shown) return null;
+  for (const c of zonesTouching(lon, lat, lon, lat)) {
+    const r = zoneRealm(c.id), g = outlines.get(c.id);
+    if (r && !shown.has(r) && g && inOutline(c.id, g, lon, lat)) return r;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- which realms are shown
+
+/** The game in hand's start zone's realm; undefined before the first game is in. */
+const startRealm = signal<string | null | undefined>(undefined);
+/** The game in hand has no start zone: it started on the world map. */
+const mapStart = signal(false);
+/** The first game's first snapshot has come: until then everything shows, as before realms. */
+const gameIn = signal(false);
+const clicked = signal<ReadonlySet<string>>(new Set());
+const built = signal<ReadonlySet<string>>(new Set());
+
+const ALL_REALMS: ReadonlySet<string> = new Set(REALM_SPOTS.keys());
+
+/** The realms shown; null when every zone is (before the first game's stations, or with no outlines). */
+export const shownRealms = computed<ReadonlySet<string> | null>(() => {
+  if (realmsOff.value) return null;
+  if (!gameIn.value) return aheadRealms.value;
+  const out = new Set([...built.value, ...clicked.value]);
+  const s = startRealm.value;
+  if (s) out.add(s);
+  const t = trackZones.value; // T-1047
+  for (const z of [...t.built, ...t.planned]) { const r = zoneRealm(z); if (r) out.add(r); }
+  // T-1133: a game started on the map shows every realm until it has a station or track, so the
+  // player sees where a game can start; a set, not null, so the shade still darkens the world no zone covers
+  if (mapStart.value && !built.value.size && !t.built.size && !t.planned.size) return ALL_REALMS;
+  return out;
+});
+
+/** Whether a zone draws and loads for viewing. Reads signals, so effects that ask follow changes. */
+export function zoneShown(id: CityId): boolean {
+  const shown = shownRealms.value;
+  if (!shown) return true;
+  const r = zoneRealm(id);
+  return !r || shown.has(r);
+}
+
+/** The realms drawn dark with a button. */
+export const inactiveRealms = computed<RealmSpot[]>(() => {
+  const shown = shownRealms.value;
+  if (!shown) return [];
+  return [...REALM_SPOTS.values()].filter((l) => !shown.has(l.id));
+});
+
+/** Zones not shown, for the clock worker's masks fetched ahead of the view. */
+export const hiddenZones = (): CityId[] => (shownRealms.peek() ? CITIES.filter((c) => !zoneShown(c.id)).map((c) => c.id) : []);
+
+/** Show a realm for this session (its button, a search pick). */
+export function showRealm(id: string | null) {
+  if (!id || clicked.peek().has(id)) return;
+  clicked.value = new Set([...clicked.peek(), id]);
+}
+export const showZoneRealm = (zone: CityId) => showRealm(zoneRealm(zone));
+
+/** A game was loaded or started (the clock worker's "opened", sent before its first snapshot):
+ * its start zone, or for a save older than its `start` field the zone it opens on. The realms shown
+ * by a click go with the game before. */
+export function setGameStart(start: CityId | null | undefined) {
+  startZone = start ?? null;
+  startRealm.value = start ? zoneRealm(start) ?? null : null;
+  mapStart.value = !start;
+  clicked.value = new Set();
+  waitFor = world.peek();
+}
+let waitFor: unknown;
+let startZone: CityId | null = null;
+/** The zone the game in hand was started in (null for an old save with none), for the playtime ping. */
+export const gameStartZone = (): CityId | null => startZone;
+
+/** T-1539: the realms of the first game's built stations as its save is read (`stationsAhead`), shown
+ * until its first state, so its cached figures drawn before then show only its realms. */
+const aheadRealms = signal<ReadonlySet<string> | null>(null);
+export function realmsAhead(frame: FrameSpec, xy: Float64Array) {
+  if (gameIn.peek()) return;
+  const f = makeFrame(frame), out = new Set<string>();
+  for (let k = 0; k + 1 < xy.length; k += 2) {
+    const r = realmOfPlace(...f.toLonLat(xy[k], xy[k + 1]));
+    if (r) out.add(r);
+  }
+  aheadRealms.value = out.size ? out : null;
+}
+
+/** The realms with a station, from each world snapshot (stations placed by position, kept by id). */
+export function followStations(): () => void {
+  const at = new Map<string, { lng: number; lat: number; realm: string | null }>();
+  let outlinesSeen = -1;
+  return effect(() => {
+    const w = world.value, outlines = outlinesIn.value;
+    if (startRealm.peek() !== undefined && w !== waitFor && !gameIn.peek()) gameIn.value = true;
+    if (outlines !== outlinesSeen) {
+      outlinesSeen = outlines;
+      at.clear();
+    }
+    const next = new Set<string>();
+    for (const s of w?.save.stations ?? []) {
+      let e = at.get(s.id);
+      if (!e || e.lng !== s.lng || e.lat !== s.lat) at.set(s.id, (e = { lng: s.lng, lat: s.lat, realm: realmOfPlace(s.lng, s.lat) }));
+      if (e.realm) next.add(e.realm);
+    }
+    const prev = built.peek();
+    if (next.size !== prev.size || [...next].some((r) => !prev.has(r))) built.value = next;
+  });
+}
