@@ -533,7 +533,7 @@ function onewayArrow(dark: boolean): { width: number; height: number; data: Uint
   canvas.width = canvas.height = s;
   const g = canvas.getContext("2d", { willReadFrequently: true })!;
   g.clearRect(0, 0, s, s);
-  g.fillStyle = dark ? "#f4fffc" : "#042824";
+  g.fillStyle = dark ? "#3fd0c4" : "#1a9e94";
   g.beginPath();
   g.moveTo(23, 16);
   g.lineTo(12, 6);
@@ -601,19 +601,24 @@ function setRoadHint(map: maplibregl.Map, kind: RoadHint, on: boolean) {
   if (kind === "bus") setBusOnewayArrows(map, dark === 1, before);
 }
 
-/** Arrows on the one-way streets a bus may use, pointing the way the road runs. `oneway` -1 is drawn
- * against the line. Gone when the bus tool is off. */
+/** Arrows on the one-way streets a bus may use, in the hint's own colour, pointing the way the road
+ * runs. `oneway` -1 is drawn against the line. They wait until the streets are close enough to draw
+ * on, and go when the bus tool is off. */
+const ONEWAY_MINZOOM = 14;
 function setBusOnewayArrows(map: maplibregl.Map, dark: boolean, before: string | undefined) {
   ensureOnewayArrow(map, dark);
-  if (map.getLayer(ONEWAY_LAYER)) return;
+  if (map.getLayer(ONEWAY_LAYER)) {
+    map.setLayerZoomRange(ONEWAY_LAYER, ONEWAY_MINZOOM, 24);
+    return;
+  }
   map.addLayer({
-    id: ONEWAY_LAYER, type: "symbol", source: VECTOR_SOURCE, "source-layer": "transportation", minzoom: 12,
+    id: ONEWAY_LAYER, type: "symbol", source: VECTOR_SOURCE, "source-layer": "transportation", minzoom: ONEWAY_MINZOOM,
     filter: ["all", busRoadFilter(), ["any", ["==", ["to-number", ["get", "oneway"]], 1], ["==", ["to-number", ["get", "oneway"]], -1]]] as maplibregl.FilterSpecification,
     layout: {
       "symbol-placement": "line",
       "symbol-spacing": 72,
       "icon-image": ONEWAY_ARROW,
-      "icon-size": ["interpolate", ["linear"], ["zoom"], 12, 0.4, 15, 0.62, 18, 0.85] as maplibregl.ExpressionSpecification,
+      "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0.5, 16, 0.7, 18, 0.85] as maplibregl.ExpressionSpecification,
       "icon-rotate": ["case", ["==", ["to-number", ["get", "oneway"]], -1], 180, 0] as maplibregl.ExpressionSpecification,
       "icon-rotation-alignment": "map",
       "icon-allow-overlap": true,
