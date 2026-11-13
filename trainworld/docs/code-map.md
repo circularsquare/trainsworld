@@ -173,7 +173,7 @@ city's name in Japanese or Chinese from `place-names.json`, written by `tools/pl
 
 ### src/map/: the map and what is drawn on it
 
-- `mapView.ts` (the MapLibre map; its scroll zoom told wheel gaps by event time, T-675; the flat map or globe setting, T-033), `basemap.ts` (the Positron style: warm paper repaint, three road weights, light or dark,
+- `mapView.ts` (the MapLibre map; its scroll zoom told wheel gaps by event time, T-675; the flat map or globe setting, T-033), `basemap.ts` (the Positron style: warm paper repaint, three road weights, light or dark, arrows on one-way streets while the bus tool is on,
   labels in Zen Maru Gothic from `public/fonts/`; the Terrain hillshade, T-1270), `demFlat.ts` (the hillshade's tiles with the relief over flat-class ground blurred away, in `workers/demFlat.worker.ts`, T-1881), `terrainTint.ts` (the terrain classes' wash while building, from `game/terrain.ts`'s grids, in the hexes track is charged by, T-1270, T-2890), `realNetwork.ts` (the Real network reference layer: noritetsu's
   PMTiles per region, read from `../noritetsu/` or R2; vite.config.ts proxies `/noritetsu` to 8800 in dev, T-682),
   `styleReady.ts` (`styleUp`: MapLibre style calls are skipped while it has no style, a lost context, and reapplied on `style.load`, T-957),
