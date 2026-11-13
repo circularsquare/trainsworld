@@ -40,6 +40,12 @@ pub enum Op {
 const SETTLED: f64 = 0.0001;
 /// Most rounds of one settle.
 const SETTLE_ROUNDS: usize = 80;
+/// Rounds of one settle that rebuild every line's profiles exactly. A network whose lines fit
+/// their fleets settles in a few; one at capacity can keep stepping to the cap, and rebuilding the
+/// whole network's profiles each round is what made that take seconds on a big network, so past
+/// these rounds the round trips come from the capacity solve alone (`Service::probe_trips`) and
+/// the profiles are built once, after the last round.
+const SETTLE_EXACT_ROUNDS: usize = 8;
 /// T-3233: the longest repeat a settle looks for.
 const CYCLE_MAX: usize = 4;
 /// Within this many trains of its fleet, a line whose shortfall keeps turning is settled (T-1283).
@@ -424,6 +430,7 @@ impl TrackWorld {
         // only the rounds that end it in the cap's state, to the bit
         let mut seen: std::collections::VecDeque<(Vec<[f32; 3]>, Vec<[f64; 3]>, Vec<[(i8, u8, f64); LEVELS]>)> = Default::default();
         let mut stop_at: Option<usize> = None;
+        let mut touched: Vec<u32> = vec![];
         for round in 0..SETTLE_ROUNDS {
             let trips: Vec<[f64; 3]> = ids.iter().map(|&id| self.svc.lines[id as usize].round_trip).collect();
             let rates: Vec<[f32; 3]> = ids.iter().map(|&id| self.net.line_tph[id as usize]).collect();
@@ -478,17 +485,36 @@ impl TrackWorld {
             if !active.contains(&true) { break; }
             // A common 1% upward probe measures the sum of positive congestion derivatives.
             // Dividing by this bound damps shared-track feedback even close to saturation.
+            // Only the lines probed: a capacity pass over the rest would rebuild every profile in
+            // the network on every round.
+            let mut bumped: Vec<u32> = vec![];
             for (j, &id) in ids.iter().enumerate() {
-                for lev in (0..LEVELS).filter(|&lev| active[lev] && (full || off[j][lev])) { self.net.line_tph[id as usize][lev] *= 1.01; }
+                for lev in (0..LEVELS).filter(|&lev| active[lev] && (full || off[j][lev])) {
+                    self.net.line_tph[id as usize][lev] *= 1.01;
+                    bumped.push(id);
+                }
             }
+            bumped.sort_unstable();
+            bumped.dedup();
+            // the probe comes back by line of `bumped`; the step below reads it by line of `ids`
+            let align = |p: &[[f64; LEVELS]]| {
+                let mut out = trips.clone();
+                let mut k = 0;
+                for (j, &id) in ids.iter().enumerate() {
+                    while k < bumped.len() && bumped[k] < id { k += 1; }
+                    if k < bumped.len() && bumped[k] == id { out[j] = p[k]; }
+                }
+                out
+            };
             // T-1787: an edit probes from the capacity solve alone (`Service::probe_trips`), the
-            // profiles worked out once a round; a full settle probes with them, as before
-            let probed = if full {
+            // profiles worked out once a round; a full settle probes with them, as before. Past
+            let cheap = round >= SETTLE_EXACT_ROUNDS;
+            let probed = if full && !cheap {
                 let d = self.svc.update_scoped(&self.net, &[], &ids, true, Some((&[], &[])));
                 affected.extend(d.recomputed);
                 None
             } else {
-                Some(self.svc.probe_trips(&self.net, &ids))
+                Some(align(&self.svc.probe_trips(&self.net, &bumped)))
             };
             for (j, &id) in ids.iter().enumerate() {
                 let i = id as usize;
@@ -519,12 +545,31 @@ impl TrackWorld {
                     self.net.line_tph[id as usize][lev] = got as f32;
                 }
             }
-            let d = self.svc.update_scoped(&self.net, &[], &ids, true, Some((&[], &[])));
-            affected.extend(d.recomputed);
+            if cheap {
+                let mut changed: Vec<u32> = vec![];
+                for (j, &id) in ids.iter().enumerate() {
+                    if (0..LEVELS).any(|lev| self.net.line_tph[id as usize][lev] != rates[j][lev]) { changed.push(id); }
+                }
+                if !changed.is_empty() {
+                    let p = self.svc.probe_trips(&self.net, &changed);
+                    for (k, &id) in changed.iter().enumerate() { self.svc.lines[id as usize].round_trip = p[k]; }
+                    self.svc.cap.update(&self.net, &self.svc.lines, &[], &[], &changed);
+                    touched.extend_from_slice(&changed);
+                }
+            } else {
+                let d = self.svc.update_scoped(&self.net, &[], &ids, true, Some((&[], &[])));
+                affected.extend(d.recomputed);
+            }
             // T-747: a round that ends where it began repeats itself to the cap, ~12 ms a round on
             // 143 lines
             let still = ids.iter().enumerate().all(|(j, &id)| self.net.line_tph[id as usize] == rates[j] && self.svc.lines[id as usize].round_trip == trips[j]);
             if still { break; }
+        }
+        if !touched.is_empty() {
+            touched.sort_unstable();
+            touched.dedup();
+            let d = self.svc.update_scoped(&self.net, &[], &touched, true, Some((&[], &[])));
+            affected.extend(d.recomputed);
         }
         for &id in &ids { self.svc.lines[id as usize].trains = self.net.line_trains[id as usize].unwrap(); }
         self.net.settle_kept.clear();
