@@ -4,6 +4,7 @@
 
 import { computed, type Signal } from "@preact/signals";
 import { useState } from "preact/hooks";
+import type { ComponentChildren } from "preact";
 import { distUnit, kmhFromShown, kmhToShown, length, levelLabel, levelName, millions, speed } from "../game/format";
 import { linking } from "../game/links";
 import { moneyState } from "../game/money";
@@ -11,7 +12,7 @@ import { CLICK_MODE_COLOURS, inkOn, LEVEL_COLOURS, legibleOn } from "../game/pal
 import { linesByNum, say, world } from "../game/world";
 import { CAR_M, stepPlatform } from "../game/boarding";
 import { carsText } from "./inspector/schedule";
-import { autoRamp, buildAdvanced, buildLevel, buildPlatform, buildTramPlatform, clampDesign, DESIGN_SPEEDS, designSpeed, flyoverSpeed, keepPlacing, lineDraft, quadTrack, setDoubleTrack, setQuadTrack, setSingleTrack, setTrackType, singleTrack, shade, snapBeside, snapReal, snapRoads, snapStreets, stationOnTram, TRAM_PLATFORM, tool, trackType, type TrackType } from "../game/ui";
+import { autoRamp, buildAdvanced, buildLevel, buildPlatform, buildTramPlatform, clampDesign, DESIGN_SPEEDS, designSpeed, flyoverSpeed, keepPlacing, lineDraft, quadTrack, setDoubleTrack, setQuadTrack, setSingleTrack, setTrackType, singleTrack, shade, snapBeside, snapReal, snapRoads, snapStreets, stationOnTram, stationOneTrack, TRAM_PLATFORM, tool, trackType, type TrackType } from "../game/ui";
 import { costBackground } from "../map/trackTagRows";
 import { levelTip, multText, trackMult, unitPrice, upkeepAt } from "./trackPrice";
 import { Icon, LevelButtons, Segmented, Stepper, TrackCountButtons } from "./widgets";
@@ -106,8 +107,8 @@ function TrackBar() {
         <div class="tb-row">
           <div class="tb-wide"><Segmented<TrackType> options={trackTypes()} value={tt} onChange={setTrackType} /></div>
           <button class="btn tb-narrow tb-type" aria-label={t("toolBar.trackType")} aria-expanded={open === "type"} onClick={() => toggle("type")}>{typeLabel(tt)}</button>
-          <TrackCountButtons value={q ? null : one ? 1 : 2} single={!tram}
-            onPick={(n) => n === 1 ? setSingleTrack(true) || say(t("toolBar.singleHsr"), true) : setDoubleTrack()}>
+          <TrackCountButtons value={q ? null : one ? 1 : 2}
+            onPick={(n) => n === 1 ? setSingleTrack(true) : setDoubleTrack()}>
             <button class={"btn icon" + (q ? " on" : "")} aria-label={t("toolBar.quadTrack")} aria-pressed={q} data-tip={t("toolBar.quadTrackTip")}
               onClick={() => setQuadTrack(true)}><Icon.tracks4 /></button>
           </TrackCountButtons>
@@ -171,7 +172,21 @@ function StationBar() {
           if (to === len.value) return false;
           len.value = to;
         }} />
+        <PlatformTracks one={stationOneTrack.value} onPick={(one) => (stationOneTrack.value = one)} />
       </div>
+    </div>
+  );
+}
+
+/** T-3332: a station's platforms on one track or on both, the station bar's and the station panel's. */
+export function PlatformTracks({ one, onPick, oneTip, bothTip, children }: { one: boolean; onPick: (one: boolean) => void; oneTip?: string; bothTip?: string; children?: ComponentChildren }) {
+  return (
+    <div class="group tb-count" role="group" aria-label={t("toolBar.platformTracks")}>
+      <button class={"btn icon" + (one ? " on" : "")} aria-label={oneTip ?? t("toolBar.oneTrackStation")} aria-pressed={one} data-tip={oneTip ?? t("toolBar.oneTrackStation")}
+        onClick={() => onPick(true)}><Icon.tracks1 /></button>
+      <button class={"btn icon" + (!one ? " on" : "")} aria-label={bothTip ?? t("toolBar.bothTracksStation")} aria-pressed={!one} data-tip={bothTip ?? t("toolBar.bothTracksStation")}
+        onClick={() => onPick(false)}><Icon.tracks2 /></button>
+      {children}
     </div>
   );
 }

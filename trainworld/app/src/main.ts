@@ -39,7 +39,6 @@ import { faresOf } from "./game/fareCurve";
 import { live } from "./map/live";
 import { setBasemapLabels, setBasemapShade, setSatellite, setBusRoadHint, setHillshade, setRailRoadHint, setTramRoadHint } from "./map/basemap";
 import { createMap } from "./map/mapView";
-import { startLite } from "./map/lite";
 import { startRealNetwork } from "./map/realNetwork";
 import { startCityBoundaries } from "./map/cityBoundaries";
 import { startZoneLoading } from "./map/zoneLoading";
@@ -54,6 +53,7 @@ import { carryGrids, pick } from "./map/pick";
 import { carryEdgeGrid } from "./map/snapIndex";
 import { NetworkRenderer } from "./map/renderer";
 import { followTrain } from "./map/trainFollow";
+import { rebaseFollow, startFollow } from "./map/cameraFollow";
 import { makeSynth } from "./map/synth";
 import { Tools } from "./map/tools";
 import { busDraft } from "./map/busDraw";
@@ -238,7 +238,7 @@ const overlay = new Overlay(map, renderer, () => {
   let sel = selection.peek();
   // a selected train that has turned at its terminal is followed onto its next trip (T-245)
   const followed = followTrain(renderer, sel, clock.now());
-  if (followed !== sel) selection.value = sel = followed;
+  if (followed !== sel) { rebaseFollow(followed); selection.value = sel = followed; }
   const d = display.peek();
   const n = renderer.net;
   const hovered = groupHover.peek();
@@ -492,7 +492,6 @@ map.on("load", () => {
   effect(() => setTramRoadHint(map, tool.value === "track" && tramTrack.value && snapStreets.value)); // T-2998
   effect(() => setRailRoadHint(map, tool.value === "track" && !tramTrack.value && snapRoads.value)); // T-3129
   startTerrainTint(map); // T-1270 stage 3
-  startLite(map); // T-1207
   startRealNetwork(map); // T-682
 });
 effect(() => client.setShade(shade.value)); // save thumbnails are drawn in it (T-543)
@@ -521,6 +520,16 @@ map.on("click", (e) => {
   else if (tool.peek() === "blueprint") return; // its pointer handlers pick (map/blueprintBox.ts)
   else if (tool.peek() !== "select") touchInput.peek() ? tools.tap(e) : tools.click(e);
   else selectAt(e.point.x, e.point.y, e.originalEvent.shiftKey);
+});
+// T-3361: a double click on a train follows it with the camera (and a finger's double tap does not zoom there)
+map.on("dblclick", (e) => {
+  if (tool.peek() !== "select" || linking.peek() !== null) return;
+  const { x, y } = e.point, cur = selection.peek();
+  const hit = pick(overlay, x, y, display.peek().trains && !onMark(x, y), cur);
+  if (hit?.kind !== "train") return;
+  e.preventDefault();
+  if (!(cur?.kind === "train" && cur.profile === hit.profile && cur.dep === hit.dep)) selection.value = hit;
+  startFollow();
 });
 /** The select tool's click at a map point (px): from the map, or from a capacity tag over it (T-256). */
 function selectAt(x: number, y: number, add: boolean) {

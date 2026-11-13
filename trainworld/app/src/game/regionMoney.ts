@@ -110,7 +110,7 @@ export function edgeUpkeep(e: { built: boolean; crossover?: boolean; tracks: num
   if (!e.built || e.crossover) return 0;
   // T-1931: the dearest structure the edge touches, as the track model counts it
   const rate = e.levelMin <= -2 ? m.upkeepBoredKm : e.levelMin === -1 ? m.upkeepCutKm : e.levelMax > 0 ? m.upkeepViaductKm : m.upkeepTrackKm;
-  return (e.lengthM / 1000) * rate * (e.tracks === 1 ? m.upkeepSingle : e.hsr ? m.upkeepHsr : e.kind ? TRACK_SPECS[e.kind === 2 ? "streetTram" : "tram"].upkeep : 1) * m.economy;
+  return (e.lengthM / 1000) * rate * (e.tracks === 1 ? m.upkeepSingle : 1) * (e.hsr ? m.upkeepHsr : e.kind ? TRACK_SPECS[e.kind === 2 ? "streetTram" : "tram"].upkeep : 1) * m.economy;
 }
 /** T-1464: a bus route's road km by region, each stretch between two stops half to each stop's
  * region (the drawn stops' ground distances, scaled to the road length). */
@@ -132,8 +132,8 @@ function busKmByRegion(w: WorldView, line: string): Map<string, number> {
 /** T-867: a constructed station's upkeep a game day, US$; T-2619: dearer below ground, as the
  * track model counts it (`cost::station_upkeep`). */
 /** a station's upkeep a day: a tram stop's is its own figure (T-2926) */
-export const stationUpkeepOf = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "economy">, s: { level: number; tram?: boolean }) =>
-  s.tram ? TRAM_STOP_UPKEEP * m.economy : stationUpkeep(m, s.level);
+export const stationUpkeepOf = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "upkeepOnePlatform" | "economy">, s: { level: number; tram?: boolean; onePlatform?: boolean }) =>
+  s.tram ? TRAM_STOP_UPKEEP * m.economy : stationUpkeep(m, s.level) * (s.onePlatform ? m.upkeepOnePlatform : 1);
 export const stationUpkeep = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "economy">, level: number) =>
   (level < 0 ? m.upkeepStationUnder : m.upkeepStation) * m.economy;
 

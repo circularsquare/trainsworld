@@ -40,10 +40,14 @@ export type RouteEnd =
 
 /** Where a station goes: on a node, splitting an edge near a point, or on open ground with a
  * straight piece of new track from (x0, y0) to (x1, y1) under it (T-794). */
-export type StationAt =
+export type StationAt = (
   | { kind: "node"; node: NodeId }
   | { kind: "edge"; edge: EdgeId; x: number; y: number }
-  | { kind: "free"; x0: number; y0: number; x1: number; y1: number; level: Level; quad: boolean; hsr?: boolean; tram?: boolean };
+  | { kind: "free"; x0: number; y0: number; x1: number; y1: number; level: Level; quad: boolean; hsr?: boolean; tram?: boolean }
+) & {
+  /** T-3332: a one-track station, its platform on the track nearer this point (sim x, y) */
+  one?: { x: number; y: number };
+};
 
 /** A route turning at the clicked points `pis`; a junction it makes is flat (T-080). `through`
  * (T-418): a route with no PIs from a heading to open ground is one tangent arc. `design` (T-817):
@@ -97,6 +101,11 @@ export type EditOp =
   /** single track run one way (`dir` 1 a to b, 2 b to a) or both (0), the lines that ran against it taking another way in the same edit (T-3094); refused with "OneWayNoWay:<line>" */
   | { op: "oneWay"; edge: EdgeId; dir: 0 | 1 | 2 | 3 }
   | { op: "stationProps"; node: NodeId; platform: number; name: string }
+  /** T-3332: a station's platforms on one track (`one`) or both; a constructed one pays the difference to both, nothing back to one */
+  | { op: "stationTracks"; node: NodeId; one: boolean }
+  | { op: "stationWay"; node: NodeId; heading: number }
+  /** T-3332: a one-track station on double track turned round, its platform on the other track */
+  | { op: "reverseStation"; node: NodeId }
   /** T-3288: the name a complex goes by, set on the station the others follow; no typed name */
   | { op: "stationName"; node: NodeId; name: string }
   | { op: "removeStation"; node: NodeId }
@@ -152,6 +161,8 @@ export type EditOp =
   | { op: "lineCars"; line: number; cars: number }
   | { op: "lineFast"; line: number; fast: boolean }
   | { op: "lineOneWay"; line: number; oneWay: boolean }
+  /** T-3333: run the line's trains on both pairs of quad track, or on one */
+  | { op: "linePairs"; line: number; on: boolean }
   /** T-2987: a rail line's speed limit in km/h, 0 for none */
   | { op: "lineLimit"; line: number; kmh: number }
   /** T-1791: put lines in a group (a line's group number, "new" for a fresh one, 0 for none), or name one ("" for its oldest line's name); one undoable edit, no service change */
@@ -332,7 +343,7 @@ export type ToClock =
   | {
       kind: "query";
       seq: number;
-      q: { what: "insertStop"; line: number; station: number } | { what: "stopTiers"; line: number } | { what: "stopGap"; line: number; station: number } | { what: "passedStations"; line: number } | { what: "junction"; node: number } | { what: "lineDelays"; line: number; level: number } | { what: "lineWaits"; line: number; level: number } | { what: "passingSpots"; line: number } | { what: "lineHeld"; line: number } | { what: "lineMarks"; line: number } | { what: "lineProfile"; line: number } |{ what: "lineRelated"; line: number } | { what: "lineTrips"; line: number; t0: number; t1: number } | { what: "edgePis"; edge: number } | { what: "flyover"; node: number } | { what: "upgradeCost"; node: number } | { what: "upgradeCosts"; nodes: number[]; bit: number } |{ what: "platformCost"; nodes: number[]; platform: number } | { what: "doubleUp"; edge: number } | { what: "oneWay"; edge: number; dir: number } | { what: "lineAccount"; line: number; day: number } | { what: "linePeriods"; line: number; day: number } | { what: "linesPeriods"; lines: number[]; day: number } |{ what: "today" } | { what: "removal"; edges: number[]; stations: number[] } | { what: "busQuote"; line: number; route: number[] } | { what: "rebuildQuote"; edges: number[]; stations: number[]; level: number | null; kind: number; tracks: number } | { what: "blueprintQuote" } | { what: "blueprintPieces" } | { what: "lineCost"; line: number } | { what: "buildingQuote"; id: number | null; corners: number[] };
+      q: { what: "insertStop"; line: number; station: number } | { what: "stopTiers"; line: number } | { what: "stopGap"; line: number; station: number } | { what: "passedStations"; line: number } | { what: "junction"; node: number } | { what: "lineDelays"; line: number; level: number } | { what: "lineWaits"; line: number; level: number } | { what: "passingSpots"; line: number } | { what: "lineHeld"; line: number } | { what: "lineMarks"; line: number } | { what: "lineProfile"; line: number } |{ what: "lineRelated"; line: number } | { what: "lineTrips"; line: number; t0: number; t1: number } | { what: "stationDeps"; line: number; node: number; t0: number; t1: number } | { what: "edgePis"; edge: number } | { what: "flyover"; node: number } | { what: "upgradeCost"; node: number } | { what: "tracksCost"; node: number } | { what: "upgradeCosts"; nodes: number[]; bit: number } |{ what: "platformCost"; nodes: number[]; platform: number } | { what: "doubleUp"; edge: number } | { what: "oneWay"; edge: number; dir: number } | { what: "lineAccount"; line: number; day: number } | { what: "linePeriods"; line: number; day: number } | { what: "linesPeriods"; lines: number[]; day: number } |{ what: "today" } | { what: "removal"; edges: number[]; stations: number[] } | { what: "busQuote"; line: number; route: number[] } | { what: "rebuildQuote"; edges: number[]; stations: number[]; level: number | null; kind: number; tracks: number } | { what: "blueprintQuote" } | { what: "blueprintPieces" } | { what: "lineCost"; line: number } | { what: "buildingQuote"; id: number | null; corners: number[] } | { what: "linePairs"; line: number };
     };
 
 /** T-531: each region's today and this hour, as the "cash" message carries them. */
@@ -371,6 +382,8 @@ export interface MoneyState {
   upkeepStation: number;
   /** T-2619: an underground station's (-1 to -3); `upkeepStation` is any other's */
   upkeepStationUnder: number;
+  /** a one-platform station's share of either station figure */
+  upkeepOnePlatform: number;
   upkeepSingle: number;
   upkeepHsr: number;
   /** T-867: the network's upkeep a game day, US$M (track and stations), the route-km and stations
@@ -476,6 +489,12 @@ export interface ClockNode {
   stationOff: boolean;
   /** the station's upgrades, `UPGRADE` bits (T-1281) */
   upgrades: number;
+  /** T-3332: a one-track station: 1 on double track (`oneHeading` its trains' way), 2 on single track, where trains cannot pass */
+  one?: 1 | 2;
+  /** T-3332: the heading of a one-track station's trains on double track, rad, counter-clockwise from east */
+  oneHeading?: number;
+  /** one platform track (a one way station, or a stop on single track with no passing loop): pays `upkeepOnePlatform` of the station upkeep */
+  onePlatform?: true;
   name: string;
   /** the player typed the name (T-2683) */
   named?: true;
@@ -554,6 +573,12 @@ export interface ClockLine {
   oneWay: boolean;
   /** T-2987: the line's speed limit, km/h; 0 for none (`TrackApi::line_limit`) */
   limit: number;
+  /** T-3333: the switch to run on both pairs of quad track is on: 1 it runs on both (its counts,
+   * rates and headways are one pair's, its hidden twin runs the other), 2 on one pair for now
+   * (`TrackApi::line_pairs`) */
+  pairs?: 1 | 2;
+  /** T-3333: a hidden twin, the line it runs the other pair for (`TrackApi::line_twin_of`) */
+  twinOf?: number;
   /** T-1464: a bus line's route and stops; absent for a rail line, whose `path` this replaces
    * (a bus line's `path` is empty, its `stops` its `bus.stops`' ids) */
   bus?: ClockBus;

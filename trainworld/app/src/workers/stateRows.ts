@@ -87,6 +87,9 @@ interface LineRead {
   shift: number;
   upkeep: number;
   busRow: ClockLine["bus"];
+  /** T-3333: `line_pairs`, `line_twin_of` */
+  pairs: number;
+  twinOf: number;
 }
 
 export function upgradesOf(a: TrackApi): Map<number, number> {
@@ -232,6 +235,10 @@ export class StateRows {
     const ni = a.nodes_info();
     const offStations = new Set<number>(a.off_stations());
     const namedStations = new Set<number>(a.named_stations());
+    // T-3332: one-track stations, 1 on double track, 2 on single
+    const ot = a.one_track_stations(), ones = new Map<number, 1 | 2>();
+    for (let k = 0; k + 1 < ot.length; k += 2) ones.set(ot[k], ot[k + 1] as 1 | 2);
+    const onePlatforms = new Set<number>(a.one_platform_stations());
     const out: ClockNode[] = [];
     const kept = this.nodeRows;
     const seen = new Set<number>();
@@ -245,13 +252,16 @@ export class StateRows {
       // T-2194: a port has no track, so no platform line
       const port = platform > 0 && a.is_port(id);
       const kind = a.node_kind(id) >= 2 ? a.node_kind(id) : 0;
+      const onePlatform = onePlatforms.has(id), one = ones.get(id) ?? 0, oneHeading = one === 1 ? a.station_one_heading(id) : undefined;
       const line = platform > 0 && !port ? env.platformLine?.(a, id, ni[i + 1], ni[i + 2], platform) : undefined;
       let r = kept.get(id);
       if (!r || r.x !== ni[i + 1] || r.y !== ni[i + 2] || r.level !== ni[i + 3] || r.ports !== ni[i + 4] || r.builtPorts !== ni[i + 5] || r.flying !== flying || !!r.crosses !== crosses || (r.unusable ?? 0) !== unusable || r.platform !== platform
-        || r.stationBuilt !== stationBuilt || r.stationOff !== stationOff || r.upgrades !== upgrades || r.name !== name || !!r.named !== named || !Object.is(r.heading, ni[i + 9]) || r.line !== line || !!r.port !== port || (r.kind ?? 0) !== kind) {
+        || r.stationBuilt !== stationBuilt || r.stationOff !== stationOff || r.upgrades !== upgrades || r.name !== name || !!r.named !== named || !Object.is(r.heading, ni[i + 9]) || r.line !== line || !!r.port !== port || (r.kind ?? 0) !== kind
+        || (r.one ?? 0) !== one || r.oneHeading !== oneHeading || !!r.onePlatform !== onePlatform) {
         const [lng, lat] = env.lngLat(ni[i + 1], ni[i + 2]);
         const berth = port ? a.port_berth(id) : null;
         r = { id, x: ni[i + 1], y: ni[i + 2], lng, lat, level: ni[i + 3], ports: ni[i + 4], builtPorts: ni[i + 5], flying, ...(crosses ? { crosses: true as const } : {}), ...(unusable ? { unusable } : {}), platform, stationBuilt, stationOff, upgrades, name, heading: ni[i + 9], ...(named ? { named: true as const } : {}), ...(line ? { line } : {}), ...(kind ? { kind } : {}),
+          ...(one ? { one } : {}), ...(oneHeading !== undefined ? { oneHeading } : {}), ...(onePlatform ? { onePlatform: true as const } : {}),
           ...(berth && berth.length === 2 ? { port: env.lngLat(berth[0], berth[1]) } : {}) };
         kept.set(id, r);
       }
@@ -325,14 +335,15 @@ export class StateRows {
         heavy: fresh ? this.heavy(a, id, ok) : prev!.heavy,
         auto: a.line_auto(id), fast: a.line_fast(id), tram: a.line_tram(id), loopKind: a.line_loop(id), oneWay: a.line_one_way(id), limit: a.line_limit(id), shift: a.line_shift(id), upkeep: upkeepOf.get(id) ?? 0,
         busRow: bus ? env.busRow(a, id, nodes ?? []) : undefined,
+        pairs: bus ? 0 : a.line_pairs(id), twinOf: bus ? -1 : a.line_twin_of(id),
       });
     }
     const out: ClockLine[] = [];
     for (const r of read) {
-      const { i, id, ok, running, prev, fresh, heavy, auto, fast, tram, loopKind, oneWay, limit, shift, upkeep } = r;
+      const { i, id, ok, running, prev, fresh, heavy, auto, fast, tram, loopKind, oneWay, limit, shift, upkeep, pairs, twinOf } = r;
       // the numbers behind the cheap fields: when all are as kept (and the heavy parts are), the row is the kept one
       const raw = li.slice(i, i + 22);
-      const extra = [upkeep, fast ? 1 : 0, tram ? 1 : 0, loopKind, oneWay ? 1 : 0, limit, shift, ...auto];
+      const extra = [upkeep, fast ? 1 : 0, tram ? 1 : 0, loopKind, oneWay ? 1 : 0, limit, shift, pairs, twinOf, ...auto];
       if (!fresh && prev && sameNumbers(raw, prev.raw) && sameNumbers(extra, prev.extra)) {
         out.push(prev.row);
         continue;
@@ -357,6 +368,8 @@ export class StateRows {
         loopKind,
         oneWay,
         limit,
+        ...(pairs === 1 || pairs === 2 ? { pairs } : {}),
+        ...(twinOf >= 0 ? { twinOf } : {}),
         ...(r.busRow ? { bus: r.busRow } : {}),
       };
       if (r.bus) kept.delete(id);

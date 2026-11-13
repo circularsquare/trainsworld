@@ -760,7 +760,7 @@ function pricesOf(p: ArrayLike<number>) {
     carPrice: p[0], runCostCarKm: p[1], economy: p[2], runCostTrainKm: p[3], hsCarPrice: p[4], hsRunCostCarKm: p[5], hsRunCostTrainKm: p[6],
     upkeepTrackKm: p[7], upkeepStation: p[8], upkeepSingle: p[9], upkeepHsr: p[10], busPrice: p[11], runCostBusKm: p[12], upkeepBusKm: p[13],
     busRouteKm: p[14], upkeepViaductKm: p[15], upkeepCutKm: p[16], upkeepBoredKm: p[17], boatPrice: p[18], runCostBoatKm: p[19], upkeepPort: p[20], portPrice: p[21],
-    upkeepStationUnder: p[22],
+    upkeepStationUnder: p[22], upkeepOnePlatform: p[23],
   };
 }
 let prices = pricesOf([2.5, 2, 100, 9]);
@@ -1491,7 +1491,7 @@ const STOP_QUERIES = new Set(["stopTiers", "stopGap", "insertStop", "passedStati
 const STOP_KINDS = new Set<ToClock["kind"]>(["income", "points", "regionShares", "chargeShares", "clock"]);
 /** demand's results and the clock: money, riders and trips, none of which a blueprint changes */
 const HELD_KINDS = new Set<ToClock["kind"]>(["income", "points", "regionShares", "riders", "transfers", "epoch", "clock"]);
-const HELD_QUERIES = new Set(["today", "lineAccount", "linePeriods", "linesPeriods", "lineWaits", "lineTrips", "lineHeld"]);
+const HELD_QUERIES = new Set(["today", "lineAccount", "linePeriods", "linesPeriods", "lineWaits", "lineTrips", "stationDeps", "lineHeld"]);
 /** T-2404: the blueprint edges the last edit made or changed, local x, y, z each, for the client's
  * stand-ins while their state is held (read from the track model, not kept: one may be gone) */
 function heldEdges(): Float32Array[] {
@@ -3717,6 +3717,7 @@ function apply(op: EditOp): Applied {
     case "stationUpgrade":
       return { r: a.set_station_upgrade(new Uint32Array(op.nodes), op.bit, op.on) };
     case "addStation":
+      a.set_station_one(op.at.one ? new Float64Array([op.at.one.x, op.at.one.y]) : new Float64Array(0));
       return op.at.kind === "node"
         ? { r: a.add_station(1, op.at.node, 0, 0, op.platform, op.name) }
         : op.at.kind === "edge"
@@ -3728,6 +3729,12 @@ function apply(op: EditOp): Applied {
       return { r: a.double_up(op.edge) };
     case "oneWay":
       return { r: a.set_edge_oneway(op.edge, op.dir) };
+    case "stationTracks":
+      return { r: a.set_station_tracks(op.node, op.one) };
+    case "stationWay":
+      return { r: a.set_station_way(op.node, op.heading) };
+    case "reverseStation":
+      return { r: a.reverse_station(op.node) };
     case "stationProps": {
       // the name a complex's station shows is not its own: sent back unchanged it is no typing (T-3288)
       const own = a.node_name(op.node);
@@ -3866,6 +3873,8 @@ function apply(op: EditOp): Applied {
       return { r: a.set_line_fast(op.line, op.fast) };
     case "lineOneWay":
       return { r: a.set_line_one_way(op.line, op.oneWay) };
+    case "linePairs":
+      return { r: a.set_line_pairs(op.line, op.on) };
     case "lineLimit":
       return { r: a.set_line_limit(op.line, op.kmh) };
     case "lineGroup":
@@ -4570,6 +4579,7 @@ async function handle(msg: ToClock) {
       : q.what === "edgePis" ? api.edge_pis(q.edge)
       : q.what === "flyover" ? new Float64Array([api.flyover_cost(q.node)])
       : q.what === "upgradeCosts" ? new Float64Array(q.nodes.map((n) => api!.station_upgrade_cost(n, q.bit)))
+      : q.what === "tracksCost" ? new Float64Array([api.station_tracks_cost(q.node)])
       : q.what === "upgradeCost" ?new Float64Array(UPGRADE_BITS.map((b) => api!.station_upgrade_cost(q.node, b)))
       : q.what === "platformCost" ? new Float64Array([api.platform_cost(new Uint32Array(q.nodes), q.platform)])
       : q.what === "doubleUp" ? doubleUpAnswer(q.edge)
@@ -4583,12 +4593,15 @@ async function handle(msg: ToClock) {
       : q.what === "lineRelated" ? api.line_related(q.line, complexOfNodes())
       // T-2603: the line's timetable chart, four numbers a trip (`TrackApi.line_trips`)
       : q.what === "lineTrips" ? api.line_trips(q.line, q.t0, q.t1)
+      // T-3346: a station's departures board, three numbers a departure (`TrackApi.station_departures`)
+      : q.what === "stationDeps" ? api.station_departures(q.line, q.node, q.t0, q.t1)
       : q.what === "removal" ? new Float64Array(api.removal_lines(new Uint32Array(q.edges), new Uint32Array(q.stations)))
       : q.what === "busQuote" ? busQuoteLL(api, q.line, q.route)
       : q.what === "rebuildQuote" ? rebuildQuoteAnswer(q.edges, q.stations, q.level, q.kind, q.tracks)
       : q.what === "blueprintQuote" ? Float64Array.from(api.blueprint_cost_items())
       : q.what === "blueprintPieces" ? Float64Array.from(api.blueprint_piece_costs())
       : q.what === "lineCost" ? new Float64Array([api.line_build_cost(q.line), api.line_train_cost(q.line)])
+      : q.what === "linePairs" ? new Float64Array([api.line_pairs_ok(q.line) ? 1 : 0, ...api.line_pairs_why(q.line)])
       : q.what === "buildingQuote" ? buildingQuoteAnswer(q.id, q.corners)
       : q.what === "lineWaits" ? api.line_waits(q.line, q.level)
       // T-2232: [station, its passing tracks' price] pairs
@@ -4597,6 +4610,7 @@ async function handle(msg: ToClock) {
     send({ kind: "answer", seq: msg.seq, data }, [data.buffer]);
   } else if (msg.kind === "previewStation") {
     const at = msg.at;
+    api.set_station_one(at.one ? new Float64Array([at.one.x, at.one.y]) : new Float64Array(0));
     const r = at.kind === "node" ? api.preview_station(1, at.node, 0, 0, msg.platform)
       : at.kind === "edge" ? api.preview_station(2, at.edge, at.x, at.y, msg.platform)
       : (api.set_route_kind(at.tram ? 3 : 0), api.set_route_hsr(!!at.hsr), api.preview_free_station(freeEnds(at), at.quad ? 4 : 2, msg.platform));

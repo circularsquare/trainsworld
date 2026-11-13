@@ -16,6 +16,8 @@ export interface Update {
   /** those of `changes` that make something harder, each with the key of its new figure, which is filled into the
    * line's `{figure}` and shown red (T-3133; only the figure is red, Anita 2026-11-11) */
   nerfs?: Partial<Record<MessageKey, MessageKey>>;
+  /** sub-items, shown indented under their parent item of `changes`; a sub key is not also in `changes` */
+  sub?: Partial<Record<MessageKey, MessageKey[]>>;
 }
 
 /** When v0.1 went out: set at publish. */
@@ -33,7 +35,58 @@ const V0_3_AT = "2026-11-11T17:15:00Z";
 /** When v0.3.1 went out: set at publish. */
 const V0_3_1_AT = "2026-11-12T03:30:00Z";
 
+/** When v0.3.2 went out: set at publish. */
+const V0_3_2_AT = "2026-11-12T18:00:00Z";
+
+/** When v0.3.3 went out: set at publish. */
+const V0_3_3_AT = "2026-11-13T14:30:00Z";
+
 export const UPDATES: Update[] = [
+  {
+    version: "v0.3.3",
+    at: V0_3_3_AT,
+    line: "updates.v033Line",
+    changes: [
+      "updates.v033Satellite",
+      "updates.v033OpenSource",
+      "updates.v033OneWay",
+      "updates.v033SingleTrack",
+      "updates.v033Follow",
+      "updates.v033Bullets",
+      "updates.v033LeftHand",
+      "updates.v033SBahn",
+      "updates.v033BusReroute",
+      "updates.v033RealTime",
+      "updates.v033Memory",
+      "updates.v033Screenshots",
+      "updates.v033Zones",
+      "updates.v033LongTrips",
+      "updates.v033Resorts",
+      "updates.v033Schematic",
+      "updates.v033Terrain",
+      "updates.v033StationNames",
+      "updates.v033Networks",
+      "updates.v033Tunnels",
+      "updates.v033ZoomButtons",
+      "updates.v033ZoneNames",
+      "updates.v033HsrFare",
+      "updates.v033Fixes",
+    ],
+    sub: {
+      "updates.v033Zones": ["updates.v033NorthKorea"],
+      "updates.v033LongTrips": ["updates.v033Airports"],
+    },
+  },
+  {
+    version: "v0.3.2",
+    at: V0_3_2_AT,
+    line: "updates.v032Line",
+    changes: [
+      "updates.v032FareWait",
+      "updates.v032FareCap",
+      "updates.v032Downloads",
+    ],
+  },
   {
     version: "v0.3.1",
     at: V0_3_1_AT,

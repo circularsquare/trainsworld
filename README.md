@@ -1,6 +1,6 @@
 # trainsworld
 
-A railway building game on a map of the whole world. You lay track and stations, set up lines and timetables, and
+A railway building game on a map of the whole world. You lay track and stations, set up lines, and
 the game works out who rides your trains and who takes the car. It runs in the browser.
 
 The game is at https://anita.garden/trainsworld/. This repository is its source.

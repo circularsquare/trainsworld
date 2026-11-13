@@ -204,10 +204,7 @@ Web first, so it can be shared as a link.
   move as one with a flat pan in between (capacity tags and attraction marks instead follow their
   resources one by one every frame, station names too for any camera change but a flat pan,
   T-1614, T-1657, T-1621; zone loading bars are placed on every move, so they hold their spot through a zoom, T-1804); the platform crowds; the station sounds and faces sample
-  half as often; the Lines tab's live counts wait. The lighter map (`map/lite.ts`): the basemap
-  without buildings, the residential tint, minor roads, airfields, small rivers and minor names, no
-  hillshade, and a pixel ratio of at most 1; Settings has it as Map detail, Low (on) or High (off, the default). It had an
-  Auto, removed in T-2840: it went Low for the page on one slow zoom, and Low saves no resident memory; a stored "auto" reads as High.
+  half as often; the Lines tab's live counts wait.
 - **A hidden page** [T-826; notes/T-826.md]: the browser stops animation frames and slows the main
   thread's timers to once a second (once a minute after five hidden minutes); worker timers run on
   at nearly full rate. With "Run in background" off (the default) the clock freezes while hidden, so
@@ -432,7 +429,7 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   build day of each constructed station, edge and line in dense order, as deltas (0 is never
   written: 1 is before recording began, otherwise the game day + 2), written only when some day is
   known [T-2871], then `LBP1` the bus lines' own stop spacings [T-2885] and `LHO1` the lines whose
-  stop order the player set by hand (count, then line indices) [T-2895] and `LBH1` the stops placed by hand on bus lines (count, then per line its index, stop count and stops) [T-2891], and with `LRT1` when any line is paced, `LPC1` the count lines' pacing at merges (count, then per line its index and three f32 bits), which a load keeps instead of pacing again [T-3233]; a save without one loads with none. While a line's trains change over after a service
+  stop order the player set by hand (count, then line indices) [T-2895] and `LBH1` the stops placed by hand on bus lines (count, then per line its index, stop count and stops) [T-2891], and with `LRT1` when any line is paced, `LPC1` the count lines' pacing at merges (count, then per line its index and three f32 bits), which a load keeps instead of pacing again [T-3233], and `LTW1` the lines run on both pairs of quad track and their hidden twins (count, then per line its index and kind, a twin with its line's index) [T-3333]; a save without one loads with none. While a line's trains change over after a service
   edit, the network bytes end with the service's eras and shifts, their length and the tag `ERA1`
   (`Service::encode_eras`, T-1071), so the trains load where they were; the network decoder stops
   before them. Formats older than TWT4 (TWT2, TWT3) no longer open: the load says the save is from

@@ -102,6 +102,8 @@ pub const HSR_ROW: u8 = 3;
 pub const TRAM_ROW: u8 = 4;
 /// and for street tram track (T-2927)
 pub const STREET_TRAM_ROW: u8 = 5;
+/// T-3352: a single-track row of those kinds is the kind's row plus this
+pub const SINGLE_ROW_OFFSET: u8 = 3;
 pub const WATER_COST: f64 = 2.0;
 /// 200 m station with two platform tracks: the part every station has wherever it is (platforms,
 /// halls, systems), plus its structure's part by level, index `level + 3`: 50 + 25 a level down,
@@ -127,6 +129,13 @@ pub const WATER_SPAN_MAX: f64 = 30_000.0;
 pub const TERRAIN_MIN_LEVEL: i8 = -1;
 /// Terrain sampling step along track, m: under a quarter of the class grid's ~115 m cell (T-1854).
 pub const TERRAIN_STEP: f64 = 25.0;
+/// Width of a terrain hex across its flats, in world widths on the mercator plane (T-2890): 1/768 of
+/// a degree of longitude, about 110 m at 40 N. The app draws the same lattice (`game/terrain.ts`).
+pub const TERRAIN_HEX: f64 = 1.0 / (360.0 * 768.0);
+/// How far east the hex lattice is shifted, world widths: 1/16 of a class grid cell at 960 a degree,
+/// so no hex centre falls exactly on a cell edge, where rounding could pick different cells here and
+/// in the app.
+pub const TERRAIN_HEX_SHIFT: f64 = 1.0 / (360.0 * 15360.0);
 /// Per road that track at ground level crosses, US$M (T-1929; 10 since T-2732, Anita, standing in for
 /// the buildings cleared: a viaduct is cheaper to build from about 3.75 crossings a km, open country's
 /// under 1 a km stays cheapest at grade). Each road comes with its weight, a motorway's 3 (app `roadTiles.ts`).
@@ -162,6 +171,9 @@ pub const UPKEEP_CUT_KM: f64 = 1000.0;
 pub const UPKEEP_BORED_KM: f64 = 1300.0;
 pub const UPKEEP_STATION: f64 = 500.0;
 pub const UPKEEP_STATION_UNDER: f64 = 2000.0;
+/// A station with one platform track (a one way station, or a stop on single track with no passing
+/// loop) pays this share of either station figure (Anita, 2026-11-13); `Network::one_platform`.
+pub const UPKEEP_ONE_PLATFORM_SHARE: f64 = 0.6;
 /// The economy runs at 100x (T-081; Anita, 2026-10-09, as Subway Builder does): fares and running
 /// costs per game day are this many times the real figures, so a line pays back in about a game
 /// week. Construction and train prices stay real. The one constant: running costs here, fares in

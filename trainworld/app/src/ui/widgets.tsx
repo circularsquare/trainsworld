@@ -8,7 +8,7 @@ import { IDLE_TIP, isIdleLine } from "../game/lineRunning";
 import { PLANE_PATH } from "../map/glyphs";
 import { bulletDraw, bulletEpoch, bulletTextSoon, type BulletDraw } from "./bullet";
 import { shapeOf } from "../game/lineShapeState";
-import { LINE_SHAPES, type LineShape } from "../game/lineShape";
+import { LINE_SHAPES, type LineShape, type PickShape } from "../game/lineShape";
 import { LEVELS, type Level, type LineInput } from "../game/types";
 import { selection, uiScale, type ListSort } from "../game/ui";
 import { knock } from "../game/world";
@@ -25,6 +25,8 @@ export const Icon = {
   cycle: () => <svg viewBox="0 0 16 16"><path d="M12.8 6.5A5 5 0 004 5M3.2 9.5A5 5 0 0012 11M4 2v3h3M12 14v-3H9" /></svg>,
   // take the map to a station or line (a sight with its cross hairs)
   locate: () => <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" /><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3" /></svg>,
+  // keep the map on a train: the sight with a filled middle
+  follow: () => <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.5" /><circle class="solid" cx="8" cy="8" r="1.4" /><path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3" /></svg>,
   pause: () => <svg viewBox="0 0 16 16"><path class="stroke2" d="M5.5 3.5v9M10.5 3.5v9" /></svg>,
   play1: () => <svg viewBox="0 0 16 16"><path class="solid" d="M5 3.5l7 4.5-7 4.5z" /></svg>,
   play2: () => <svg viewBox="0 0 16 16"><path class="solid" d="M2.5 4l5.5 4-5.5 4zM8 4l5.5 4L8 12z" /></svg>,
@@ -100,6 +102,8 @@ export const Icon = {
   copy: () => <svg viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1" /><path d="M10.5 3.5v-1h-8v8h1" /></svg>,
   // T-2603: the timetable chart, three train runs crossing between two stations
   marey: () => <svg viewBox="0 0 16 16"><path d="M1.5 2.5h13M1.5 13.5h13M2 13.5l4-11M7.5 2.5l4 11M10 13.5l4-11" /></svg>,
+  // T-3346: the schedule panel, a station timetable's hour column and rows
+  timetable: () => <svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1" /><path d="M2.5 5.5h11M5.5 5.5v8M7.5 8h4M7.5 10.5h3" /></svg>,
   paste: () => <svg viewBox="0 0 16 16"><path d="M5.5 3h-2v11.5h9V3h-2" /><rect x="5.5" y="1.5" width="5" height="3" rx="0.5" /><path d="M6 8h4M6 10.5h4" /></svg>,
   // the Lines and Stations tabs' scope toggle (the viewed place, the whole world)
   calendar: () => <svg viewBox="0 0 16 16"><rect x="2.5" y="3.5" width="11" height="11.5" rx="1" /><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" /></svg>,
@@ -182,10 +186,10 @@ export function ShapeIcon({ shape }: { shape: LineShape }) {
   return <svg class="shape-icon" style={{ width: b.w + "px", height: b.h + "px" }} aria-hidden="true"><BulletOutline b={b} /></svg>;
 }
 
-const SHAPE_NAME: Record<LineShape, MessageKey> = { circle: "widgets.circle", square: "widgets.square", diamond: "widgets.diamond", pill: "widgets.pill" };
+const SHAPE_NAME: Record<PickShape, MessageKey> = { circle: "widgets.circle", square: "widgets.square", diamond: "widgets.diamond" };
 
 /** T-3319: a row of the bullet shapes to pick from, drawn in `colour` (the text's when absent); `tips` for a hover on some. */
-export function ShapePicker({ value, onChange, colour, tips }: { value: LineShape; onChange: (s: LineShape) => void; colour?: string; tips?: (s: LineShape) => string | undefined }) {
+export function ShapePicker({ value, onChange, colour, tips }: { value: LineShape; onChange: (s: PickShape) => void; colour?: string; tips?: (s: PickShape) => string | undefined }) {
   return (
     <div class="group shapes" role="radiogroup" style={colour ? { "--c": colour } : undefined}>
       {LINE_SHAPES.map((s) => (

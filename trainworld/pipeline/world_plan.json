@@ -14612,13 +14612,19 @@
      "91842731B80607451044134",
      "91842731B41264252444764",
      "91842731B1982983494790",
-     "91842731B32884228755734"
+     "91842731B32884228755734",
+     "91842731B34424424591491",
+     "91842731B85295053362711",
+     "91842731B57994277396791",
+     "91842731B3963078358447",
+     "91842731B7512274213736",
+     "91842731B40132277078343"
     ]
    },
    "bbox": [
-    103.639,
-    1.212,
-    104.034,
+    103.606,
+    1.167,
+    104.043,
     1.471
    ],
    "source": {
@@ -14627,27 +14633,31 @@
     ],
     "fua": [
      154
-    ]
+    ],
+    "hand": {
+     "task": "T-3287",
+     "why": "Singapore's west (Anita 2026-11-13): Tuas, Pioneer, Western Islands, Lim Chu Kang, Marina South, Changi Bay added; no residents, so the people share rule left them dead space"
+    }
    },
    "run": {
-    "run_batch": "20261029-000011",
+    "run_batch": "20261113-005637",
+    "built": "2026-11-13T00:59:58",
+    "gated": "2026-11-13T01:01:25",
+    "shipped": "2026-11-13T01:27:35",
     "steps": {
-     "build": 88.3,
-     "stations": 0.9,
-     "places": 2.8,
-     "routes": 14.7,
-     "merge": 0.7,
-     "nocar": 1.3,
-     "everyday": 1.0
+     "build": 24.4,
+     "stations": 0.7,
+     "places": 2.9,
+     "routes": 17.4,
+     "merge": 0.6,
+     "nocar": 1.0,
+     "everyday": 0.7
     },
-    "built": "2026-10-29T00:07:14",
     "gate": {
      "warn": [
       "fleet_range 1"
      ]
-    },
-    "gated": "2026-10-29T00:13:21",
-    "shipped": "2026-10-29T01:16:18"
+    }
    }
   },
   {
@@ -21258,7 +21268,7 @@
    "order": 247,
    "id": "pyo",
    "name": "P'yŏngyang",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -21303,6 +21313,26 @@
       "82179303B39263220364420"
      ]
     }
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 215.6,
+     "stations": 0.9,
+     "places": 1.6,
+     "routes": 22.7,
+     "merge": 0.8,
+     "nocar": 1.6,
+     "everyday": 1.3
+    },
+    "built": "2026-11-12T14:27:41",
+    "gate": {
+     "warn": [
+      "top_school_cell_pupils 6333.7802734375"
+     ]
+    },
+    "gated": "2026-11-12T14:59:50",
+    "shipped": "2026-11-12T19:01:02"
    }
   },
   {
@@ -260828,7 +260858,7 @@
    "id": "fie",
    "name": "Fier",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ALB"
@@ -260885,24 +260915,24 @@
     "drive_factor_median": "2.02-2.36: Blagoevgrad's Rila and Pirin valleys and northern Albania's mountains (Shkoder, Diber, Kukes), so drives between valleys run down and up again; road snapping was normal and the browser check passed (T-788) (carried by a replan from drr, which shared 1 of this zone's 5 units)"
    },
    "run": {
-    "run_batch": "20261105-001625",
+    "run_batch": "20261112-142007",
+    "built": "2026-11-12T14:41:17",
+    "gated": "2026-11-12T15:19:23",
+    "shipped": "2026-11-12T19:01:03",
     "steps": {
-     "build": 38.5,
-     "stations": 0.9,
-     "places": 2.4,
-     "routes": 43.5,
-     "merge": 1.4,
-     "nocar": 1.3,
-     "everyday": 0.8
+     "build": 43.0,
+     "stations": 1.5,
+     "places": 4.7,
+     "routes": 59.3,
+     "merge": 1.7,
+     "nocar": 1.7,
+     "everyday": 1.0
     },
-    "built": "2026-11-05T00:18:03",
     "gate": {
      "warn": [
-      "drive_factor_median 2.0518667734879767"
+      "drive_factor_median 2.117000016612675"
      ]
-    },
-    "gated": "2026-11-05T09:32:03",
-    "shipped": "2026-11-05T16:30:31"
+    }
    }
   },
   {
@@ -262718,7 +262748,7 @@
    "id": "bja",
    "name": "Banja Luka",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "BIH"
@@ -262862,22 +262892,22 @@
     }
    },
    "run": {
-    "run_batch": "20261105-001625",
+    "run_batch": "20261112-142007",
+    "built": "2026-11-12T14:37:51",
+    "gated": "2026-11-12T15:19:22",
+    "shipped": "2026-11-12T19:01:04",
     "steps": {
-     "build": 72.1,
+     "build": 66.8,
      "stations": 0.9,
-     "places": 2.3,
-     "routes": 54.0,
-     "merge": 1.4,
-     "nocar": 1.4,
-     "everyday": 0.7
+     "places": 3.3,
+     "routes": 126.4,
+     "merge": 2.3,
+     "nocar": 1.8,
+     "everyday": 1.0
     },
-    "built": "2026-11-05T00:35:36",
     "gate": {
      "warn": []
-    },
-    "gated": "2026-11-05T09:32:11",
-    "shipped": "2026-11-05T16:30:39"
+    }
    }
   },
   {
@@ -277708,7 +277738,7 @@
    "id": "evo",
    "name": "Evvoia",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "GRC"
@@ -277765,22 +277795,22 @@
     }
    },
    "run": {
-    "run_batch": "20261105-004822",
+    "run_batch": "20261112-142007",
+    "built": "2026-11-12T14:47:38",
+    "gated": "2026-11-12T15:19:24",
+    "shipped": "2026-11-12T19:01:05",
     "steps": {
-     "build": 138.3,
-     "stations": 1.1,
-     "places": 3.8,
-     "routes": 127.0,
-     "merge": 2.9,
-     "nocar": 2.5,
-     "everyday": 1.5
+     "build": 159.5,
+     "stations": 1.6,
+     "places": 6.7,
+     "routes": 179.4,
+     "merge": 3.1,
+     "nocar": 2.1,
+     "everyday": 1.1
     },
-    "built": "2026-11-05T03:02:59",
     "gate": {
      "warn": []
-    },
-    "gated": "2026-11-05T09:33:14",
-    "shipped": "2026-11-05T16:31:46"
+    }
    }
   },
   {
@@ -278565,7 +278595,7 @@
    "id": "spi",
    "name": "Splitsko-dalmatinska županija",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "HRV"
@@ -278617,24 +278647,24 @@
     }
    },
    "run": {
-    "run_batch": "20261021-145542",
+    "run_batch": "20261112-142007",
+    "built": "2026-11-12T14:39:21",
+    "gated": "2026-11-12T15:19:21",
+    "shipped": "2026-11-12T19:01:06",
     "steps": {
-     "build": 329.9,
-     "stations": 1.0,
-     "places": 2.5,
-     "routes": 19.9,
-     "merge": 1.5,
-     "nocar": 1.2,
-     "everyday": 0.7
+     "build": 231.4,
+     "stations": 1.1,
+     "places": 3.9,
+     "routes": 50.3,
+     "merge": 2.4,
+     "nocar": 1.8,
+     "everyday": 1.0
     },
-    "built": "2026-10-21T15:17:27",
     "gate": {
      "warn": [
-      "top_zone_jobs_share 0.12173943498579239"
+      "top_zone_jobs_share 0.1080857775461019"
      ]
-    },
-    "gated": "2026-10-21T16:38:48",
-    "shipped": "2026-10-21T17:29:48"
+    }
    }
   },
   {
@@ -353851,7 +353881,7 @@
    "id": "avi",
    "name": "Ávila",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ESP"
@@ -353889,6 +353919,27 @@
      "Segovia",
      "Soria"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 80.4,
+     "stations": 1.7,
+     "places": 4.8,
+     "routes": 167.0,
+     "merge": 3.2,
+     "nocar": 2.2,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T14:52:00",
+    "gate": {
+     "warn": [
+      "road_snap_median_m 331.5",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:19:24",
+    "shipped": "2026-11-12T19:01:06"
    }
   },
   {
@@ -353896,7 +353947,7 @@
    "id": "cce",
    "name": "Cáceres",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ESP"
@@ -353930,6 +353981,27 @@
     "unit_names": [
      "Cáceres"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 91.3,
+     "stations": 1.7,
+     "places": 4.9,
+     "routes": 123.8,
+     "merge": 6.1,
+     "nocar": 6.4,
+     "everyday": 2.7
+    },
+    "built": "2026-11-12T14:56:00",
+    "gate": {
+     "warn": [
+      "road_snap_median_m 408.0",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:19:26",
+    "shipped": "2026-11-12T19:01:07"
    }
   },
   {
@@ -353937,7 +354009,7 @@
    "id": "cbh",
    "name": "Cuenca",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ESP"
@@ -353974,6 +354046,27 @@
      "Cuenca",
      "Teruel"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 65.7,
+     "stations": 1.6,
+     "places": 4.1,
+     "routes": 158.8,
+     "merge": 4.8,
+     "nocar": 2.3,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T15:01:19",
+    "gate": {
+     "warn": [
+      "road_snap_median_m 402.1",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:19:27",
+    "shipped": "2026-11-12T19:01:08"
    }
   },
   {
@@ -353981,7 +354074,7 @@
    "id": "hes",
    "name": "Huesca",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ESP"
@@ -354015,6 +354108,28 @@
     "unit_names": [
      "Huesca"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 70.1,
+     "stations": 1.3,
+     "places": 3.9,
+     "routes": 58.8,
+     "merge": 3.2,
+     "nocar": 3.7,
+     "everyday": 2.7
+    },
+    "built": "2026-11-12T14:59:45",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.15030386202461887",
+      "road_snap_median_m 351.9",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:19:27",
+    "shipped": "2026-11-12T19:01:09"
    }
   },
   {
@@ -354022,7 +354137,7 @@
    "id": "zax",
    "name": "Zamora",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ESP"
@@ -354056,6 +354171,24 @@
     "unit_names": [
      "Zamora"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 29.9,
+     "stations": 1.7,
+     "places": 2.7,
+     "routes": 53.1,
+     "merge": 2.2,
+     "nocar": 3.8,
+     "everyday": 2.1
+    },
+    "built": "2026-11-12T14:49:17",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T15:19:25",
+    "shipped": "2026-11-12T19:01:10"
    }
   },
   {
@@ -354063,7 +354196,7 @@
    "id": "pci",
    "name": "Palencia",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ESP"
@@ -354097,6 +354230,26 @@
     "unit_names": [
      "Palencia"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 22.5,
+     "stations": 2.0,
+     "places": 4.4,
+     "routes": 58.6,
+     "merge": 1.2,
+     "nocar": 2.1,
+     "everyday": 1.7
+    },
+    "built": "2026-11-12T14:51:29",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.12290699111370214"
+     ]
+    },
+    "gated": "2026-11-12T15:19:25",
+    "shipped": "2026-11-12T19:01:11"
    }
   },
   {
@@ -354104,7 +354257,7 @@
    "id": "aen",
    "name": "Alentejo Central",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "PRT"
@@ -354142,6 +354295,24 @@
      "Baixo Alentejo",
      "Alentejo Litoral"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 128.7,
+     "stations": 1.5,
+     "places": 4.1,
+     "routes": 102.7,
+     "merge": 2.9,
+     "nocar": 1.8,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T15:07:28",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T15:19:28",
+    "shipped": "2026-11-12T19:01:11"
    }
   },
   {
@@ -354149,7 +354320,7 @@
    "id": "atj",
    "name": "Alto Alentejo",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "PRT"
@@ -354185,6 +354356,24 @@
      "Alto Alentejo",
      "Beira Baixa"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 57.0,
+     "stations": 3.9,
+     "places": 7.3,
+     "routes": 87.1,
+     "merge": 1.3,
+     "nocar": 1.6,
+     "everyday": 1.2
+    },
+    "built": "2026-11-12T15:06:04",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T15:19:29",
+    "shipped": "2026-11-12T19:01:12"
    }
   },
   {
@@ -354192,7 +354381,7 @@
    "id": "trs",
    "name": "Terras de Trás-os-Montes",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "PRT"
@@ -354226,6 +354415,26 @@
     "unit_names": [
      "Terras de Trás-os-Montes"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 24.3,
+     "stations": 1.1,
+     "places": 2.4,
+     "routes": 24.0,
+     "merge": 1.0,
+     "nocar": 1.6,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T15:07:02",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.14512424231603152"
+     ]
+    },
+    "gated": "2026-11-12T15:19:29",
+    "shipped": "2026-11-12T19:01:13"
    }
   },
   {
@@ -354233,7 +354442,7 @@
    "id": "ces",
    "name": "Creuse",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "FRA"
@@ -354267,6 +354476,26 @@
     "unit_names": [
      "Creuse"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 28.6,
+     "stations": 1.0,
+     "places": 2.8,
+     "routes": 46.7,
+     "merge": 1.5,
+     "nocar": 1.9,
+     "everyday": 1.3
+    },
+    "built": "2026-11-12T15:08:54",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.10638840030890077"
+     ]
+    },
+    "gated": "2026-11-12T15:19:30",
+    "shipped": "2026-11-12T19:01:14"
    }
   },
   {
@@ -354274,7 +354503,7 @@
    "id": "loz",
    "name": "Lozère",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "FRA"
@@ -354308,6 +354537,26 @@
     "unit_names": [
      "Lozère"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 20.9,
+     "stations": 1.0,
+     "places": 1.9,
+     "routes": 23.9,
+     "merge": 1.2,
+     "nocar": 1.7,
+     "everyday": 1.2
+    },
+    "built": "2026-11-12T15:12:34",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.12128110616417984"
+     ]
+    },
+    "gated": "2026-11-12T15:19:31",
+    "shipped": "2026-11-12T19:01:15"
    }
   },
   {
@@ -354315,7 +354564,7 @@
    "id": "tce",
    "name": "Tulcea",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "ROU"
@@ -354349,6 +354598,31 @@
     "unit_names": [
      "Tulcea"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 25.7,
+     "stations": 0.8,
+     "places": 1.6,
+     "routes": 14.9,
+     "merge": 0.8,
+     "nocar": 1.3,
+     "everyday": 0.8
+    },
+    "built": "2026-11-12T15:16:27",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.22611418622232404",
+      "fleet_range 1"
+     ]
+    },
+    "parked": "2026-11-12T15:18:13",
+    "gated": "2026-11-12T15:21:35",
+    "shipped": "2026-11-12T19:01:15"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town zone, the top 6 km zone at Tulcea's centre, 0.226 against 0.2 (adding-a-country 6: up to 0.35)"
    }
   },
   {
@@ -354356,7 +354630,7 @@
    "id": "foc",
    "name": "Foča",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "BIH"
@@ -354430,6 +354704,27 @@
      "Istočni Stari Grad",
      "Istočni Mostar"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142007",
+    "steps": {
+     "build": 30.8,
+     "stations": 1.0,
+     "places": 2.5,
+     "routes": 28.2,
+     "merge": 1.1,
+     "nocar": 1.5,
+     "everyday": 0.9
+    },
+    "built": "2026-11-12T14:35:41",
+    "gate": {
+     "warn": [
+      "drive_factor_median 2.117000016612675",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:19:22",
+    "shipped": "2026-11-12T19:01:16"
    }
   },
   {
@@ -354437,7 +354732,7 @@
    "id": "inn",
    "name": "Innlandet",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "NOR"
@@ -354471,6 +354766,27 @@
     "unit_names": [
      "Innlandet"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 501.7,
+     "stations": 1.5,
+     "places": 5.6,
+     "routes": 136.0,
+     "merge": 3.9,
+     "nocar": 2.4,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T17:54:34",
+    "gate": {
+     "warn": [
+      "area_km2 51883.41928741531",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:50",
+    "shipped": "2026-11-12T22:23:52"
    }
   },
   {
@@ -354478,7 +354794,7 @@
    "id": "nod",
    "name": "Nordland",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "NOR"
@@ -354516,6 +354832,29 @@
      "Troms/Romsa/Tromssa",
      "Finnmark/Finnmárku/Finmarkku"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 2978.2,
+     "stations": 5.6,
+     "places": 10.6,
+     "routes": 73.6,
+     "merge": 4.0,
+     "nocar": 2.4,
+     "everyday": 1.5
+    },
+    "built": "2026-11-12T18:45:54",
+    "gate": {
+     "warn": [
+      "pop_vs_plan 1.2789217585048789",
+      "area_km2 111287.03076997423",
+      "top_zone_jobs_share 0.13785979935104498",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:51",
+    "shipped": "2026-11-12T22:23:53"
    }
   },
   {
@@ -354523,7 +354862,7 @@
    "id": "age",
    "name": "Agder",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "NOR"
@@ -354557,6 +354896,24 @@
     "unit_names": [
      "Agder"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 560.3,
+     "stations": 2.0,
+     "places": 4.2,
+     "routes": 42.4,
+     "merge": 1.7,
+     "nocar": 2.2,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T18:56:11",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:51",
+    "shipped": "2026-11-12T22:23:53"
    }
   },
   {
@@ -354564,7 +354921,7 @@
    "id": "meo",
    "name": "Møre og Romsdal",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "NOR"
@@ -354598,6 +354955,26 @@
     "unit_names": [
      "Møre og Romsdal"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 426.6,
+     "stations": 1.2,
+     "places": 2.4,
+     "routes": 14.4,
+     "merge": 0.7,
+     "nocar": 1.1,
+     "everyday": 0.7
+    },
+    "built": "2026-11-12T19:03:40",
+    "gate": {
+     "warn": [
+      "pop_vs_plan 1.27512246201697"
+     ]
+    },
+    "gated": "2026-11-12T21:24:52",
+    "shipped": "2026-11-12T22:23:54"
    }
   },
   {
@@ -354605,7 +354982,7 @@
    "id": "tlk",
    "name": "Telemark",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "NOR"
@@ -354639,6 +355016,31 @@
     "unit_names": [
      "Telemark"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 357.4,
+     "stations": 1.6,
+     "places": 3.2,
+     "routes": 52.9,
+     "merge": 1.6,
+     "nocar": 3.5,
+     "everyday": 1.8
+    },
+    "built": "2026-11-12T17:50:44",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.20681948966374483",
+      "fleet_range 1"
+     ]
+    },
+    "parked": "2026-11-12T21:08:33",
+    "gated": "2026-11-12T21:33:16",
+    "shipped": "2026-11-12T22:23:54"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "Telemark 0.17M, under 0.2M at 0.207: the top cell is Heroya industrial park in Porsgrunn (Hydro and Yara), one big employer beside Skien"
    }
   },
   {
@@ -354646,7 +355048,7 @@
    "id": "das",
    "name": "Dalarnas län",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "SWE"
@@ -354686,6 +355088,27 @@
      "Västernorrlands län",
      "Jämtlands län"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 931.0,
+     "stations": 2.5,
+     "places": 7.0,
+     "routes": 369.7,
+     "merge": 18.3,
+     "nocar": 3.2,
+     "everyday": 1.5
+    },
+    "built": "2026-11-12T19:29:27",
+    "gate": {
+     "warn": [
+      "area_km2 126777.71658991232",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:52",
+    "shipped": "2026-11-12T22:23:55"
    }
   },
   {
@@ -354693,7 +355116,7 @@
    "id": "vab",
    "name": "Västerbottens län",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "SWE"
@@ -354729,6 +355152,27 @@
      "Västerbottens län",
      "Norrbottens län"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 1201.9,
+     "stations": 2.4,
+     "places": 7.1,
+     "routes": 162.9,
+     "merge": 9.1,
+     "nocar": 3.1,
+     "everyday": 1.7
+    },
+    "built": "2026-11-12T19:30:21",
+    "gate": {
+     "warn": [
+      "area_km2 164177.73577401944",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:53",
+    "shipped": "2026-11-12T22:23:55"
    }
   },
   {
@@ -354736,7 +355180,7 @@
    "id": "vrm",
    "name": "Värmlands län",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "SWE"
@@ -354770,6 +355214,24 @@
     "unit_names": [
      "Värmlands län"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 216.4,
+     "stations": 0.9,
+     "places": 2.3,
+     "routes": 47.8,
+     "merge": 1.6,
+     "nocar": 1.8,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T19:11:44",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:53",
+    "shipped": "2026-11-12T22:23:56"
    }
   },
   {
@@ -354777,7 +355239,7 @@
    "id": "kae",
    "name": "Kalmar län",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "SWE"
@@ -354811,6 +355273,24 @@
     "unit_names": [
      "Kalmar län"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 176.9,
+     "stations": 1.1,
+     "places": 2.6,
+     "routes": 41.5,
+     "merge": 1.6,
+     "nocar": 2.0,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T19:11:00",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:54",
+    "shipped": "2026-11-12T22:23:56"
    }
   },
   {
@@ -354818,7 +355298,7 @@
    "id": "got",
    "name": "Gotlands län",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "SWE"
@@ -354852,6 +355332,28 @@
     "unit_names": [
      "Gotlands län"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 40.9,
+     "stations": 1.0,
+     "places": 1.6,
+     "routes": 21.8,
+     "merge": 1.1,
+     "nocar": 1.9,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T19:12:12",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.16690247114398893",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:54",
+    "shipped": "2026-11-12T22:23:57"
    }
   },
   {
@@ -354859,7 +355361,7 @@
    "id": "phs",
    "name": "Pohjois-Savo",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "FIN"
@@ -354901,6 +355403,27 @@
      "Etelä-Karjala",
      "Kainuu"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 3027.9,
+     "stations": 1.2,
+     "places": 3.7,
+     "routes": 390.0,
+     "merge": 31.0,
+     "nocar": 4.1,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T20:28:03",
+    "gate": {
+     "warn": [
+      "area_km2 90282.53049695131",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:55",
+    "shipped": "2026-11-12T22:23:57"
    }
   },
   {
@@ -354908,7 +355431,7 @@
    "id": "ksu",
    "name": "Keski-Suomi",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "FIN"
@@ -354944,6 +355467,24 @@
      "Keski-Suomi",
      "Keski-Pohjanmaa"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 674.1,
+     "stations": 2.1,
+     "places": 4.3,
+     "routes": 169.3,
+     "merge": 5.4,
+     "nocar": 4.7,
+     "everyday": 2.3
+    },
+    "built": "2026-11-12T19:44:49",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:55",
+    "shipped": "2026-11-12T22:23:58"
    }
   },
   {
@@ -354951,7 +355492,7 @@
    "id": "ete",
    "name": "Etelä-Pohjanmaa",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "FIN"
@@ -354985,6 +355526,24 @@
     "unit_names": [
      "Etelä-Pohjanmaa"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 177.1,
+     "stations": 1.9,
+     "places": 5.1,
+     "routes": 85.8,
+     "merge": 5.0,
+     "nocar": 4.3,
+     "everyday": 1.6
+    },
+    "built": "2026-11-12T19:35:08",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:56",
+    "shipped": "2026-11-12T22:23:58"
    }
   },
   {
@@ -354992,7 +355551,7 @@
    "id": "lpp",
    "name": "Lappi",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "FIN"
@@ -355026,6 +355585,28 @@
     "unit_names": [
      "Lappi"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 1162.4,
+     "stations": 1.6,
+     "places": 3.3,
+     "routes": 84.7,
+     "merge": 5.1,
+     "nocar": 2.3,
+     "everyday": 1.8
+    },
+    "built": "2026-11-12T19:51:26",
+    "gate": {
+     "warn": [
+      "area_km2 98478.59421368847",
+      "top_zone_jobs_share 0.1838711988345833",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:56",
+    "shipped": "2026-11-12T22:23:59"
    }
   },
   {
@@ -355033,7 +355614,7 @@
    "id": "lox",
    "name": "Lõuna-Eesti",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "EST"
@@ -355069,6 +355650,24 @@
      "Lõuna-Eesti",
      "Kesk-Eesti"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 401.9,
+     "stations": 1.4,
+     "places": 5.8,
+     "routes": 139.0,
+     "merge": 6.2,
+     "nocar": 3.0,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T20:37:25",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:57",
+    "shipped": "2026-11-12T22:23:59"
    }
   },
   {
@@ -355076,7 +355675,7 @@
    "id": "lst",
    "name": "Lääne-Eesti",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "EST"
@@ -355110,6 +355709,27 @@
     "unit_names": [
      "Lääne-Eesti"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 473.5,
+     "stations": 2.1,
+     "places": 5.3,
+     "routes": 44.9,
+     "merge": 2.3,
+     "nocar": 2.8,
+     "everyday": 1.7
+    },
+    "built": "2026-11-12T20:36:58",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.12971959222207102",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T21:24:57",
+    "shipped": "2026-11-12T22:24:00"
    }
   },
   {
@@ -355117,7 +355737,7 @@
    "id": "vim",
    "name": "Vidzeme",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "LVA"
@@ -355153,6 +355773,26 @@
      "Vidzeme",
      "Latgale"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 175.5,
+     "stations": 1.9,
+     "places": 5.7,
+     "routes": 168.2,
+     "merge": 4.0,
+     "nocar": 1.6,
+     "everyday": 0.7
+    },
+    "built": "2026-11-12T20:43:25",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.10173758107950215"
+     ]
+    },
+    "gated": "2026-11-12T21:24:58",
+    "shipped": "2026-11-12T22:24:00"
    }
   },
   {
@@ -355160,7 +355800,7 @@
    "id": "kuz",
    "name": "Kurzeme",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "LVA"
@@ -355194,6 +355834,24 @@
     "unit_names": [
      "Kurzeme"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-173900",
+    "steps": {
+     "build": 102.9,
+     "stations": 2.1,
+     "places": 4.5,
+     "routes": 61.0,
+     "merge": 3.6,
+     "nocar": 3.4,
+     "everyday": 1.7
+    },
+    "built": "2026-11-12T20:40:28",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:24:58",
+    "shipped": "2026-11-12T22:24:01"
    }
   },
   {
@@ -355201,7 +355859,7 @@
    "id": "ute",
    "name": "Utenos apskritis",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "europe",
    "countries": [
     "LTU"
@@ -355209,8 +355867,8 @@
    "iso2": "LT",
    "people": 117569,
    "origin": [
-    26.4264,
-    55.5983
+    25.5997,
+    55.4978
    ],
    "tz": "Europe/Vilnius",
    "utc_offset": 2,
@@ -355234,7 +355892,26 @@
     "zone": "T-723",
     "unit_names": [
      "Utenos apskritis"
-    ]
+    ],
+    "origin_by_hand": "T-3287: Utena, the county seat and its biggest town, which names the zone (the lead unit's densest pixel was in Visaginas, 50 km east)"
+   },
+   "run": {
+    "run_batch": "20261112-212632",
+    "built": "2026-11-12T21:31:51",
+    "steps": {
+     "build": 58.9,
+     "stations": 0.7,
+     "places": 1.9,
+     "routes": 23.3,
+     "merge": 0.8,
+     "nocar": 1.2,
+     "everyday": 0.7
+    },
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T21:33:16",
+    "shipped": "2026-11-12T22:24:01"
    }
   },
   {
@@ -355242,7 +355919,7 @@
    "id": "hmh",
    "name": "Hamhung City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355286,6 +355963,26 @@
      "Rakwon",
      "Yodok"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 213.9,
+     "stations": 0.9,
+     "places": 1.6,
+     "routes": 24.1,
+     "merge": 0.7,
+     "nocar": 1.8,
+     "everyday": 1.2
+    },
+    "built": "2026-11-12T14:27:43",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.11360477825483867"
+     ]
+    },
+    "gated": "2026-11-12T14:59:51",
+    "shipped": "2026-11-12T19:01:17"
    }
   },
   {
@@ -355293,7 +355990,7 @@
    "id": "chj",
    "name": "Chongjin City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355335,6 +356032,27 @@
      "Kyonghung",
      "Puryong"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 34.4,
+     "stations": 1.1,
+     "places": 1.8,
+     "routes": 10.3,
+     "merge": 0.8,
+     "nocar": 1.3,
+     "everyday": 0.9
+    },
+    "built": "2026-11-12T14:28:34",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.1019100077488792",
+      "top_school_cell_pupils 6173.7919921875"
+     ]
+    },
+    "gated": "2026-11-12T14:59:53",
+    "shipped": "2026-11-12T19:01:18"
    }
   },
   {
@@ -355342,7 +356060,7 @@
    "id": "phy",
    "name": "Phyongsan",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355398,6 +356116,27 @@
      "Suan",
      "Thosan"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 34.7,
+     "stations": 1.0,
+     "places": 2.5,
+     "routes": 21.0,
+     "merge": 0.8,
+     "nocar": 1.3,
+     "everyday": 0.9
+    },
+    "built": "2026-11-12T14:28:47",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T14:59:55",
+    "shipped": "2026-11-12T19:01:19"
    }
   },
   {
@@ -355405,7 +356144,7 @@
    "id": "sny",
    "name": "Sunchon City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355453,6 +356192,26 @@
      "Taehung",
      "Nyongwon"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 21.6,
+     "stations": 1.4,
+     "places": 2.0,
+     "routes": 19.5,
+     "merge": 1.0,
+     "nocar": 1.4,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:29:23",
+    "gate": {
+     "warn": [
+      "drive_factor_median 2.0200555277086965"
+     ]
+    },
+    "gated": "2026-11-12T14:59:56",
+    "shipped": "2026-11-12T19:01:20"
    }
   },
   {
@@ -355460,7 +356219,7 @@
    "id": "sch",
    "name": "Sinchon",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355512,6 +356271,28 @@
      "Kwail",
      "Songhwa"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 31.6,
+     "stations": 1.0,
+     "places": 1.7,
+     "routes": 16.3,
+     "merge": 0.7,
+     "nocar": 1.3,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:29:43",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.13868637937468972",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T14:59:58",
+    "shipped": "2026-11-12T19:01:21"
    }
   },
   {
@@ -355519,7 +356300,7 @@
    "id": "tco",
    "name": "Tanchon City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355565,6 +356346,28 @@
      "Toksong",
      "Kumho"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 21.7,
+     "stations": 1.0,
+     "places": 1.6,
+     "routes": 9.0,
+     "merge": 0.8,
+     "nocar": 1.3,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:30:01",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.142338926876597",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T14:59:59",
+    "shipped": "2026-11-12T19:01:21"
    }
   },
   {
@@ -355572,7 +356375,7 @@
    "id": "hut",
    "name": "Huichon City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355628,6 +356431,26 @@
      "Kophung",
      "Tongsin"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 23.5,
+     "stations": 1.1,
+     "places": 1.4,
+     "routes": 14.6,
+     "merge": 0.9,
+     "nocar": 1.4,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T14:30:29",
+    "gate": {
+     "warn": [
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:00:01",
+    "shipped": "2026-11-12T19:01:22"
    }
   },
   {
@@ -355635,7 +356458,7 @@
    "id": "sjc",
    "name": "Sinuiju City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355683,6 +356506,27 @@
      "Changsong",
      "Sindo"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 21.2,
+     "stations": 0.9,
+     "places": 1.7,
+     "routes": 9.4,
+     "merge": 0.7,
+     "nocar": 1.4,
+     "everyday": 0.8
+    },
+    "built": "2026-11-12T14:30:39",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.11794743395018535",
+      "top_school_cell_pupils 6011.45166015625"
+     ]
+    },
+    "gated": "2026-11-12T15:00:03",
+    "shipped": "2026-11-12T19:01:23"
    }
   },
   {
@@ -355690,7 +356534,7 @@
    "id": "woa",
    "name": "Wonsan City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355740,6 +356584,26 @@
      "Phangyo",
      "Popdong"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 27.2,
+     "stations": 0.9,
+     "places": 1.7,
+     "routes": 11.4,
+     "merge": 0.9,
+     "nocar": 1.7,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T14:31:15",
+    "gate": {
+     "warn": [
+      "top_school_cell_pupils 6227.974609375"
+     ]
+    },
+    "gated": "2026-11-12T15:00:04",
+    "shipped": "2026-11-12T19:01:24"
    }
   },
   {
@@ -355747,7 +356611,7 @@
    "id": "kso",
    "name": "Kusong City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355793,6 +356657,26 @@
      "Thaechon",
      "Chonma"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 24.1,
+     "stations": 0.9,
+     "places": 1.6,
+     "routes": 11.8,
+     "merge": 1.5,
+     "nocar": 1.8,
+     "everyday": 1.2
+    },
+    "built": "2026-11-12T14:31:24",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.15058654530595983"
+     ]
+    },
+    "gated": "2026-11-12T15:00:06",
+    "shipped": "2026-11-12T19:01:25"
    }
   },
   {
@@ -355800,7 +356684,7 @@
    "id": "kgg",
    "name": "Kanggye City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355852,6 +356736,27 @@
      "Hwaphyong",
      "Junggang"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 23.3,
+     "stations": 1.3,
+     "places": 1.8,
+     "routes": 11.5,
+     "merge": 0.8,
+     "nocar": 1.8,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T14:31:59",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.11239208400584812",
+      "drive_factor_median 2.0518667734879767"
+     ]
+    },
+    "gated": "2026-11-12T15:00:08",
+    "shipped": "2026-11-12T19:01:26"
    }
   },
   {
@@ -355859,7 +356764,7 @@
    "id": "hej",
    "name": "Haeju City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355903,6 +356808,27 @@
      "Sinwon",
      "Thaethan"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 28.0,
+     "stations": 1.1,
+     "places": 1.7,
+     "routes": 11.6,
+     "merge": 0.8,
+     "nocar": 1.6,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T14:39:10",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.11368475936450519",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:00:09",
+    "shipped": "2026-11-12T19:01:27"
    }
   },
   {
@@ -355910,7 +356836,7 @@
    "id": "key",
    "name": "Kaechon City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -355950,6 +356876,29 @@
      "Mundok",
      "Chongnam"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 17.9,
+     "stations": 0.9,
+     "places": 1.7,
+     "routes": 9.2,
+     "merge": 0.7,
+     "nocar": 1.4,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:38:57",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.17907468711108873",
+      "top_school_cell_pupils 6010.544921875",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:00:11",
+    "shipped": "2026-11-12T19:01:28"
    }
   },
   {
@@ -355957,7 +356906,7 @@
    "id": "sms",
    "name": "Samsu",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356013,6 +356962,24 @@
      "Samjiyon",
      "Kim Jong Suk"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 24.4,
+     "stations": 1.0,
+     "places": 1.8,
+     "routes": 12.6,
+     "merge": 0.8,
+     "nocar": 1.4,
+     "everyday": 0.9
+    },
+    "built": "2026-11-12T14:39:42",
+    "gate": {
+     "warn": []
+    },
+    "gated": "2026-11-12T15:00:12",
+    "shipped": "2026-11-12T19:01:28"
    }
   },
   {
@@ -356020,7 +356987,7 @@
    "id": "kie",
    "name": "Kim Chaek City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356064,6 +357031,28 @@
      "Hwadae",
      "Myongchon"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 21.4,
+     "stations": 1.0,
+     "places": 1.7,
+     "routes": 9.8,
+     "merge": 0.7,
+     "nocar": 1.4,
+     "everyday": 1.2
+    },
+    "built": "2026-11-12T14:39:50",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.11862014331032748",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T15:00:14",
+    "shipped": "2026-11-12T19:01:29"
    }
   },
   {
@@ -356071,7 +357060,7 @@
    "id": "jon",
    "name": "Jongju City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356113,6 +357102,32 @@
      "Kwaksan",
      "Tongchang"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 25.0,
+     "stations": 1.6,
+     "places": 2.7,
+     "routes": 14.2,
+     "merge": 0.9,
+     "nocar": 1.6,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:40:31",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.21127445890131558",
+      "fleet_range 1"
+     ]
+    },
+    "parked": "2026-11-12T14:46:20",
+    "gated": "2026-11-12T15:06:18",
+    "shipped": "2026-11-12T19:01:30"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town zone, top 6 km zone at the town's centre (Jongju, Sariwon, Songrim, Kaesong, Pyongsong), 0.21-0.28 against 0.2 (adding-a-country 6: up to 0.35)"
    }
   },
   {
@@ -356120,7 +357135,7 @@
    "id": "pyg",
    "name": "Pyongwon",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356160,6 +357175,32 @@
      "Taedong",
      "Jungsan"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 26.2,
+     "stations": 1.6,
+     "places": 2.6,
+     "routes": 15.9,
+     "merge": 0.8,
+     "nocar": 1.7,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:40:42",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_cell_jobs_vs_size 628.8714405806335",
+      "fleet_range 1"
+     ]
+    },
+    "parked": "2026-11-12T14:46:21",
+    "gated": "2026-11-12T15:06:19",
+    "shipped": "2026-11-12T19:01:31"
+   },
+   "gate_relax": {
+    "top_cell_jobs_vs_size": "proxy jobs, top cell at the county seat's centre (Sukchon, Kosong; not a GHSL blob), 629 and 704 against 600"
    }
   },
   {
@@ -356167,7 +357208,7 @@
    "id": "peh",
    "name": "Paechon",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356207,6 +357248,28 @@
      "Chongdan",
      "Pongchon"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 22.4,
+     "stations": 1.1,
+     "places": 2.0,
+     "routes": 9.6,
+     "merge": 0.8,
+     "nocar": 1.5,
+     "everyday": 1.0
+    },
+    "built": "2026-11-12T14:41:11",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.12388520915477741",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T15:00:15",
+    "shipped": "2026-11-12T19:01:32"
    }
   },
   {
@@ -356214,7 +357277,7 @@
    "id": "kja",
    "name": "Kujang",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356256,6 +357319,29 @@
      "Pakchon",
      "Hyangsan"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 19.5,
+     "stations": 1.0,
+     "places": 1.9,
+     "routes": 9.6,
+     "merge": 0.7,
+     "nocar": 1.4,
+     "everyday": 0.9
+    },
+    "built": "2026-11-12T14:41:19",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "pop_vs_plan 0.7761497800868737",
+      "fleet_range 2"
+     ]
+    },
+    "parked": "2026-11-12T14:46:22",
+    "gated": "2026-11-12T15:06:20",
+    "shipped": "2026-11-12T19:01:33"
    }
   },
   {
@@ -356263,7 +357349,7 @@
    "id": "kgd",
    "name": "Kangdong",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356305,6 +357391,28 @@
      "Yangdok",
      "Sinyang"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 21.0,
+     "stations": 1.0,
+     "places": 1.7,
+     "routes": 12.7,
+     "merge": 0.9,
+     "nocar": 1.6,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T14:41:53",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "drive_factor_median 2.1503379159523",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:00:17",
+    "shipped": "2026-11-12T19:01:33"
    }
   },
   {
@@ -356312,7 +357420,7 @@
    "id": "hoe",
    "name": "Hoeryong City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356354,6 +357462,29 @@
      "Kyongwon",
      "Yonsa"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 22.2,
+     "stations": 1.6,
+     "places": 2.2,
+     "routes": 11.1,
+     "merge": 0.8,
+     "nocar": 1.4,
+     "everyday": 1.2
+    },
+    "built": "2026-11-12T14:42:01",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.15926251367413335",
+      "top_school_cell_pupils 6131.61962890625",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T15:00:18",
+    "shipped": "2026-11-12T19:01:34"
    }
   },
   {
@@ -356361,7 +357492,7 @@
    "id": "pyx",
    "name": "Phyonggang",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356409,6 +357540,32 @@
      "Changdo",
      "Hoeyang"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 36.4,
+     "stations": 1.8,
+     "places": 3.2,
+     "routes": 13.1,
+     "merge": 1.0,
+     "nocar": 1.6,
+     "everyday": 1.4
+    },
+    "built": "2026-11-12T14:48:54",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_cell_jobs_vs_size 703.8697356599217",
+      "fleet_range 2"
+     ]
+    },
+    "parked": "2026-11-12T14:57:43",
+    "gated": "2026-11-12T15:06:20",
+    "shipped": "2026-11-12T19:01:35"
+   },
+   "gate_relax": {
+    "top_cell_jobs_vs_size": "proxy jobs, top cell at the county seat's centre (Sukchon, Kosong; not a GHSL blob), 629 and 704 against 600"
    }
   },
   {
@@ -356416,7 +357573,7 @@
    "id": "srw",
    "name": "Sariwon",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356452,6 +357609,31 @@
      "Sariwon City",
      "Pongsan"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 22.3,
+     "stations": 3.0,
+     "places": 2.6,
+     "routes": 11.9,
+     "merge": 1.2,
+     "nocar": 2.1,
+     "everyday": 1.3
+    },
+    "built": "2026-11-12T14:48:40",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.243234189514735",
+      "fleet_range 3"
+     ]
+    },
+    "parked": "2026-11-12T14:57:44",
+    "gated": "2026-11-12T15:06:21",
+    "shipped": "2026-11-12T19:01:36"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town zone, top 6 km zone at the town's centre (Jongju, Sariwon, Songrim, Kaesong, Pyongsong), 0.21-0.28 against 0.2 (adding-a-country 6: up to 0.35)"
    }
   },
   {
@@ -356459,7 +357641,7 @@
    "id": "hwn",
    "name": "Hwangju",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356499,6 +357681,32 @@
      "Junghwa",
      "Kangnam"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 25.4,
+     "stations": 1.7,
+     "places": 3.7,
+     "routes": 15.2,
+     "merge": 1.0,
+     "nocar": 2.2,
+     "everyday": 2.0
+    },
+    "built": "2026-11-12T14:49:34",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.21929249796908717",
+      "fleet_range 3"
+     ]
+    },
+    "parked": "2026-11-12T14:57:46",
+    "gated": "2026-11-12T15:06:22",
+    "shipped": "2026-11-12T19:01:37"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town zone, top 6 km zone at the town's centre (Jongju, Sariwon, Songrim, Kaesong, Pyongsong), 0.21-0.28 against 0.2 (adding-a-country 6: up to 0.35)"
    }
   },
   {
@@ -356506,7 +357714,7 @@
    "id": "nmp",
    "name": "Nampo City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356546,6 +357754,27 @@
      "Taean",
      "Ryonggang"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 30.3,
+     "stations": 1.4,
+     "places": 2.4,
+     "routes": 12.2,
+     "merge": 1.0,
+     "nocar": 2.0,
+     "everyday": 1.1
+    },
+    "built": "2026-11-12T14:49:46",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.12646404297872674",
+      "fleet_range 1"
+     ]
+    },
+    "gated": "2026-11-12T15:00:19",
+    "shipped": "2026-11-12T19:01:37"
    }
   },
   {
@@ -356553,7 +357782,7 @@
    "id": "ksc",
    "name": "Kaesong City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356589,6 +357818,31 @@
      "Kaesong City",
      "Jangphung"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 23.4,
+     "stations": 1.2,
+     "places": 2.1,
+     "routes": 8.1,
+     "merge": 0.9,
+     "nocar": 2.2,
+     "everyday": 2.1
+    },
+    "built": "2026-11-12T14:50:17",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.2834734709864619",
+      "fleet_range 2"
+     ]
+    },
+    "parked": "2026-11-12T14:57:48",
+    "gated": "2026-11-12T15:06:23",
+    "shipped": "2026-11-12T19:01:38"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town zone, top 6 km zone at the town's centre (Jongju, Sariwon, Songrim, Kaesong, Pyongsong), 0.21-0.28 against 0.2 (adding-a-country 6: up to 0.35)"
    }
   },
   {
@@ -356596,7 +357850,7 @@
    "id": "kyx",
    "name": "Kumya",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356634,6 +357888,28 @@
      "Kowon",
      "Sudong"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 20.9,
+     "stations": 1.1,
+     "places": 2.4,
+     "routes": 11.8,
+     "merge": 1.4,
+     "nocar": 3.5,
+     "everyday": 2.0
+    },
+    "built": "2026-11-12T14:50:32",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.15292571316939543",
+      "fleet_range 2"
+     ]
+    },
+    "gated": "2026-11-12T15:00:21",
+    "shipped": "2026-11-12T19:01:39"
    }
   },
   {
@@ -356641,7 +357917,7 @@
    "id": "pyc",
    "name": "Pyongsong City",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "PRK"
@@ -356677,6 +357953,33 @@
      "Pyongsong City",
      "Unjong Dist."
     ]
+   },
+   "run": {
+    "run_batch": "20261112-142011",
+    "steps": {
+     "build": 28.2,
+     "stations": 2.0,
+     "places": 3.8,
+     "routes": 22.3,
+     "merge": 1.5,
+     "nocar": 2.5,
+     "everyday": 1.7
+    },
+    "built": "2026-11-12T14:51:22",
+    "gate": {
+     "warn": [
+      "top_zone_jobs_share 0.2186375100273718",
+      "mean_commute_km 2.9874636627063986",
+      "fleet_range 1"
+     ]
+    },
+    "parked": "2026-11-12T14:57:50",
+    "gated": "2026-11-12T15:06:24",
+    "shipped": "2026-11-12T19:01:40"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town zone, top 6 km zone at the town's centre (Jongju, Sariwon, Songrim, Kaesong, Pyongsong), 0.21-0.28 against 0.2 (adding-a-country 6: up to 0.35)",
+    "mean_commute_km": "compact satellite town of Pyongyang, 2.99 km against the floor 3"
    }
   },
   {
@@ -356684,7 +357987,7 @@
    "id": "dry",
    "name": "Dryden",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "CAN"
@@ -356746,6 +358049,32 @@
      "Seine River 23B",
      "Lac des Mille Lacs 22A1"
     ]
+   },
+   "run": {
+    "run_batch": "20261112-223943",
+    "steps": {
+     "build": 1071.8,
+     "stations": 0.8,
+     "places": 1.5,
+     "routes": 21.0,
+     "merge": 0.9,
+     "nocar": 1.1,
+     "everyday": 0.7
+    },
+    "built": "2026-11-12T23:10:33",
+    "gate": {
+     "warn": [
+      "area_km2 60224.33209940681",
+      "top_zone_jobs_share 0.3078050903276182",
+      "fleet_range 4"
+     ]
+    },
+    "parked": "2026-11-12T23:14:05",
+    "gated": "2026-11-12T23:17:28",
+    "shipped": "2026-11-13T00:22:01"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "one-town corridor zone of 0.03M at 0.308, under about 0.35: the top cell is in Dryden itself, a paper mill town"
    }
   },
   {
@@ -356753,7 +358082,7 @@
    "id": "ago",
    "name": "Algoma, Unorganized, North Pa",
    "kind": "zone",
-   "status": "planned",
+   "status": "shipped",
    "region": "world",
    "countries": [
     "CAN"
@@ -356810,6 +358139,33 @@
      "Gros Cap 49"
     ],
     "origin_by_hand": "T-3287: Marathon, the corridor's biggest town (the lead unit's densest pixel was on Sault Ste. Marie's edge)"
+   },
+   "run": {
+    "run_batch": "20261112-223943",
+    "steps": {
+     "build": 536.7,
+     "stations": 0.7,
+     "places": 1.3,
+     "routes": 14.3,
+     "merge": 0.7,
+     "nocar": 1.1,
+     "everyday": 0.7
+    },
+    "built": "2026-11-12T23:01:30",
+    "gate": {
+     "warn": [
+      "university_rate 0.0",
+      "top_zone_jobs_share 0.2998872053213634",
+      "drive_factor_median 2.0200555277086965",
+      "fleet_range 4"
+     ]
+    },
+    "parked": "2026-11-12T23:14:05",
+    "gated": "2026-11-12T23:17:28",
+    "shipped": "2026-11-13T00:22:01"
+   },
+   "gate_relax": {
+    "top_zone_jobs_share": "corridor zone of 0.02M at 0.2999, under 0.3: the top cell is Terrace Bay, a pulp mill town on the north shore of Lake Superior"
    }
   }
  ],

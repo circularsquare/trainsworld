@@ -2,7 +2,8 @@
 // their own panel (ui/SavesPanel.tsx).
 
 import type { ComponentChildren } from "preact";
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
+import { budgetGB, gbText, liveGB } from "../game/memoryEstimate";
 import { CURRENCIES, CURRENCY, isCurrency } from "../game/currency";
 import { exact } from "../game/format";
 import { awayNear, rushRun, whenAway, whenBack, whenOut } from "../game/days";
@@ -37,9 +38,6 @@ type Ground = "map" | "satellite";
 const GROUND_OPTIONS: [Ground, MessageKey][] = [["map", "settingsTab.mapDrawn"], ["satellite", "settingsTab.satellite"]];
 const REAL_OPTIONS: [RealNetworkShown, MessageKey][] = [["none", "settingsTab.realNone"], ["passenger", "settingsTab.realPassenger"], ["all", "settingsTab.realAll"]];
 const PROJECTION_OPTIONS: [Projection, MessageKey][] = [["flat", "settingsTab.flat"], ["globe", "settingsTab.globe"]];
-// Map detail (the saved key is still `lighterMap`): Low is the lighter map that was "on", High is "off"
-type LighterMap = "on" | "off";
-const LIGHTER_OPTIONS: [LighterMap, MessageKey][] = [["on", "settingsTab.low"], ["off", "settingsTab.high"]];
 /** Options worded in the current language, at render. */
 const worded = <T,>(opts: [T, MessageKey][]): [T, string][] => opts.map(([v, k]) => [v, t(k)]);
 const percent = (v: number) => tNumber(v, { style: "percent", maximumFractionDigits: 0 });
@@ -174,24 +172,21 @@ export function SettingsTab() {
           {t("settingsTab.zoomButtons")}
         </Check>
       </div>
-      <div class="h">{t("settingsTab.lineShapes")}</div>
-      {SHAPE_MODES.map((m) => (
-        <div class="slider">
-          <span>{t(MODE_NAME[m])}</span>
-          <ShapePicker value={d.modeShapes[m]} onChange={(s) => setDisplay("modeShapes", { ...display.peek().modeShapes, [m]: s })} />
-        </div>
-      ))}
       <div class="h">{t("settingsTab.theme")}</div>
       <div class="stack">
         <Segmented options={SHADE_NAMES.map((s) => [s, t(SHADE_NAME[s])] as [Shade, string])} value={shade.value} onChange={(v) => (shade.value = v)} />
         <Segmented options={THEMES.map((th) => [th, t(THEME_NAME[th])] as [Theme, string])} value={theme.value} onChange={(v) => (theme.value = v)} />
       </div>
       <UiScale />
-      <div class="h">{t("settingsTab.unitsPerf")}</div>
+      <div class="h">{t("settingsTab.units")}</div>
       <div class="checks">
         <Check checked={d.usUnits} onChange={(v) => setDisplay("usUnits", v)}>
           {t("settingsTab.usUnits")}
         </Check>
+      </div>
+      <CurrencyRow />
+      <div class="h">{t("settingsTab.performance")}</div>
+      <div class="checks">
         <Check checked={d.moreCores} onChange={(v) => setDisplay("moreCores", v)}>
           <span data-tip={t("settingsTab.moreCoresTip")}>{t("settingsTab.moreCores")}</span>
         </Check>
@@ -204,12 +199,17 @@ export function SettingsTab() {
           </Check>
         )}
       </div>
-      <CurrencyRow />
-      <div class="slider" data-tip={t("settingsTab.mapDetailTip")}>
-        <span>{t("settingsTab.mapDetail")}</span>
-        <Segmented<LighterMap> options={worded(LIGHTER_OPTIONS)} value={d.lighterMap} onChange={(v) => setDisplay("lighterMap", v)} />
-      </div>
+      <MemoryRow />
       <GameMode />
+      <div class="h">{t("settingsTab.lineShapes")}</div>
+      <div class="shape-grid">
+        {SHAPE_MODES.map((m) => (
+          <div class="slider">
+            <span>{t(MODE_NAME[m])}</span>
+            <ShapePicker value={d.modeShapes[m]} onChange={(s) => setDisplay("modeShapes", { ...display.peek().modeShapes, [m]: s })} />
+          </div>
+        ))}
+      </div>
       <AccountSection />
       <FeedbackButton />
       <FeedbackPanel />
@@ -220,6 +220,18 @@ export function SettingsTab() {
       <Credits />
     </>
   );
+}
+
+/** T-3329: the memory the game takes now against what it aims to stay under here; red from 85% of that. */
+function MemoryRow() {
+  const [used, setUsed] = useState(liveGB);
+  useEffect(() => { const id = setInterval(() => setUsed(liveGB()), 2000); return () => clearInterval(id); }, []);
+  if (used === null) return null;
+  const budget = budgetGB();
+  return <div class="slider" data-tip={t("settingsTab.memoryTip", { budget: gbText(budget) })}>
+    <span>{t("settingsTab.memory")}</span>
+    <span class={"num" + (used > 0.85 * budget ? " memory-bad" : "")}>{t("settingsTab.memoryValue", { used: gbText(used), budget: gbText(budget) })}</span>
+  </div>;
 }
 
 /** T-2798: the currency money is shown in, a select as the purpose's; the game counts US$ whatever it says. */

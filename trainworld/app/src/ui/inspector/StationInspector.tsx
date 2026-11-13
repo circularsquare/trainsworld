@@ -36,6 +36,8 @@ import { ComplexMap } from "./ComplexMap";
 import { ClosestStations } from "./ClosestStations";
 import { PurposeSplit } from "./PurposeSplit";
 import { StationUpgrades, TerminalButton } from "./StationUpgrades";
+import { PlatformTracks } from "../ToolBar";
+import { StationSides } from "./StationSides";
 
 /** Open station `m` on its own, in station view, from its complex (T-246, T-249). */
 function openStation(m: string) {
@@ -364,6 +366,7 @@ function StationDetails({ s, lines, props }: {
   const visits = (l: LineInput) => l.stops.flatMap((x, k) => (x === s.id ? [k] : []));
   const here = lines.map((l) => [l, visits(l).reduce((n, k) => n + (t.get(l.id)?.stops[k] ?? 0), 0)] as const);
   const m = moneyState.value;
+  const doubleHere = !!world.value?.edges.some((e) => (e.a === s.num || e.b === s.num) && e.tracks === 2);
   return (
     <>
       <Built built={s.built} />
@@ -375,6 +378,15 @@ function StationDetails({ s, lines, props }: {
             if (to === s.length) return false;
             return props(to);
           }} />
+        </li>}
+        {/* T-3332: on double track the platform on the left track, both or the right track; on single track
+            a stop with or without a passing loop */}
+        {!s.port && <li>
+          <span class="grow">{tr("stationInspector.platformTracks")}</span>
+          {doubleHere
+            ? <StationSides s={s} />
+            : <PlatformTracks one={!!s.one} oneTip={tr("stationInspector.noLoop")} bothTip={tr("stationInspector.loop")}
+                onPick={(one) => void edit({ op: "stationTracks", node: s.num, one })} />}
         </li>}
         {s.built && m && (
           <Row label={tr("trackInspector.upkeep")}>

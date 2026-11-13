@@ -75,10 +75,9 @@ the render tiles are plain arithmetic, and the globe takes the same coordinates.
   not open.
 - **Running side** [T-3297]. One side per save, for trains, trams and buses alike: `right_hand`, one flag per
   network, in every save's network bytes (every save before T-3297 is right-hand). A new game takes the side
-  the new game sheet gives (`NewGameSpec.rightHand`; ui-panels.md "The new game sheet"): until the player
-  picks, the side its start country's railways keep to (`game/runningSide.ts`: where roads keep left, but
+  the new game sheet works out without asking (`NewGameSpec.rightHand`; ui-panels.md "The new game sheet"; T-3367): the side its start country's railways keep to (`game/runningSide.ts`: where roads keep left, but
   Indonesia, whose railways keep right; and where railways kept left though roads keep right, British-built
-  networks, Sweden, mainland China and South Korea's mainlines), right on the world map; `?new=1` is right
+  networks, Sweden, mainland China and South Korea's mainlines), on the world map the player's own country's side (browser time zone), else right; `?new=1` is right
   unless `&side=left`. A real network keeps its metro's side: the saves of London, Tokyo, Osaka, Sendai, Hong
   Kong, Singapore, Madrid, Cairo and New Delhi are left-hand (`realauto.json` `left`, `realsave --left`,
   `pipeline/realside.py`), Paris, Seoul, Taipei, São Paulo and mainland China's right although their mainlines
@@ -89,11 +88,11 @@ the render tiles are plain arithmetic, and the globe takes the same coordinates.
   (`checks/t3297-mirror.mjs`).
 - **Switching a game's side** [T-3297; `TrackApi::flip_right_hand`, `TrackWorld::flip_right_hand`], from
   Settings: in place, ids kept. Joins are ground left or right, so they stay; what was set for the other side is
-  turned round: every single-track piece the player set one way on a run meeting double track where a join counts
+  turned around: every single-track piece the player set one way on a run meeting double track where a join counts
   (`Network::flip_reversals`; a flyover's legs then still meet the tracks that run their way, and the leg that
   ramps over the main is again the one that crosses it). Every line the switch leaves broken is moved through its
   same stops where it can be; rates are settled again; the undo history is dropped. Reported, each a click from its
-  place: pieces turned round and lines moved (fixed), lines left broken, junctions whose moves now cross flat where
+  place: pieces turned around and lines moved (fixed), lines left broken, junctions whose moves now cross flat where
   they did not and one-way track no train can use (to fix). The clock worker goes on as after a rebuilt model
   (`restart(.., "rebuilt")`). A real network started on the other side is switched the same way as it opens.
 

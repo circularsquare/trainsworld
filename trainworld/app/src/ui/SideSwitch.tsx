@@ -1,11 +1,11 @@
-// T-3297: the running side, one per game for trains, trams and buses: picked on the new game sheet (set from the start
-// country, game/runningSide.ts), and switched in Settings once the game has track, after a question, with a list of
+// T-3297: the running side, one per game for trains, trams and buses: set when the game starts, without asking (from the
+// start country, game/runningSide.ts), and switched in Settings once the game has track, after a question, with a list of
 // what the switch fixed and what it left to fix, each row a click from the place.
 
 import type { ComponentChildren } from "preact";
 import { useState } from "preact/hooks";
 import { ask, selection, tool } from "../game/ui";
-import { flipSites, rightHand, world } from "../game/world";
+import { flipSites, rightHand, stationsById, world } from "../game/world";
 import type { Selection, WorldView } from "../game/types";
 import { flipSide } from "../workers/clockClient";
 import { locateLine, locateNodes } from "./locate";
@@ -14,9 +14,9 @@ import { Chip, Segmented } from "./widgets";
 import { t } from "../i18n";
 
 /** The two sides as a pair of buttons with the row's label. */
-export function SideSwitch({ right, onPick, tip, cls = "slider" }: { right: boolean; onPick: (right: boolean) => void; tip?: string; cls?: string }) {
+export function SideSwitch({ right, onPick }: { right: boolean; onPick: (right: boolean) => void }) {
   return (
-    <div class={cls + " side-switch"} data-tip={tip}>
+    <div class="slider side-switch">
       <span>{t("sideSwitch.label")}</span>
       <Segmented<"left" | "right"> options={[["left", t("sideSwitch.left")], ["right", t("sideSwitch.right")]]} value={right ? "right" : "left"} onChange={(v) => onPick(v === "right")} />
     </div>
@@ -25,7 +25,7 @@ export function SideSwitch({ right, onPick, tip, cls = "slider" }: { right: bool
 
 /** One place the last switch fixed or left: `kind` as the sim's `FLIP_*`, `id` its edge, line or node. */
 interface Site { kind: number; id: number }
-const FIXED = new Set([1, 2]);
+const FIXED = new Set([1, 2, 6]);
 
 /** Settings' row: the game's side; picking the other asks first once there is track, then shows the list. */
 export function SideRow() {
@@ -79,6 +79,12 @@ function row(w: WorldView, s: Site): { label: ComponentChildren; go: () => void 
     return { label: t("sideSwitch.reversed"), go: () => { locateNodes([e.a, e.b]); pick({ kind: "track", edge: e.id }); } };
   }
   if (!w.nodes.has(s.id)) return null;
+  // T-3332: a one-track station keeps its platform's track, which now carries the other way
+  if (s.kind === 6) {
+    const st = stationsById(w).get(String(s.id));
+    if (!st) return null;
+    return { label: t("sideSwitch.oneTrack", { name: st.name }), go: () => { locateNodes([s.id]); pick({ kind: "station", station: String(s.id) }); } };
+  }
   return {
     label: t(s.kind === 4 ? "sideSwitch.flat" : "sideSwitch.unusable"),
     go: () => { locateNodes([s.id]); if (s.kind === 4) pick({ kind: "junction", node: s.id }); },

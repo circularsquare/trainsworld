@@ -205,7 +205,7 @@ Full design, numbers and sources: `notes/T-008.md`.
 
 - **What the player builds**: a **route** drawn as one stroke, **double track by default** (4 m
   apart, trains keeping right everywhere, T-319). (Anita, 2026-10-08; not NIMBY-style individual
-  tracks.) **Single track** is the track bar's other count (regular track only): cheaper, one
+  tracks.) **Single track** is the track bar's other count (any track type, T-3352; high-speed track costs 0.9x double and upkeep 0.9x, single tram 0.6x its price): cheaper, one
   track for both directions unless it runs one way (below), with sections split at stations; a
   single-track station has one shared platform track and gets no passing loop. Built or blueprint single track can be rebuilt as double ("Rebuilding constructed track", 6.4).
 - **Single track meeting double track** (T-3137, notes/T-3137.md "C2 as built"): where a single-track
@@ -227,7 +227,7 @@ Full design, numbers and sources: `notes/T-008.md`.
 - **The way single track runs** (T-3094, T-3137): every single-track piece runs both ways or one way
   (`Network::edge_way`: 0, 1 a to b, 2 b to a). The player's `EdgeData.oneway` decides where set (1 a to
   b, 2 b to a, 3 both ways; saves hold it in edge flag bits 11-12, older saves read 0 = not set; never
-  set on double track, a crossover, high-speed or tram track, and cleared when the piece stops being
+  set on double track, a crossover, and cleared when the piece stops being
   single). Otherwise the piece takes the way of its **run** (`lanes.rs` `derive_ways`, again on every
   edit for each run it touches, and on load): the single-track pieces through nodes where only two of
   them meet. Each run end votes: a join gives the way trains keep to on that track (the right track
@@ -278,6 +278,8 @@ Full design, numbers and sources: `notes/T-008.md`.
   node) goes on the pair clicked only (T-1687); a second click on the other pair adds its station
   there. A station placed level with one on the pair beside (`twin_at`; its node within half that
   platform of the spot beside) takes that station's name, so the two are one complex with one label.
+  A line with such a station beside every stop can run its trains on both pairs (6.3 "Both pairs of quad
+  track", T-3333).
   A station's name the player typed is flagged (`StationData::named`, bit 8 of its node flags in the save,
   set by `set_station_props` when the name changes; the twin copies it): load's tidying of capitals
   skips it, and a building's default name prefers such a member [T-2683].
@@ -287,27 +289,26 @@ Full design, numbers and sources: `notes/T-008.md`.
   drawing (quad included), placing stations or doubling up. The player draws crossing track between
   the pairs where lines should change over. A line whose stops lie on two pairs with no way between
   them is refused like any stops no track joins in order (`LinePath`: "No track joins these
-  stations in this order."), unless a longer way round exists, which it then takes. Crossovers in
+  stations in this order."), unless a longer way around exists, which it then takes. Crossovers in
   saves stay and work.
-- **High-speed track** (T-817, design notes/T-817.md): the third setting, double or quad, never single (T-3126; 4 m apart, quad is two high-speed doubles 8 m apart, priced twice the double), except a flyover's one-way legs (T-3170, "Flyovers" below).
+- **High-speed track** (T-817, design notes/T-817.md): the third setting, single, double or quad (T-3352: single high-speed is 0.6 x 1.5 of double, one way or two; T-3126; 4 m apart, quad is two high-speed doubles 8 m apart, priced twice the double), a flyover's legs are one-way single high-speed (T-3170, "Flyovers" below), and a flying junction can be built by hand of the same.
   An edge flag (`EdgeData::hsr`, `TrackApi::set_route_hsr`), so a station placed on open ground
   with it set lays high-speed track too. It costs `HSR_COST` (1.5x) double track's price at the
   same level (6.4); stations, junctions and flyovers on it cost as on double track. It meets
   ordinary track at plain nodes like any two pieces; a split keeps the flag on both halves, and
   two pieces join under a platform only when both are high speed or both are not (`unjoin_near`).
-  Blueprint double track switches between regular, high speed and tram, shape and level kept, with the Select
+  Blueprint track, single or double, switches between regular, high speed and tram, shape and level kept, with the Select
   tool's bar (T-1898, T-3108, `TrackApi::set_edges_kind`, the planner rebuilding built track uses): rail and tram
-  change as whole joined stretches with their stations and lines; single track, crossovers, constructed track
+  change as whole joined stretches with their stations and lines; crossovers, constructed track
   and pieces the track model refuses stay as they are. It doubles up into high-speed quad like any double (T-3166). Its cap is 320 km/h, which only a line's high-speed
   trains use; ordinary trains run on it at 160. The track inspector shows the limit.
 - **Tram track** (T-2921, T-2926; design notes/T-2921.md): a third kind of track, `TrackKind::Tram` (the table
   `TRACK_SPECS` in params.rs holds every kind's figures; `game/trackKinds.ts` copies them for the app).
-  Always double or quad (T-3166: quad is two tram doubles 8 m apart, off-street, so priced 0.5x at ground twice over;
-  never single), curves down to 18 m (`TRAM_MIN_RADIUS`, T-2997), 80 km/h cap, priced by level at 0.1x (on streets,
+  Single, double or quad (T-3352: single tram is 0.6x its price and upkeep, a stop on it is one platform with no passing loop; T-3166: quad is two tram doubles 8 m apart, off-street, so priced 0.5x at ground twice over), curves down to 18 m (`TRAM_MIN_RADIUS`, T-2997), 80 km/h cap, priced by level at 0.1x (on streets,
   T-2927), 0.5x (off street) of the 75M a km, viaducts and tunnels 0.4 under rail's, plus a quarter of what hills
   and mountains add (`TRAM_TERRAIN`, T-3004), and it pays no road crossings. The track bar's
   Tram type (`TrackApi::set_route_kind(3)`, also the Build tab's Tram button) lays it at ground level; the ramp
-  switch, track count and target speed do not apply. Tram track and train track never meet at a node
+  switch and target speed do not apply. Tram track and train track never meet at a node
   (`TrackFamily`: "Tram track and train track can't join. They can cross."), so while one is picked the other's
   track and stations are not snap targets; they cross flat and hold each other in capacity at the train's 120 s.
   A stop is a station with a 20 to 80 m platform (default 40, remembered apart from rail's), at a flat US$2M
@@ -583,7 +584,7 @@ Full design, numbers and sources: `notes/T-008.md`.
   removal goes without it, the trim, the kept pieces and the joins at removed stations left out.
   The map draws it there, at its true length and bent as the track is, from
   zoom 14 ([ui-map.md](ui-map.md) "Stations"). Platform length caps train length (20 m cars).
-  Platform tracks = the route's tracks. Riders change between stations up to 300 m apart on foot,
+  Platform tracks = the route's tracks, unless the station is a one-track station (below). Riders change between stations up to 300 m apart on foot,
   and platforms within 100 m of each other count as one station (4.4). Stations whose platforms
   come within 50 m form a station complex, which a click on a station selects as one (T-249) and
   the station ridership circles show as one (8, T-146, T-1449); the player can join any two stations up to 1 km
@@ -592,6 +593,27 @@ Full design, numbers and sources: `notes/T-008.md`.
   Riders change between any two stations of a complex on foot, however far apart (4.4, T-161),
   through a passage along the straight line at 2 m/s. A **station building** joins stations too
   (below).
+- **One-track stations** (T-3332, notes/T-3332.md; `StationData::one`, `wasm/onetrack.rs`): a station's
+  platform on one track only (a **one way station**; both tracks is a **two way station**), picked with the two icons in the station bar (remembered in
+  the browser) and switched in the station panel's three buttons (left track, both, right track; hover names the way trains stop, as eastbound). On double track (each pair of quad) the platform is on
+  the track nearer the pointer, so it serves one way: trains running that way stop, trains the other way
+  run past on the other track (a **pass**: `Run::pass`, kept in every per-stop array, timed as the train
+  goes by, no dwell; capacity gives the other track no platform). A line through it both ways stops the
+  way it can; a line ending there, turning back there or a one-way loop must arrive on the platform's
+  track, and a line every run of which passes it is refused (`OneTrackStop`). The half dots and chevrons
+  show the way (`line_stop_ways`). Stored as the way along a fixed axis (`one_for_travel`: 1 eastward,
+  north where the track runs due north-south, 2 the other way; save node flag bits 9-10, save level 18),
+  not the physical side, so the running side picks the track and a running-side switch turns the way
+  round to keep the platform on its track (listed after the switch). On double track it is drawn as a thin bar
+  over its track with a small bulge at the middle on the platform's side, so it does not read as a box; the bulge is 0.18 of the platform half length each way, so it keeps its place against the box at every zoom. On two-way single track it is a
+  stop where trains cannot pass: drawn as plain single track (no T-3212 split) and the single-track
+  section runs on through it (6.2). Placed only on track running through, the same tracks both sides,
+  not one-way single (`OneTrackHere`). Priced as a single-track station; switching a built one to both
+  tracks pays the difference (the button's hover says "Costs $X", or "Free"), to one track is free with nothing back; a blueprint one switches free and
+  undoes; a built station's switch plays the upgrade sound. A one-track station has no terminal and no passing tracks (they go when it switches). Single
+  track rebuilt double makes it an ordinary station; double rebuilt single keeps it one-track (no
+  passing). Its twin on the other pair of quad (6.3) must serve the same way. Demand: a pass boards,
+  alights and changes nobody (`span` -1 for that route node, demand-kernel.md 4.3).
 - **Station buildings** (T-2217, `track/building.rs`, `wasm/buildings.rs`, `game/buildings.ts`;
   design notes/T-2208.md 3): an outline of 3 to 24 corners the player draws round stations. Its
   members are every station whose platform touches it, at any level, constructed or not: the
@@ -740,19 +762,20 @@ lines is plain track for capacity: a branch no train uses yet does not cut the s
   160, 16 at 320 (T-517). Tram track (both kinds) holds 60 s + v / 0.6 (41 an hour at the street
   tram's 60 km/h), its platform dwell + 60 s (48 an hour at the 15 s dwell), its own crossings
   and junction moves 45 s (T-3125, Anita 2026-11-10)
-- single-track section between passing points: run time + 240 s (`SINGLE_TRACK_MARGIN_S`, T-3112), counting both directions (a line with one train, on track no other line uses, has no train to keep the margin from and takes the run time alone; T-3201): a headway each way of
+- single-track section between passing points (every station but a one-track one, T-3332): run time + 240 s (`SINGLE_TRACK_MARGIN_S`, T-3112), counting both directions (a line with one train, on track no other line uses, has no train to keep the margin from and takes the run time alone; T-3201): a headway each way of
   about 10 minutes over 1 km, 12 over 2 km, 14 over 5 km, 20 over 10 km; single track that
   runs one way (set, or by its run's joins, 6.1) takes the track-section rule above, per direction
   (T-3094, T-3137)
 - platform track: dwell + 60 s per stopping train, 40 s per passing one, turnaround + 60 s
   for a short-turn ending at a through station (15 an hour at the default 3 minutes). A
-  single-track platform shares both directions. With **passing tracks** (T-2231) a stopping train
+  single-track platform shares both directions. A one-track station on double track (T-3332) has the
+  platform on its one track; trains on the other track hold nothing there. With **passing tracks** (T-2231) a stopping train
   holds one of two platform tracks, (dwell + 60 s) / 2 pooled, and a train that does not stop
   holds none.
 - turning at a station (T-3107, Anita 2026-11-10: a dead end and a through station are the same to
   the game; no player text mentions a dead end): a train ending its line there or reversing partway
   holds one place for max(turnaround + 60 s, 240 s), pooled over the places the station has
-  (`capacity::turn_places`, `upgrades::pooled_turn_s`). Without a terminal that is one platform track
+  (`capacity::turn_places`, `upgrades::pooled_turn_s`). A one-track station has one place. Without a terminal that is one platform track
   of each pair: 15 an hour at the default 3 minutes. With a **terminal** it is every platform track:
   30 an hour a pair at 3 minutes and at 2 (never counted quicker than 240 s, so no turnaround
   setting beats 30). A quad station has two pairs, so it takes twice as many. The turn holds no platform and
@@ -761,7 +784,7 @@ lines is plain track for capacity: a branch no train uses yet does not cut the s
   two directions are two streams; no track section joins across the turn. Unused blueprint
   extensions add no active platform capacity. All of it is wire kind 3, so the hint is "build a
   terminal" without one and "turn some trains at another station" with one.
-- a loop line (T-798): a circle's first stop is a stop on the way round (dwell + 60 s on its arrival
+- a loop line (T-798): a circle's first stop is a stop on the way around (dwell + 60 s on its arrival
   platform, the move from its last path entry into its first a junction move, sections joined across
   it); the hold there to the headway is not counted. A balloon's first stop turns as any
   line's end. The loop itself is plain track, so a balloon has no turnback limit (about 34 an hour
@@ -944,6 +967,33 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   this), so run times, round trip, fleet for headway lines, capacity and demand all follow; the stop-time hover
   names it as "the trains". Saved in the `LSL1` block (count, then line index and km/h), save level 13; old saves load
   with none. Bus and ferry lines ignore it.
+- **Both pairs of quad track** (T-3333, Anita 2026-11-12; notes/T-3333.md; `track/twin.rs`, `wasm/twin.rs`): a rail
+  line can run its trains on both pairs of quad track, a switch in its panel ("Run trains on two pairs of tracks",
+  `set_line_pairs`), offered only where it can (`line_pairs_ok`) or while it is on. It can where every stop has a
+  station beside it on another track (`station_beside`, T-3356, Anita: "if they are connected at all in a station
+  complex its fine"): the nearest station of the stop's complex (`complex_of`, the map's rule worked out in the sim:
+  centres within 100 m, platforms within 50 m, the player's links, one station building; any level) of its family,
+  whose node lies on a track beside the stop's (4 to 16 m off it and parallel there, looked for up to 8 pieces either
+  way), not a stop of the line; and those stations, joined in order the way any line's stops are
+  (`route_hops`), make a route that `check_route` accepts, turns back as often as the line's, and is built wherever the
+  line is (`twin_plan`). The route may share track with the line's own where the pairs meet (orchestrator's call), and
+  capacity counts both there. The sim then keeps a **hidden twin**: an ordinary line (`LineData::twin`, `Twin::Of`) on
+  those stations with the line's look, cars, train kind, speed limit, dwell and turnaround, made, brought up to date or
+  removed inside every checked edit (`TrackWorld::twin_ops`, after the way reroutes; undo restores both). Each runs one
+  pair's trains: on the switch the line's counts halve (an odd count rounds up, so the two pairs' together are even),
+  its headways double and its rates halve (`Twin::Parent { split: true }`); `set_train_counts` and
+  `set_auto_headway` take the whole line's figures and store one pair's. The twin's departures leave half a headway
+  after the line's at every level (`pin_twin_phases`, after the spacing). When an edit leaves the line unable to run on
+  both (a stop's station beside removed, the other pair unbuilt), the switch stays on, the twin goes and the line runs
+  the whole line's trains on its own pair (`split: false`), and its panel says why (`line_pairs_why`: the stop with no
+  station beside it, the stops no track joins on the other pair, a route that turns elsewhere, an unbuilt pair) until
+  an edit lets it run on both again. Off: the twin goes and the line takes the whole line's trains. Capacity,
+  timetables, boarding, money and demand see two lines; demand's stations within 100 m are one, so riders see one line
+  at the combined frequency. The app keeps both rows (every sum counts the twin) and leaves the twin out of every list
+  (`listedLines`); a click on its train or track selects the line; the line's panel shows the two pairs' trains, headway,
+  past 24 hours, running cost and upkeep together (`pairStats`, `foldTwins`, `upkeepToday`). Saved in the `LTW1` block
+  (count, then line index and kind: 1 on one pair for now, 2 on both, 3 a twin with its line's index), save level 17;
+  old saves load with none.
 - **Lines**: ordered stops, plus the exact path between them stored as edges with a direction, so
   new track never reroutes a line by itself. Splitting an edge rewrites the paths through it;
   deleting one reroutes by the fastest path, unless that path reverses where the old one did not,
@@ -999,22 +1049,22 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   **Loops** (T-798, notes/T-797.md): a line whose last stop is its first (three stops or more) is a
   loop; nothing else stores it. A **circle** carries straight on through its first stop A (its last
   path entry and first are a through move); a **balloon** turns back there (e.g. out along a stem,
-  round a loop, back down the stem). The route search's closing hop arrives on the side that carries
+  around a loop, back down the stem). The route search's closing hop arrives on the side that carries
   on round when that takes at most `CARRY_SLACK_S` (300 s) more track time than the quickest way in,
   else the quickest way (a balloon, T-3021); a reroute after a deletion never turns a circle into a
   balloon (the closing turn counts as a reversal).
-  **Turning round a loop at an end** (T-3021, notes/T-2988.md): where track leads on from an end
+  **Turning around a loop at an end** (T-3021, notes/T-2988.md): where track leads on from an end
   stop, never turning back, round and onto the line's own path headed back toward the other end, the
-  line can be turned round it (`TrackApi::turn_end`, one edit): its stops become the way out, then
+  line can be turned around it (`TrackApi::turn_end`, one edit): its stops become the way out, then
   the stops at or before the point it rejoins again in reverse (the end stop not repeated), closing
   at the first stop, set one way. So the loop runs one way and the stem both ways. From an open line
   either end may be turned (the line is reversed for its first end); the closing hop may then carry
-  on round a loop at the other end too, a circle; a balloon's first stop's end can be turned later
+  on around a loop at the other end too, a circle; a balloon's first stop's end can be turned later
   the same way, its stops from the first after the rejoin. Offered only when a rough round trip
   (track time, dwells and turnarounds) comes out at most `TURN_SLACK_S` (120 s) or 10% longer than
   the line's now, with no more reversals; the search is one Dijkstra per end, cut off at that budget.
   **Only the right click turns an end** (T-3140, `TrackApi::add_stop`, the line tool's click): a click puts
-  the station in where `insert_stop` puts it and never turns the line round a loop or sets it one way, so
+  the station in where `insert_stop` puts it and never turns the line around a loop or sets it one way, so
   a line clicked onto a loop runs out onto it and back (both ways). A balloon's stem still grows past its
   turning stop (`best_slot` tries the station before the first stop and after the last there), so a loop
   turned early keeps working as the stem is clicked. A stem with a loop at each end becomes a circle round
@@ -1026,7 +1076,7 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   a reversal partway. A circle run both ways, or with two such turns, is left as it is.
   **A loop stops at every pass** (T-3122, `every_pass`): after every stop edit of a loop line (and for
   every loop line of a save as it loads), each pass of its path over a station it stops at is a stop,
-  except one that would come straight before or after a stop at the same station (a turn round a loop
+  except one that would come straight before or after a stop at the same station (a turn around a loop
   with no stop of its own: one stop there). The path is kept. So a turned line's stem is served both
   ways, a circle whose way back runs down the stem stops there, and taking a station out takes every
   visit. `open_loop` takes a loop back to the stops up to where
@@ -1036,7 +1086,7 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   panel, `TrackApi::set_line_one_way`): run 1 carries no trains. Its lattice's `off` is infinite, so it has
   no departures, trips, account or boarding (its span is 0: demand sees no train due, T-842), and it takes
   no capacity (`LineSvc::live_runs`); the round trip is one lap (run 0 and the closing stand), the fleet
-  any count, the running cost one way's train-km. Riders going the other way ride round the long way or
+  any count, the running cost one way's train-km. Riders going the other way ride around the long way or
   take another mode. A train line starts both ways, a new bus or ferry line one way (`set_bus_line`,
   `set_ferry_line`); the flag stays on an open line, which ignores it, so it carries over opening and
   closing. The direction is the one drawn: no reverse state (redrawing reverses it); arrows on the map
@@ -1269,7 +1319,7 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   | Class | Flat | Hills (low) | Hills (high) | Mountains |
   |---|---|---|---|---|
   | Mean 30 m slope over a cell | under 2.5° | 2.5-5.5° | 5.5-11° | 11° and over |
-  | Ground round it (the cap) | under 1.25° | 1.25-2.5° | 2.5-5° | 5° and over |
+  | Ground around it (the cap) | under 1.25° | 1.25-2.5° | 2.5-5° | 5° and over |
   | Surcharge at -1 to +3 (`TERRAIN_SURCHARGE`) | +0 | +0.5 | +1.2 | +3 |
   | US$M a km at ground level (0.5 +) | 37.5 | 75 | 127.5 | 262.5 |
   | US$M a km on a +1 viaduct (1.0 +) | 75 | 112.5 | 165 | 300 |
@@ -1279,9 +1329,10 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   by `pipeline/zone_terrain.py` from the intermediate in `data/work/terrain-fine/`
   (`terrain_fine.py`): the mean slope of the 30 m pixels over each cell of a world lattice of 1/960
   degree (about 115 m north-south), classed, a 3 x 3 majority filter (drops single-cell specks, keeps
-  a valley floor two cells wide), then capped at the class of the ground round it: the slope between
-  the 1/240 degree mean elevations, about 920 m apart (second row), since 30 m bare earth still
-  carries towers and raised roads that would read as hills in dense centres. Before any of that, tower
+  a valley floor two cells wide), then capped at the class of the ground around it: the slope between
+  the 1/240 degree mean elevations, about 920 m apart (second row), taken bilinearly at the cell's
+  centre so the cap's borders follow the ground at 115 m and not in 460 m squares (T-3372), since 30 m
+  bare earth still carries towers and raised roads that would read as hills in dense centres. Before any of that, tower
   fields are cut out of the 30 m surface (`terrain_fine.tower_ground`, T-1881): built-up land (GHSL
   built volume at 1 km, CC BY 4.0, at least 5 m of building over the cell's area) whose 30 m surface
   is rough (the rms about a 60 m smoothing, over about 150 m: from nothing at 5.5 m to all at 8.5 m),
@@ -1289,7 +1340,7 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   that envelope's height. Midtown Manhattan stood 50-100 m above its streets in GEDTM30 and Chicago's
   Loop the same; built hillsides (San Francisco, Seoul, Wellington) are smooth or steep and keep
   their ground. Worldwide, by degree block (T-2901): one gzip file per block of land
-  (`data/terrain-world/<la>_<lo>.terrain`, `pipeline/world_terrain.py`; 19,341 blocks, 0.7 GB, 960 x 960
+  (`data/terrain-world-v2/<la>_<lo>.terrain`, `pipeline/world_terrain.py`; 19,341 blocks, 0.75 GB, 960 x 960
   cells, `cost::ClassGrid`, 230 KB a block in memory) and `index.bin`, the list of which blocks have a
   file. A block not listed is open sea or Antarctica, flat, with nothing to fetch. The clock worker
   fetches the blocks under what the track model prices and what the view reaches (zones.md 6). No
@@ -1302,7 +1353,10 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   bytes that are not a block, is a failure like any other, never flat. A download gives up after 60 s; a
   failed one still needed by the view or by track on the map is fetched again 2 s later, doubling to
   30 s (the status tag says so, ui-panels.md). Blocks stay in the track model while an edge stands on
-  them or the view has them; the rest beyond the newest 300 are dropped. Track is charged by cell: a point takes the class of the lattice cell it is in (1/960 of a degree, about 115 m; the data itself changes class only every 4 cells, 1/240 of a degree), the same cells the build tools' wash draws as squares, so a square that looks like hills is charged as hills. Each edge keeps
+  them or the view has them; the rest beyond the newest 300 are dropped. Track is charged by hex (T-2890, T-3372): a point takes the class of the lattice cell
+  under the centre of its hex (`cost::hex_centre`), pointy-topped hexes regular on the mercator plane, 1/768
+  of a degree of longitude across (`TERRAIN_HEX`, about 110 m at 40 N), the same hexes the build tools'
+  wash draws, so a hex that looks like hills is charged as hills. Each edge keeps
   its spans of rough ground (`Network::edge_terrain`, sampled every 25 m, `TERRAIN_STEP`); a block
   landing reprices only the track inside its box. The track tool's tag gives the roughest class a
   segment crosses where it is charged with its surcharge ("Mountains +3.0x", T-1394, T-1890), and
@@ -1401,14 +1455,18 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   0 (`rebuild_plan`'s `priced` leaves out a piece whose only change is its count); with a level or type change too,
   that change is paid as usual at the single track's price. Stations on it become single-track stations, uncharged
   (a station keeps a double-track platform while any of its track stays double, `node_tracks`). Lines keep running
-  over it at once, now with a shared `SingleTrack` section. Nothing that needs two tracks is taken away: the piece is
-  refused, with its reason (`Issue::NoSingle`), when it is high-speed track (unless made regular in the same rebuild)
-  or tram track, quad track (double track parallel at about 8 m beside its middle), has a crossover at either end,
-  meets a flying junction, has a one-way single piece joined to one of its two tracks at an end (a flyover's leg, a
-  lane beside double track), or ends at a station with passing tracks that would be left with single track only. A
-  two-way single piece joined to it is no reason: the join stays stored and counts again if the track is made double
-  again (`join_applies`). A piece refused for its count keeps its level and type too. Blueprint double track made
-  single (`set_edges_tracks` 1) is free and one undoable edit; built is final.
+  over it at once, now with a shared `SingleTrack` section. Nothing that cannot work on single track is taken away:
+  the piece is refused, with its reason (`Issue::NoSingle`), when it has a crossover at either end, meets a flying junction, or has a one-way single piece
+  joined to one of its two tracks at an end (a flyover's leg, a lane beside double track). A two-way single piece
+  joined to it is no reason: the join stays stored and counts again if the track is made double again
+  (`join_applies`). A piece refused for its count keeps its level and type too. Quad track is two doubles (T-3339,
+  Anita 2026-11-12): each picked pair goes single on its own, so quad picked whole becomes two singles side by side
+  and one pair picked leaves single beside double; a station on a pair becomes a single-track station. A station with
+  passing tracks (T-3339) stays a double-track passing place: each picked piece at it keeps double track along the
+  platform's reach and `PASSING_RUN_OUT` (20 m) past it, split there in the same edit (`passing_cuts`, `Op::Split`,
+  free), and goes single beyond; a piece too short to split that way (under 10 m of single left), one that will not
+  split there (a ramp), or one whose level or type changes in the same rebuild stays double whole, not refused.
+  Blueprint double track made single (`set_edges_tracks` 1) is free and one undoable edit; built is final.
   An unused blueprint extension leaves a constructed line's endpoint stopping position, run
   time and capacity unchanged. Planned lines preview the full planned station geometry (T-108).
   **Disabled blueprint** (T-333): a blueprint edge or station can be switched off (`off` on
@@ -1461,7 +1519,10 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   (a ramp into a tunnel makes the whole edge a tunnel's rate; a -1 to -2 edge pays bored). Times
   its price factor (`track_factor`: high-speed 1.5x, single 0.6x; quad is two double-track edges,
   so twice). A constructed station pays US$200k underground (its level -1 to -3, where its price takes
-  the dearer step a level, 6.4 "Stations") and US$50k at grade or above (T-2619); crossovers, junctions and flyovers
+  the dearer step a level, 6.4 "Stations") and US$50k at grade or above (T-2619), either one times
+  `UPKEEP_ONE_PLATFORM_SHARE` (0.6, Anita 2026-11-13) when its platform is on one track only: a one way
+  station, or a stop on single track without a passing loop (`Network::one_platform`; the app reads the set
+  from `one_platform_stations`); crossovers, junctions and flyovers
   nothing on top; blueprint nothing (`UPKEEP_GROUND_KM`, `UPKEEP_VIADUCT_KM`, `UPKEEP_CUT_KM`,
   `UPKEEP_BORED_KM`, `UPKEEP_STATION`, `UPKEEP_STATION_UNDER`, real US$350, 500, 1,000, 1,300, 500 and
   2,000 times `ECONOMY`; `cost::track_upkeep_km`, `cost::station_upkeep`, `TrackApi::upkeep`; the app
@@ -1940,11 +2001,11 @@ demand level), trips, the boarding account and the fare curve; a bus is one 12 m
   stop's `cover` is two stretches, the first and last of the ring. A drawn route out and back along one road
   and closed is a loop all the same.
 - **Looping back** (T-3109, T-3063; `bus::loop_back_at`): a loop whose last points are its first ones in reverse,
-  with three stretches or more between where they meet, runs out, round the loop at its far end and back the way it
+  with three stretches or more between where they meet, runs out, around the loop at its far end and back the way it
   came: it is a loop as above (a circle, one way by default), its way out run twice. A place on the way out is on
   both passes (`Poly::project_passes`): a station within reach of the way out is a stop on the way out and on the
   way back, and a stop placed by hand there (`on_route_at`) is a stop on both passes and goes from both when taken
-  out; so is a stop placed by hand on a route drawn out and back along one road without the loop-back gesture, on each run of stretches within 25 m of the nearest one (`Poly::near_passes`, T-3131, also on a loop whose way out and back are drawn so, T-3210; stations still take the one nearest pass), and two stops of a one-way loop within 25 m of each other that the route leaves by opposite headings are one place, served both ways (`route_stop_ways`); one on the loop is a stop once, served the way the bus goes round (both ways when the line runs both ways). The app sends the route so (ui-building.md "Loop back").
+  out; so is a stop placed by hand on a route drawn out and back along one road without the loop-back gesture, on each run of stretches within 25 m of the nearest one (`Poly::near_passes`, T-3131, also on a loop whose way out and back are drawn so, T-3210; stations still take the one nearest pass), and two stops of a one-way loop within 25 m of each other that the route leaves by opposite headings are one place, served both ways (`route_stop_ways`); one on the loop is a stop once, served the way the bus goes around (both ways when the line runs both ways). The app sends the route so (ui-building.md "Loop back").
 - **Saves**: a trailing `LBS2` block holds each bus line's route (points and their bits) and whether it
   is constructed; an `LBS1` block (T-1464) loads with every stretch straight. A trailing `LBP1` block
   (T-2885) lists the lines with a stop spacing of their own, a trailing `LBH1` block (T-2891) those with stops

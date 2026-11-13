@@ -16,12 +16,12 @@ Logs, check outputs and images go in `../artifacts/trainworld/` (from the maps r
   counts with causes (T-613).
 - While a join runs, nothing else writes `data/packs` or `data/terrain`, any country's included: each
   unit's re-gate compares every registered pack against its snapshot and parks the unit on any change.
-- Anything that writes `data/packs`, `data/terrain` or `data/terrain-world` replaces the file (write `<name>.part`,
+- Anything that writes `data/packs`, `data/terrain` or `data/terrain-world-v2` (or the old `data/terrain-world`) replaces the file (write `<name>.part`,
   then `os.replace`) and never rewrites it in place (`open(..., "wb")` on the pack itself, `r+b`, `np.save` onto it).
   Freezes (`pipeline/freeze.py`), 8800's snapbuild and terrain-world in every build hold those files as hard links, so
   an in-place write changes the served game and the freeze too. Every writer today replaces (`packio.write`,
   `put_arrays`, `nocar.append_array`, `realnet.py ship`, `joint_gravity`, `market_zones`, `zone_outlines`,
-  `realgraph`, `zone_terrain`, `world_terrain`'s blocks); the one exception is `world_terrain`'s `index.bin` (`write_bytes`), linked into every build already: write it as `.part` and replace too if it is ever rebuilt.
+  `realgraph`, `zone_terrain`, `world_terrain`'s blocks and its `index.bin`, since T-3372).
 - A pack rebuild backs up to `data/work/pre-T###/` first; the backup goes, without asking, once a later
   state is checked clean. `data/work/res9/` stays.
 - Cities added through the plan need no calibration beyond the gate (Anita, 2026-10-16).
@@ -163,7 +163,9 @@ state's units, not geoBoundaries read afresh, T-1239); give a new country one wh
   checks are its reason. Whenever the runner takes packs out of the registry, every registered
   market pack still naming their places is rewritten, however far away (`market_zones.py <ids>`,
   T-1743, T-1986; reading all 2,000 market packs takes about 30 s), or the next `market_pack`
-  refuses them. The browser check serves the main tree's app/, so whoever runs a batch
+  refuses them. That heal runs after the registry lock is let go, so `market_zones.py` itself also adds every
+  zone naming a place no registered zone holds to the zones it rewrites, under the lock (T-2776, a scan of
+  about 9 s): a register racing another region's unregister no longer parks. The browser check serves the main tree's app/, so whoever runs a batch
   says who may rebuild app/ (its WASM) while it runs.
 
 ### Joint gravity, freeze and clean up
@@ -323,7 +325,9 @@ sources. Each field comes from the row or a rule:
   (T-610); a NUTS-3 unit's polygon may not ship (non-commercial terms), so its gap takes the
   geoBoundaries units lying mostly inside it instead, at the finest level with an open licence
   (T-925, data-register.md). Units are clipped to the OSM coastline, holes filled, the outline cut along every
-  existing pack, and pieces under 0.05 km2 or with nobody in them (GHSL 100 m) dropped. Units with
+  existing pack, and pieces under 0.05 km2 or with nobody in them (GHSL 100 m) dropped, unless a piece with nobody
+  in it holds 0.2 km2 of GHSL built surface (all buildings, 2020, `BUILT_KEEP_M2`; T-3375: Singapore's Jurong Island
+  and Sentosa, which have no residents; an empty islet or a reserve has next to none). Units with
   their OSM names go to `data/work/<id>.units.geojson`, the outline to `.outline.geojson`;
   `osm_units.py <id>` writes them and prints each unit's match.
 - **From the row**: origin, region name, `utc_offset`, `iso2`, the extracts (also the water

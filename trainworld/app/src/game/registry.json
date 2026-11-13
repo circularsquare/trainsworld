@@ -29382,6 +29382,334 @@
       {
         "name": "Ramallah",
         "regionName": "Ramallah region"
+      },
+      {
+        "name": "P'yŏngyang",
+        "regionName": "P'yŏngyang region"
+      },
+      {
+        "name": "Hamhung City",
+        "regionName": "Hamhung City region"
+      },
+      {
+        "name": "Chongjin City",
+        "regionName": "Chongjin City region"
+      },
+      {
+        "name": "Phyongsan",
+        "regionName": "Phyongsan region"
+      },
+      {
+        "name": "Sunchon City",
+        "regionName": "Sunchon City region"
+      },
+      {
+        "name": "Sinchon",
+        "regionName": "Sinchon region"
+      },
+      {
+        "name": "Tanchon City",
+        "regionName": "Tanchon City region"
+      },
+      {
+        "name": "Huichon City",
+        "regionName": "Huichon City region"
+      },
+      {
+        "name": "Sinuiju City",
+        "regionName": "Sinuiju City region"
+      },
+      {
+        "name": "Wonsan City",
+        "regionName": "Wonsan City region"
+      },
+      {
+        "name": "Splitsko-dalmatinska županija",
+        "regionName": "Splitsko-dalmatinska županija region"
+      },
+      {
+        "name": "Banja Luka",
+        "regionName": "Banja Luka region"
+      },
+      {
+        "name": "Foča",
+        "regionName": "Foča region"
+      },
+      {
+        "name": "Kusong City",
+        "regionName": "Kusong City region"
+      },
+      {
+        "name": "Kanggye City",
+        "regionName": "Kanggye City region"
+      },
+      {
+        "name": "Haeju City",
+        "regionName": "Haeju City region"
+      },
+      {
+        "name": "Kaechon City",
+        "regionName": "Kaechon City region"
+      },
+      {
+        "name": "Samsu",
+        "regionName": "Samsu region"
+      },
+      {
+        "name": "Kim Chaek City",
+        "regionName": "Kim Chaek City region"
+      },
+      {
+        "name": "Jongju City",
+        "regionName": "Jongju City region"
+      },
+      {
+        "name": "Pyongwon",
+        "regionName": "Pyongwon region"
+      },
+      {
+        "name": "Paechon",
+        "regionName": "Paechon region"
+      },
+      {
+        "name": "Kujang",
+        "regionName": "Kujang region"
+      },
+      {
+        "name": "Fier",
+        "regionName": "Fier region"
+      },
+      {
+        "name": "Evvoia",
+        "regionName": "Evvoia region"
+      },
+      {
+        "name": "Kangdong",
+        "regionName": "Kangdong region"
+      },
+      {
+        "name": "Hoeryong City",
+        "regionName": "Hoeryong City region"
+      },
+      {
+        "name": "Phyonggang",
+        "regionName": "Phyonggang region"
+      },
+      {
+        "name": "Sariwon",
+        "regionName": "Sariwon region"
+      },
+      {
+        "name": "Hwangju",
+        "regionName": "Hwangju region"
+      },
+      {
+        "name": "Nampo City",
+        "regionName": "Nampo City region"
+      },
+      {
+        "name": "Kaesong City",
+        "regionName": "Kaesong City region"
+      },
+      {
+        "name": "Kumya",
+        "regionName": "Kumya region"
+      },
+      {
+        "name": "Pyongsong City",
+        "regionName": "Pyongsong City region"
+      },
+      {
+        "name": "Ávila",
+        "regionName": "Ávila region"
+      },
+      {
+        "name": "Zamora",
+        "regionName": "Zamora region"
+      },
+      {
+        "name": "Palencia",
+        "regionName": "Palencia region"
+      },
+      {
+        "name": "Cáceres",
+        "regionName": "Cáceres region"
+      },
+      {
+        "name": "Cuenca",
+        "regionName": "Cuenca region"
+      },
+      {
+        "name": "Huesca",
+        "regionName": "Huesca region"
+      },
+      {
+        "name": "Jongju City",
+        "regionName": "Jongju City region"
+      },
+      {
+        "name": "Pyongwon",
+        "regionName": "Pyongwon region"
+      },
+      {
+        "name": "Kujang",
+        "regionName": "Kujang region"
+      },
+      {
+        "name": "Phyonggang",
+        "regionName": "Phyonggang region"
+      },
+      {
+        "name": "Sariwon",
+        "regionName": "Sariwon region"
+      },
+      {
+        "name": "Hwangju",
+        "regionName": "Hwangju region"
+      },
+      {
+        "name": "Kaesong City",
+        "regionName": "Kaesong City region"
+      },
+      {
+        "name": "Pyongsong City",
+        "regionName": "Pyongsong City region"
+      },
+      {
+        "name": "Alentejo Central",
+        "regionName": "Alentejo Central region"
+      },
+      {
+        "name": "Alto Alentejo",
+        "regionName": "Alto Alentejo region"
+      },
+      {
+        "name": "Terras de Trás-os-Montes",
+        "regionName": "Terras de Trás-os-Montes region"
+      },
+      {
+        "name": "Creuse",
+        "regionName": "Creuse region"
+      },
+      {
+        "name": "Lozère",
+        "regionName": "Lozère region"
+      },
+      {
+        "name": "Tulcea",
+        "regionName": "Tulcea region"
+      },
+      {
+        "name": "Tulcea",
+        "regionName": "Tulcea region"
+      },
+      {
+        "name": "Innlandet",
+        "regionName": "Innlandet region"
+      },
+      {
+        "name": "Telemark",
+        "regionName": "Telemark region"
+      },
+      {
+        "name": "Nordland",
+        "regionName": "Nordland region"
+      },
+      {
+        "name": "Agder",
+        "regionName": "Agder region"
+      },
+      {
+        "name": "Møre og Romsdal",
+        "regionName": "Møre og Romsdal region"
+      },
+      {
+        "name": "Dalarnas län",
+        "regionName": "Dalarnas län region"
+      },
+      {
+        "name": "Västerbottens län",
+        "regionName": "Västerbottens län region"
+      },
+      {
+        "name": "Värmlands län",
+        "regionName": "Värmlands län region"
+      },
+      {
+        "name": "Kalmar län",
+        "regionName": "Kalmar län region"
+      },
+      {
+        "name": "Gotlands län",
+        "regionName": "Gotlands län region"
+      },
+      {
+        "name": "Pohjois-Savo",
+        "regionName": "Pohjois-Savo region"
+      },
+      {
+        "name": "Keski-Suomi",
+        "regionName": "Keski-Suomi region"
+      },
+      {
+        "name": "Etelä-Pohjanmaa",
+        "regionName": "Etelä-Pohjanmaa region"
+      },
+      {
+        "name": "Lappi",
+        "regionName": "Lappi region"
+      },
+      {
+        "name": "Lõuna-Eesti",
+        "regionName": "Lõuna-Eesti region"
+      },
+      {
+        "name": "Lääne-Eesti",
+        "regionName": "Lääne-Eesti region"
+      },
+      {
+        "name": "Vidzeme",
+        "regionName": "Vidzeme region"
+      },
+      {
+        "name": "Kurzeme",
+        "regionName": "Kurzeme region"
+      },
+      {
+        "name": "Utenos apskritis",
+        "regionName": "Utenos apskritis region"
+      },
+      {
+        "name": "Telemark",
+        "regionName": "Telemark region"
+      },
+      {
+        "name": "Utenos apskritis",
+        "regionName": "Utenos apskritis region"
+      },
+      {
+        "name": "Dryden",
+        "regionName": "Dryden region"
+      },
+      {
+        "name": "Algoma, Unorganized, North Pa",
+        "regionName": "Algoma, Unorganized, North Pa region"
+      },
+      {
+        "name": "Dryden",
+        "regionName": "Dryden region"
+      },
+      {
+        "name": "Algoma, Unorganized, North Pa",
+        "regionName": "Algoma, Unorganized, North Pa region"
+      },
+      {
+        "name": "Singapore",
+        "regionName": "Singapore region"
+      },
+      {
+        "name": "Singapore",
+        "regionName": "Singapore region"
       }
     ],
     "rule": {
@@ -29647,7 +29975,7 @@
       "zoom": 11.2,
       "utcOffset": -5,
       "market": -1,
-      "localTrips": 19595433.0,
+      "localTrips": 19595565.0,
       "box": [
         -80.274,
         43.032,
@@ -29697,7 +30025,7 @@
       "zoom": 11.2,
       "utcOffset": 1,
       "market": -1,
-      "localTrips": 37028876.0,
+      "localTrips": 37028957.0,
       "box": [
         1.418,
         48.102,
@@ -31418,7 +31746,7 @@
         41.184
       ],
       "place": 92,
-      "localTrips": 20397342.0,
+      "localTrips": 20377167.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -31443,7 +31771,7 @@
         42.342
       ],
       "place": 93,
-      "localTrips": 17300291.0,
+      "localTrips": 17299991.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -31693,7 +32021,7 @@
         38.36
       ],
       "place": 104,
-      "localTrips": 10340636.0,
+      "localTrips": 10340530.0,
       "country": "GR",
       "realm": "gr-cy"
     },
@@ -31718,7 +32046,7 @@
         41.025
       ],
       "place": 105,
-      "localTrips": 2981097.0,
+      "localTrips": 2980435.0,
       "country": "GR",
       "realm": "gr-cy"
     },
@@ -32093,7 +32421,7 @@
         43.94
       ],
       "place": 171,
-      "localTrips": 4214583.0,
+      "localTrips": 4214811.0,
       "country": "FR",
       "realm": "france"
     },
@@ -32118,7 +32446,7 @@
         60.241
       ],
       "place": 179,
-      "localTrips": 7255416.0,
+      "localTrips": 7254457.0,
       "country": "SE",
       "realm": "nordic"
     },
@@ -32143,7 +32471,7 @@
         40.23
       ],
       "place": 181,
-      "localTrips": 6973219.0,
+      "localTrips": 6965956.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32168,7 +32496,7 @@
         44.788
       ],
       "place": 182,
-      "localTrips": 6243891.0,
+      "localTrips": 6244398.0,
       "country": "RO",
       "realm": "ro-md"
     },
@@ -32268,7 +32596,7 @@
         46.325
       ],
       "place": 192,
-      "localTrips": 5530395.0,
+      "localTrips": 5530197.0,
       "country": "FR",
       "realm": "france"
     },
@@ -32293,7 +32621,7 @@
         61.11
       ],
       "place": 193,
-      "localTrips": 4799733.0,
+      "localTrips": 4784453.0,
       "country": "NO",
       "realm": "nordic"
     },
@@ -32318,7 +32646,7 @@
         60.86
       ],
       "place": 195,
-      "localTrips": 4695525.0,
+      "localTrips": 4694476.0,
       "country": "FI",
       "realm": "nordic"
     },
@@ -32468,7 +32796,7 @@
         41.534
       ],
       "place": 203,
-      "localTrips": 2859784.0,
+      "localTrips": 2859611.0,
       "country": "AL",
       "realm": "balkans"
     },
@@ -32593,7 +32921,7 @@
         51.108
       ],
       "place": 211,
-      "localTrips": 7030026.0,
+      "localTrips": 7030990.0,
       "country": "FR",
       "realm": "france"
     },
@@ -32618,7 +32946,7 @@
         43.943
       ],
       "place": 212,
-      "localTrips": 5781763.0,
+      "localTrips": 5782424.0,
       "country": "FR",
       "realm": "france"
     },
@@ -32643,7 +32971,7 @@
         38.216
       ],
       "place": 213,
-      "localTrips": 5143100.0,
+      "localTrips": 5142398.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32668,7 +32996,7 @@
         37.301
       ],
       "place": 214,
-      "localTrips": 4456906.0,
+      "localTrips": 4456508.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32693,7 +33021,7 @@
         45.605
       ],
       "place": 215,
-      "localTrips": 4775763.0,
+      "localTrips": 4775884.0,
       "country": "FR",
       "realm": "france"
     },
@@ -32796,7 +33124,7 @@
         35.339
       ],
       "place": 256,
-      "localTrips": 255361.0,
+      "localTrips": 252469.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32822,7 +33150,7 @@
         38.906
       ],
       "place": 258,
-      "localTrips": 5193395.0,
+      "localTrips": 5193861.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32848,7 +33176,7 @@
         40.807
       ],
       "place": 259,
-      "localTrips": 1628262.0,
+      "localTrips": 1624375.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32874,7 +33202,7 @@
         38.774
       ],
       "place": 260,
-      "localTrips": 4184737.0,
+      "localTrips": 4184313.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32900,7 +33228,7 @@
         37.071
       ],
       "place": 261,
-      "localTrips": 3233752.0,
+      "localTrips": 3232555.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32926,7 +33254,7 @@
         38.103
       ],
       "place": 262,
-      "localTrips": 2305640.0,
+      "localTrips": 2305724.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32952,7 +33280,7 @@
         38.748
       ],
       "place": 263,
-      "localTrips": 2062890.0,
+      "localTrips": 2063122.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -32978,7 +33306,7 @@
         37.935
       ],
       "place": 264,
-      "localTrips": 1860013.0,
+      "localTrips": 1859816.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33004,7 +33332,7 @@
         38.551
       ],
       "place": 265,
-      "localTrips": 1611674.0,
+      "localTrips": 1611636.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33030,7 +33358,7 @@
         38.227
       ],
       "place": 266,
-      "localTrips": 1301212.0,
+      "localTrips": 1300532.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33056,7 +33384,7 @@
         42.763
       ],
       "place": 267,
-      "localTrips": 2784106.0,
+      "localTrips": 2774330.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33082,7 +33410,7 @@
         43.475
       ],
       "place": 268,
-      "localTrips": 2847611.0,
+      "localTrips": 2847840.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33108,7 +33436,7 @@
         43.413
       ],
       "place": 269,
-      "localTrips": 1694279.0,
+      "localTrips": 1695340.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33134,7 +33462,7 @@
         43.678
       ],
       "place": 271,
-      "localTrips": 2773488.0,
+      "localTrips": 2773566.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33186,7 +33514,7 @@
         41.601
       ],
       "place": 279,
-      "localTrips": 2135482.0,
+      "localTrips": 2131321.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33212,7 +33540,7 @@
         42.514
       ],
       "place": 280,
-      "localTrips": 1930665.0,
+      "localTrips": 1930437.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33238,7 +33566,7 @@
         42.88
       ],
       "place": 281,
-      "localTrips": 1188267.0,
+      "localTrips": 1179610.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33264,7 +33592,7 @@
         39.442
       ],
       "place": 284,
-      "localTrips": 1067354.0,
+      "localTrips": 1061021.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33290,7 +33618,7 @@
         41.346
       ],
       "place": 285,
-      "localTrips": 604483.0,
+      "localTrips": 602489.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33316,7 +33644,7 @@
         43.333
       ],
       "place": 286,
-      "localTrips": 1625431.0,
+      "localTrips": 1623676.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33342,7 +33670,7 @@
         39.47
       ],
       "place": 287,
-      "localTrips": 1660216.0,
+      "localTrips": 1646454.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33368,7 +33696,7 @@
         43.532
       ],
       "place": 288,
-      "localTrips": 1468773.0,
+      "localTrips": 1467577.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33394,7 +33722,7 @@
         42.33
       ],
       "place": 289,
-      "localTrips": 1359882.0,
+      "localTrips": 1349086.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33420,7 +33748,7 @@
         43.257
       ],
       "place": 290,
-      "localTrips": 1157849.0,
+      "localTrips": 1152616.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -33446,7 +33774,7 @@
         41.313
       ],
       "place": 292,
-      "localTrips": 834620.0,
+      "localTrips": 826966.0,
       "country": "ES",
       "realm": "iberia"
     },
@@ -34097,7 +34425,7 @@
       ],
       "place": 638,
       "country": "FR",
-      "localTrips": 4013111.0,
+      "localTrips": 4013100.0,
       "realm": "france"
     },
     {
@@ -34123,7 +34451,7 @@
       ],
       "place": 639,
       "country": "FR",
-      "localTrips": 2204445.0,
+      "localTrips": 2204470.0,
       "realm": "france"
     },
     {
@@ -34149,7 +34477,7 @@
       ],
       "place": 640,
       "country": "FR",
-      "localTrips": 1901489.0,
+      "localTrips": 1901475.0,
       "realm": "france"
     },
     {
@@ -34175,7 +34503,7 @@
       ],
       "place": 643,
       "country": "FR",
-      "localTrips": 3844527.0,
+      "localTrips": 3844719.0,
       "realm": "france"
     },
     {
@@ -34201,7 +34529,7 @@
       ],
       "place": 644,
       "country": "FR",
-      "localTrips": 3460687.0,
+      "localTrips": 3460399.0,
       "realm": "france"
     },
     {
@@ -34227,7 +34555,7 @@
       ],
       "place": 646,
       "country": "FR",
-      "localTrips": 2077829.0,
+      "localTrips": 2077740.0,
       "realm": "france"
     },
     {
@@ -34253,7 +34581,7 @@
       ],
       "place": 647,
       "country": "FR",
-      "localTrips": 1564602.0,
+      "localTrips": 1565197.0,
       "realm": "france"
     },
     {
@@ -34279,7 +34607,7 @@
       ],
       "place": 651,
       "country": "FR",
-      "localTrips": 3455028.0,
+      "localTrips": 3455054.0,
       "realm": "france"
     },
     {
@@ -34305,7 +34633,7 @@
       ],
       "place": 652,
       "country": "FR",
-      "localTrips": 1529518.0,
+      "localTrips": 1529530.0,
       "realm": "france"
     },
     {
@@ -34331,7 +34659,7 @@
       ],
       "place": 653,
       "country": "FR",
-      "localTrips": 3312812.0,
+      "localTrips": 3312688.0,
       "realm": "france"
     },
     {
@@ -34357,7 +34685,7 @@
       ],
       "place": 654,
       "country": "FR",
-      "localTrips": 2069227.0,
+      "localTrips": 2067022.0,
       "realm": "france"
     },
     {
@@ -34383,7 +34711,7 @@
       ],
       "place": 657,
       "country": "FR",
-      "localTrips": 3112868.0,
+      "localTrips": 3112856.0,
       "realm": "france"
     },
     {
@@ -34435,7 +34763,7 @@
       ],
       "place": 659,
       "country": "FR",
-      "localTrips": 2114561.0,
+      "localTrips": 2114553.0,
       "realm": "france"
     },
     {
@@ -34461,7 +34789,7 @@
       ],
       "place": 660,
       "country": "FR",
-      "localTrips": 1676815.0,
+      "localTrips": 1676816.0,
       "realm": "france"
     },
     {
@@ -34487,7 +34815,7 @@
       ],
       "place": 661,
       "country": "FR",
-      "localTrips": 3201047.0,
+      "localTrips": 3208289.0,
       "realm": "france"
     },
     {
@@ -34513,7 +34841,7 @@
       ],
       "place": 662,
       "country": "FR",
-      "localTrips": 2160555.0,
+      "localTrips": 2161537.0,
       "realm": "france"
     },
     {
@@ -34539,7 +34867,7 @@
       ],
       "place": 664,
       "country": "FR",
-      "localTrips": 1413841.0,
+      "localTrips": 1413864.0,
       "realm": "france"
     },
     {
@@ -34565,7 +34893,7 @@
       ],
       "place": 667,
       "country": "FR",
-      "localTrips": 2777115.0,
+      "localTrips": 2778986.0,
       "realm": "france"
     },
     {
@@ -34591,7 +34919,7 @@
       ],
       "place": 671,
       "country": "FR",
-      "localTrips": 2182426.0,
+      "localTrips": 2182422.0,
       "realm": "france"
     },
     {
@@ -34617,7 +34945,7 @@
       ],
       "place": 672,
       "country": "FR",
-      "localTrips": 1496171.0,
+      "localTrips": 1496235.0,
       "realm": "france"
     },
     {
@@ -34643,7 +34971,7 @@
       ],
       "place": 673,
       "country": "FR",
-      "localTrips": 1390394.0,
+      "localTrips": 1390298.0,
       "realm": "france"
     },
     {
@@ -34669,7 +34997,7 @@
       ],
       "place": 674,
       "country": "FR",
-      "localTrips": 1916920.0,
+      "localTrips": 1916671.0,
       "realm": "france"
     },
     {
@@ -34695,7 +35023,7 @@
       ],
       "place": 699,
       "country": "FR",
-      "localTrips": 1498967.0,
+      "localTrips": 1498992.0,
       "realm": "france"
     },
     {
@@ -34721,7 +35049,7 @@
       ],
       "place": 700,
       "country": "FR",
-      "localTrips": 1480918.0,
+      "localTrips": 1481052.0,
       "realm": "france"
     },
     {
@@ -34747,7 +35075,7 @@
       ],
       "place": 718,
       "country": "PT",
-      "localTrips": 1297581.0,
+      "localTrips": 1288971.0,
       "realm": "iberia"
     },
     {
@@ -34773,7 +35101,7 @@
       ],
       "place": 761,
       "country": "GR",
-      "localTrips": 221233.0,
+      "localTrips": 221179.0,
       "realm": "gr-cy"
     },
     {
@@ -37559,32 +37887,6 @@
       "realm": "central-europe"
     },
     {
-      "id": "spi",
-      "name": "Splitsko-dalmatinska županija",
-      "kind": "zone",
-      "origin": {
-        "lon": 16.4696,
-        "lat": 43.5161
-      },
-      "center": [
-        16.4696,
-        43.5161
-      ],
-      "zoom": 10.5,
-      "utcOffset": 1,
-      "market": -1,
-      "box": [
-        14.542,
-        42.372,
-        18.559,
-        44.557
-      ],
-      "place": 1121,
-      "country": "HR",
-      "localTrips": 2122374.0,
-      "realm": "balkans"
-    },
-    {
       "id": "cns",
       "name": "Constanţa",
       "kind": "zone",
@@ -37607,7 +37909,7 @@
       ],
       "place": 1126,
       "country": "RO",
-      "localTrips": 1721552.0,
+      "localTrips": 1719239.0,
       "realm": "ro-md"
     },
     {
@@ -37633,7 +37935,7 @@
       ],
       "place": 1128,
       "country": "RO",
-      "localTrips": 1469000.0,
+      "localTrips": 1469113.0,
       "realm": "ro-md"
     },
     {
@@ -37659,7 +37961,7 @@
       ],
       "place": 1136,
       "country": "RO",
-      "localTrips": 2589134.0,
+      "localTrips": 2590457.0,
       "realm": "ro-md"
     },
     {
@@ -37685,7 +37987,7 @@
       ],
       "place": 1141,
       "country": "RO",
-      "localTrips": 1508260.0,
+      "localTrips": 1510281.0,
       "realm": "ro-md"
     },
     {
@@ -37711,7 +38013,7 @@
       ],
       "place": 1144,
       "country": "RO",
-      "localTrips": 1348965.0,
+      "localTrips": 1350427.0,
       "realm": "ro-md"
     },
     {
@@ -37971,7 +38273,7 @@
       ],
       "place": 1174,
       "country": "BA",
-      "localTrips": 65254.0,
+      "localTrips": 63028.0,
       "realm": "balkans"
     },
     {
@@ -37997,7 +38299,7 @@
       ],
       "place": 1180,
       "country": "HR",
-      "localTrips": 1257658.0,
+      "localTrips": 1256258.0,
       "realm": "balkans"
     },
     {
@@ -38179,7 +38481,7 @@
       ],
       "place": 1197,
       "country": "NO",
-      "localTrips": 843172.0,
+      "localTrips": 843133.0,
       "realm": "nordic"
     },
     {
@@ -38205,7 +38507,7 @@
       ],
       "place": 1198,
       "country": "NO",
-      "localTrips": 703030.0,
+      "localTrips": 697941.0,
       "realm": "nordic"
     },
     {
@@ -38231,7 +38533,7 @@
       ],
       "place": 1202,
       "country": "EE",
-      "localTrips": 1899216.0,
+      "localTrips": 1888508.0,
       "realm": "baltic"
     },
     {
@@ -38257,7 +38559,7 @@
       ],
       "place": 1203,
       "country": "EE",
-      "localTrips": 363634.0,
+      "localTrips": 359878.0,
       "realm": "baltic"
     },
     {
@@ -38283,7 +38585,7 @@
       ],
       "place": 1204,
       "country": "LT",
-      "localTrips": 2429667.0,
+      "localTrips": 2423757.0,
       "realm": "baltic"
     },
     {
@@ -38309,7 +38611,7 @@
       ],
       "place": 1207,
       "country": "SE",
-      "localTrips": 5863202.0,
+      "localTrips": 5860344.0,
       "realm": "nordic"
     },
     {
@@ -38335,7 +38637,7 @@
       ],
       "place": 1208,
       "country": "SE",
-      "localTrips": 4506604.0,
+      "localTrips": 4505428.0,
       "realm": "nordic"
     },
     {
@@ -38361,7 +38663,7 @@
       ],
       "place": 1211,
       "country": "SE",
-      "localTrips": 1525247.0,
+      "localTrips": 1522274.0,
       "realm": "nordic"
     },
     {
@@ -38387,7 +38689,7 @@
       ],
       "place": 1212,
       "country": "LV",
-      "localTrips": 3013440.0,
+      "localTrips": 2974839.0,
       "realm": "baltic"
     },
     {
@@ -38465,7 +38767,7 @@
       ],
       "place": 1261,
       "country": "NO",
-      "localTrips": 1310859.0,
+      "localTrips": 1303652.0,
       "realm": "nordic"
     },
     {
@@ -38491,7 +38793,7 @@
       ],
       "place": 1262,
       "country": "FI",
-      "localTrips": 1151311.0,
+      "localTrips": 1145438.0,
       "realm": "nordic"
     },
     {
@@ -59387,7 +59689,7 @@
       ],
       "place": 3676,
       "country": "CA",
-      "localTrips": 13105828.0,
+      "localTrips": 13105716.0,
       "realm": "canada"
     },
     {
@@ -59413,7 +59715,7 @@
       ],
       "place": 3677,
       "country": "CA",
-      "localTrips": 4123910.0,
+      "localTrips": 4124581.0,
       "realm": "canada"
     },
     {
@@ -59439,7 +59741,7 @@
       ],
       "place": 3678,
       "country": "CA",
-      "localTrips": 3290248.0,
+      "localTrips": 3288399.0,
       "realm": "canada"
     },
     {
@@ -59465,7 +59767,7 @@
       ],
       "place": 3680,
       "country": "CA",
-      "localTrips": 3107356.0,
+      "localTrips": 3108103.0,
       "realm": "canada"
     },
     {
@@ -59491,7 +59793,7 @@
       ],
       "place": 3682,
       "country": "CA",
-      "localTrips": 2502994.0,
+      "localTrips": 2502929.0,
       "realm": "canada"
     },
     {
@@ -59517,7 +59819,7 @@
       ],
       "place": 3683,
       "country": "CA",
-      "localTrips": 2452456.0,
+      "localTrips": 2452300.0,
       "realm": "canada"
     },
     {
@@ -59543,7 +59845,7 @@
       ],
       "place": 3684,
       "country": "CA",
-      "localTrips": 1922279.0,
+      "localTrips": 1922707.0,
       "realm": "canada"
     },
     {
@@ -59569,7 +59871,7 @@
       ],
       "place": 3685,
       "country": "CA",
-      "localTrips": 1354739.0,
+      "localTrips": 1354968.0,
       "realm": "canada"
     },
     {
@@ -59595,7 +59897,7 @@
       ],
       "place": 3686,
       "country": "CA",
-      "localTrips": 1099870.0,
+      "localTrips": 1099860.0,
       "realm": "canada"
     },
     {
@@ -59621,7 +59923,7 @@
       ],
       "place": 3687,
       "country": "CA",
-      "localTrips": 921882.0,
+      "localTrips": 921818.0,
       "realm": "canada"
     },
     {
@@ -59647,7 +59949,7 @@
       ],
       "place": 3688,
       "country": "CA",
-      "localTrips": 1155884.0,
+      "localTrips": 1156035.0,
       "realm": "canada"
     },
     {
@@ -59673,7 +59975,7 @@
       ],
       "place": 3689,
       "country": "CA",
-      "localTrips": 1067423.0,
+      "localTrips": 1067386.0,
       "realm": "canada"
     },
     {
@@ -59699,7 +60001,7 @@
       ],
       "place": 3690,
       "country": "CA",
-      "localTrips": 962038.0,
+      "localTrips": 962062.0,
       "realm": "canada"
     },
     {
@@ -59725,7 +60027,7 @@
       ],
       "place": 3691,
       "country": "CA",
-      "localTrips": 879413.0,
+      "localTrips": 878044.0,
       "realm": "canada"
     },
     {
@@ -59751,7 +60053,7 @@
       ],
       "place": 3693,
       "country": "CA",
-      "localTrips": 516163.0,
+      "localTrips": 516247.0,
       "realm": "canada"
     },
     {
@@ -59777,7 +60079,7 @@
       ],
       "place": 3694,
       "country": "CA",
-      "localTrips": 438466.0,
+      "localTrips": 438575.0,
       "realm": "canada"
     },
     {
@@ -59803,7 +60105,7 @@
       ],
       "place": 3695,
       "country": "CA",
-      "localTrips": 438879.0,
+      "localTrips": 439154.0,
       "realm": "canada"
     },
     {
@@ -59829,7 +60131,7 @@
       ],
       "place": 3696,
       "country": "CA",
-      "localTrips": 418871.0,
+      "localTrips": 418892.0,
       "realm": "canada"
     },
     {
@@ -59855,7 +60157,7 @@
       ],
       "place": 3698,
       "country": "CA",
-      "localTrips": 360915.0,
+      "localTrips": 359081.0,
       "realm": "canada"
     },
     {
@@ -59880,7 +60182,7 @@
       ],
       "place": 3699,
       "country": "CA",
-      "localTrips": 7946277.0,
+      "localTrips": 7947180.0,
       "realm": "canada"
     },
     {
@@ -59906,7 +60208,7 @@
       ],
       "place": 3700,
       "country": "CA",
-      "localTrips": 518612.0,
+      "localTrips": 518609.0,
       "realm": "canada"
     },
     {
@@ -59932,7 +60234,7 @@
       ],
       "place": 3702,
       "country": "CA",
-      "localTrips": 429146.0,
+      "localTrips": 429213.0,
       "realm": "canada"
     },
     {
@@ -59957,7 +60259,7 @@
       ],
       "place": 3703,
       "country": "CA",
-      "localTrips": 4672195.0,
+      "localTrips": 4671673.0,
       "realm": "canada"
     },
     {
@@ -59982,7 +60284,7 @@
       ],
       "place": 3704,
       "country": "CA",
-      "localTrips": 4155713.0,
+      "localTrips": 4154838.0,
       "realm": "canada"
     },
     {
@@ -60008,7 +60310,7 @@
       ],
       "place": 3705,
       "country": "CA",
-      "localTrips": 1431588.0,
+      "localTrips": 1433195.0,
       "realm": "canada"
     },
     {
@@ -60034,7 +60336,7 @@
       ],
       "place": 3706,
       "country": "CA",
-      "localTrips": 1427452.0,
+      "localTrips": 1427844.0,
       "realm": "canada"
     },
     {
@@ -60060,7 +60362,7 @@
       ],
       "place": 3707,
       "country": "CA",
-      "localTrips": 1023346.0,
+      "localTrips": 1023227.0,
       "realm": "canada"
     },
     {
@@ -60086,7 +60388,7 @@
       ],
       "place": 3708,
       "country": "CA",
-      "localTrips": 688858.0,
+      "localTrips": 688751.0,
       "realm": "canada"
     },
     {
@@ -60112,7 +60414,7 @@
       ],
       "place": 3709,
       "country": "CA",
-      "localTrips": 551203.0,
+      "localTrips": 551260.0,
       "realm": "canada"
     },
     {
@@ -60138,7 +60440,7 @@
       ],
       "place": 3710,
       "country": "CA",
-      "localTrips": 412567.0,
+      "localTrips": 412609.0,
       "realm": "canada"
     },
     {
@@ -60164,7 +60466,7 @@
       ],
       "place": 3711,
       "country": "CA",
-      "localTrips": 375162.0,
+      "localTrips": 374954.0,
       "realm": "canada"
     },
     {
@@ -60190,7 +60492,7 @@
       ],
       "place": 3712,
       "country": "CA",
-      "localTrips": 328324.0,
+      "localTrips": 328233.0,
       "realm": "canada"
     },
     {
@@ -60216,7 +60518,7 @@
       ],
       "place": 3713,
       "country": "CA",
-      "localTrips": 221091.0,
+      "localTrips": 221000.0,
       "realm": "canada"
     },
     {
@@ -60268,7 +60570,7 @@
       ],
       "place": 3715,
       "country": "CA",
-      "localTrips": 1822013.0,
+      "localTrips": 1822025.0,
       "realm": "canada"
     },
     {
@@ -60294,7 +60596,7 @@
       ],
       "place": 3716,
       "country": "CA",
-      "localTrips": 872211.0,
+      "localTrips": 872208.0,
       "realm": "canada"
     },
     {
@@ -60320,7 +60622,7 @@
       ],
       "place": 3717,
       "country": "CA",
-      "localTrips": 984951.0,
+      "localTrips": 986486.0,
       "realm": "canada"
     },
     {
@@ -60346,7 +60648,7 @@
       ],
       "place": 3718,
       "country": "CA",
-      "localTrips": 878758.0,
+      "localTrips": 878974.0,
       "realm": "canada"
     },
     {
@@ -60398,7 +60700,7 @@
       ],
       "place": 3721,
       "country": "CA",
-      "localTrips": 423809.0,
+      "localTrips": 423821.0,
       "realm": "canada"
     },
     {
@@ -60424,7 +60726,7 @@
       ],
       "place": 3722,
       "country": "CA",
-      "localTrips": 486064.0,
+      "localTrips": 486140.0,
       "realm": "canada"
     },
     {
@@ -60450,7 +60752,7 @@
       ],
       "place": 3724,
       "country": "CA",
-      "localTrips": 1829282.0,
+      "localTrips": 1829305.0,
       "realm": "canada"
     },
     {
@@ -60476,7 +60778,7 @@
       ],
       "place": 3725,
       "country": "CA",
-      "localTrips": 452002.0,
+      "localTrips": 451990.0,
       "realm": "canada"
     },
     {
@@ -60502,7 +60804,7 @@
       ],
       "place": 3730,
       "country": "CA",
-      "localTrips": 2533283.0,
+      "localTrips": 2533878.0,
       "realm": "canada"
     },
     {
@@ -64167,31 +64469,6 @@
       "realm": "thailand"
     },
     {
-      "id": "sin",
-      "name": "Singapore",
-      "origin": {
-        "lon": 103.9026,
-        "lat": 1.3952
-      },
-      "center": [
-        103.9026,
-        1.3952
-      ],
-      "zoom": 11.2,
-      "utcOffset": 8,
-      "market": -1,
-      "box": [
-        103.621,
-        1.236,
-        104.052,
-        1.49
-      ],
-      "place": 3909,
-      "country": "SG",
-      "localTrips": 18211166.0,
-      "realm": "singapore"
-    },
-    {
       "id": "mug",
       "name": "Mueang Chiang Mai",
       "kind": "zone",
@@ -64578,7 +64855,7 @@
       ],
       "place": 3928,
       "country": "CA",
-      "localTrips": 3074600.0,
+      "localTrips": 3075623.0,
       "realm": "canada"
     },
     {
@@ -64604,7 +64881,7 @@
       ],
       "place": 3929,
       "country": "CA",
-      "localTrips": 375987.0,
+      "localTrips": 377019.0,
       "realm": "canada"
     },
     {
@@ -64630,7 +64907,7 @@
       ],
       "place": 3930,
       "country": "GR",
-      "localTrips": 460816.0,
+      "localTrips": 460949.0,
       "realm": "gr-cy"
     },
     {
@@ -64656,7 +64933,7 @@
       ],
       "place": 3932,
       "country": "CA",
-      "localTrips": 2857725.0,
+      "localTrips": 2857740.0,
       "realm": "canada"
     },
     {
@@ -64682,7 +64959,7 @@
       ],
       "place": 3933,
       "country": "CA",
-      "localTrips": 553497.0,
+      "localTrips": 553518.0,
       "realm": "canada"
     },
     {
@@ -64708,7 +64985,7 @@
       ],
       "place": 3935,
       "country": "CA",
-      "localTrips": 311496.0,
+      "localTrips": 311548.0,
       "realm": "canada"
     },
     {
@@ -65019,7 +65296,7 @@
       ],
       "place": 3960,
       "country": "PT",
-      "localTrips": 8339980.0,
+      "localTrips": 8322357.0,
       "realm": "iberia"
     },
     {
@@ -65044,7 +65321,7 @@
       ],
       "place": 3961,
       "country": "PT",
-      "localTrips": 4716129.0,
+      "localTrips": 4716130.0,
       "realm": "iberia"
     },
     {
@@ -65070,7 +65347,7 @@
       ],
       "place": 3963,
       "country": "GR",
-      "localTrips": 468632.0,
+      "localTrips": 468623.0,
       "realm": "gr-cy"
     },
     {
@@ -65096,7 +65373,7 @@
       ],
       "place": 3967,
       "country": "FI",
-      "localTrips": 84207.0,
+      "localTrips": 84116.0,
       "realm": "nordic"
     },
     {
@@ -65122,7 +65399,7 @@
       ],
       "place": 3969,
       "country": "ES",
-      "localTrips": 212150.0,
+      "localTrips": 210856.0,
       "realm": "iberia"
     },
     {
@@ -107396,34 +107673,8 @@
       ],
       "place": 6009,
       "country": "FR",
-      "localTrips": 3883634.0,
+      "localTrips": 3884427.0,
       "realm": "france"
-    },
-    {
-      "id": "fie",
-      "name": "Fier",
-      "kind": "zone",
-      "origin": {
-        "lon": 19.554,
-        "lat": 40.727
-      },
-      "center": [
-        19.554,
-        40.727
-      ],
-      "zoom": 10.5,
-      "utcOffset": 1,
-      "market": -1,
-      "box": [
-        19.24,
-        39.626,
-        21.082,
-        41.414
-      ],
-      "place": 6010,
-      "country": "AL",
-      "localTrips": 2820342.0,
-      "realm": "balkans"
     },
     {
       "id": "ske",
@@ -107448,7 +107699,7 @@
       ],
       "place": 6011,
       "country": "AL",
-      "localTrips": 1360671.0,
+      "localTrips": 1361006.0,
       "realm": "balkans"
     },
     {
@@ -107474,7 +107725,7 @@
       ],
       "place": 6012,
       "country": "AL",
-      "localTrips": 753034.0,
+      "localTrips": 753023.0,
       "realm": "balkans"
     },
     {
@@ -107760,33 +108011,7 @@
       ],
       "place": 6023,
       "country": "BA",
-      "localTrips": 3461819.0,
-      "realm": "balkans"
-    },
-    {
-      "id": "bja",
-      "name": "Banja Luka",
-      "kind": "zone",
-      "origin": {
-        "lon": 17.1974,
-        "lat": 44.7721
-      },
-      "center": [
-        17.1974,
-        44.7721
-      ],
-      "zoom": 10.5,
-      "utcOffset": 1,
-      "market": -1,
-      "box": [
-        15.69,
-        44.178,
-        18.751,
-        45.295
-      ],
-      "place": 6024,
-      "country": "BA",
-      "localTrips": 2340939.0,
+      "localTrips": 3440590.0,
       "realm": "balkans"
     },
     {
@@ -107812,7 +108037,7 @@
       ],
       "place": 6025,
       "country": "BA",
-      "localTrips": 2009080.0,
+      "localTrips": 2002667.0,
       "realm": "balkans"
     },
     {
@@ -109398,7 +109623,7 @@
       ],
       "place": 6087,
       "country": "ES",
-      "localTrips": 3021215.0,
+      "localTrips": 3013246.0,
       "realm": "iberia"
     },
     {
@@ -109424,7 +109649,7 @@
       ],
       "place": 6088,
       "country": "ES",
-      "localTrips": 3435752.0,
+      "localTrips": 3435715.0,
       "realm": "iberia"
     },
     {
@@ -109450,7 +109675,7 @@
       ],
       "place": 6089,
       "country": "ES",
-      "localTrips": 3101343.0,
+      "localTrips": 3100742.0,
       "realm": "iberia"
     },
     {
@@ -109476,7 +109701,7 @@
       ],
       "place": 6090,
       "country": "ES",
-      "localTrips": 2745697.0,
+      "localTrips": 2732585.0,
       "realm": "iberia"
     },
     {
@@ -109502,7 +109727,7 @@
       ],
       "place": 6091,
       "country": "FI",
-      "localTrips": 2048776.0,
+      "localTrips": 2042039.0,
       "realm": "nordic"
     },
     {
@@ -109528,7 +109753,7 @@
       ],
       "place": 6092,
       "country": "FI",
-      "localTrips": 1486395.0,
+      "localTrips": 1483435.0,
       "realm": "nordic"
     },
     {
@@ -109554,7 +109779,7 @@
       ],
       "place": 6093,
       "country": "FI",
-      "localTrips": 1291686.0,
+      "localTrips": 1291670.0,
       "realm": "nordic"
     },
     {
@@ -109580,7 +109805,7 @@
       ],
       "place": 6094,
       "country": "FI",
-      "localTrips": 481344.0,
+      "localTrips": 467707.0,
       "realm": "nordic"
     },
     {
@@ -109606,7 +109831,7 @@
       ],
       "place": 6095,
       "country": "FR",
-      "localTrips": 4129324.0,
+      "localTrips": 4129285.0,
       "realm": "france"
     },
     {
@@ -109632,7 +109857,7 @@
       ],
       "place": 6096,
       "country": "FR",
-      "localTrips": 3749466.0,
+      "localTrips": 3749721.0,
       "realm": "france"
     },
     {
@@ -109658,7 +109883,7 @@
       ],
       "place": 6097,
       "country": "FR",
-      "localTrips": 1385130.0,
+      "localTrips": 1380721.0,
       "realm": "france"
     },
     {
@@ -109684,7 +109909,7 @@
       ],
       "place": 6098,
       "country": "FR",
-      "localTrips": 3757870.0,
+      "localTrips": 3750898.0,
       "realm": "france"
     },
     {
@@ -109710,7 +109935,7 @@
       ],
       "place": 6099,
       "country": "FR",
-      "localTrips": 3598254.0,
+      "localTrips": 3602485.0,
       "realm": "france"
     },
     {
@@ -109736,7 +109961,7 @@
       ],
       "place": 6100,
       "country": "FR",
-      "localTrips": 2329300.0,
+      "localTrips": 2328068.0,
       "realm": "france"
     },
     {
@@ -109762,7 +109987,7 @@
       ],
       "place": 6101,
       "country": "FR",
-      "localTrips": 3608553.0,
+      "localTrips": 3613220.0,
       "realm": "france"
     },
     {
@@ -109788,7 +110013,7 @@
       ],
       "place": 6102,
       "country": "FR",
-      "localTrips": 3473450.0,
+      "localTrips": 3478820.0,
       "realm": "france"
     },
     {
@@ -109814,7 +110039,7 @@
       ],
       "place": 6103,
       "country": "FR",
-      "localTrips": 3284897.0,
+      "localTrips": 3285744.0,
       "realm": "france"
     },
     {
@@ -109840,7 +110065,7 @@
       ],
       "place": 6104,
       "country": "FR",
-      "localTrips": 3064291.0,
+      "localTrips": 3061979.0,
       "realm": "france"
     },
     {
@@ -109866,7 +110091,7 @@
       ],
       "place": 6105,
       "country": "FR",
-      "localTrips": 2890591.0,
+      "localTrips": 2890553.0,
       "realm": "france"
     },
     {
@@ -109892,7 +110117,7 @@
       ],
       "place": 6106,
       "country": "FR",
-      "localTrips": 1116325.0,
+      "localTrips": 1116148.0,
       "realm": "france"
     },
     {
@@ -109918,7 +110143,7 @@
       ],
       "place": 6107,
       "country": "FR",
-      "localTrips": 3131727.0,
+      "localTrips": 3131505.0,
       "realm": "france"
     },
     {
@@ -109944,7 +110169,7 @@
       ],
       "place": 6108,
       "country": "FR",
-      "localTrips": 2062651.0,
+      "localTrips": 2062583.0,
       "realm": "france"
     },
     {
@@ -109970,7 +110195,7 @@
       ],
       "place": 6109,
       "country": "FR",
-      "localTrips": 2809562.0,
+      "localTrips": 2809574.0,
       "realm": "france"
     },
     {
@@ -109996,7 +110221,7 @@
       ],
       "place": 6110,
       "country": "FR",
-      "localTrips": 2241429.0,
+      "localTrips": 2241615.0,
       "realm": "france"
     },
     {
@@ -110022,7 +110247,7 @@
       ],
       "place": 6111,
       "country": "FR",
-      "localTrips": 2471919.0,
+      "localTrips": 2471859.0,
       "realm": "france"
     },
     {
@@ -110048,7 +110273,7 @@
       ],
       "place": 6112,
       "country": "FR",
-      "localTrips": 1708493.0,
+      "localTrips": 1701512.0,
       "realm": "france"
     },
     {
@@ -110074,7 +110299,7 @@
       ],
       "place": 6113,
       "country": "FR",
-      "localTrips": 1458122.0,
+      "localTrips": 1457835.0,
       "realm": "france"
     },
     {
@@ -110100,7 +110325,7 @@
       ],
       "place": 6114,
       "country": "FR",
-      "localTrips": 937491.0,
+      "localTrips": 937439.0,
       "realm": "france"
     },
     {
@@ -110672,33 +110897,7 @@
       ],
       "place": 6137,
       "country": "GR",
-      "localTrips": 2746682.0,
-      "realm": "gr-cy"
-    },
-    {
-      "id": "evo",
-      "name": "Evvoia",
-      "kind": "zone",
-      "origin": {
-        "lon": 23.6077,
-        "lat": 38.4684
-      },
-      "center": [
-        23.6077,
-        38.4684
-      ],
-      "zoom": 10.5,
-      "utcOffset": 2,
-      "market": -1,
-      "box": [
-        20.517,
-        37.93,
-        24.709,
-        39.292
-      ],
-      "place": 6138,
-      "country": "GR",
-      "localTrips": 1673420.0,
+      "localTrips": 2745125.0,
       "realm": "gr-cy"
     },
     {
@@ -110724,7 +110923,7 @@
       ],
       "place": 6139,
       "country": "GR",
-      "localTrips": 1706048.0,
+      "localTrips": 1706025.0,
       "realm": "gr-cy"
     },
     {
@@ -110750,7 +110949,7 @@
       ],
       "place": 6140,
       "country": "GR",
-      "localTrips": 1353468.0,
+      "localTrips": 1353214.0,
       "realm": "gr-cy"
     },
     {
@@ -110776,7 +110975,7 @@
       ],
       "place": 6141,
       "country": "GR",
-      "localTrips": 1386915.0,
+      "localTrips": 1386458.0,
       "realm": "gr-cy"
     },
     {
@@ -110802,7 +111001,7 @@
       ],
       "place": 6142,
       "country": "GR",
-      "localTrips": 1207580.0,
+      "localTrips": 1208155.0,
       "realm": "gr-cy"
     },
     {
@@ -110828,7 +111027,7 @@
       ],
       "place": 6143,
       "country": "GR",
-      "localTrips": 1276470.0,
+      "localTrips": 1276884.0,
       "realm": "gr-cy"
     },
     {
@@ -110854,7 +111053,7 @@
       ],
       "place": 6144,
       "country": "GR",
-      "localTrips": 1139974.0,
+      "localTrips": 1139172.0,
       "realm": "gr-cy"
     },
     {
@@ -110880,7 +111079,7 @@
       ],
       "place": 6145,
       "country": "GR",
-      "localTrips": 803510.0,
+      "localTrips": 803476.0,
       "realm": "gr-cy"
     },
     {
@@ -110906,7 +111105,7 @@
       ],
       "place": 6146,
       "country": "HR",
-      "localTrips": 3015562.0,
+      "localTrips": 3015990.0,
       "realm": "balkans"
     },
     {
@@ -110932,7 +111131,7 @@
       ],
       "place": 6147,
       "country": "HR",
-      "localTrips": 2561425.0,
+      "localTrips": 2563006.0,
       "realm": "balkans"
     },
     {
@@ -110958,7 +111157,7 @@
       ],
       "place": 6148,
       "country": "HR",
-      "localTrips": 1270732.0,
+      "localTrips": 1271118.0,
       "realm": "balkans"
     },
     {
@@ -111790,7 +111989,7 @@
       ],
       "place": 6181,
       "country": "LT",
-      "localTrips": 2860070.0,
+      "localTrips": 2854233.0,
       "realm": "baltic"
     },
     {
@@ -111816,7 +112015,7 @@
       ],
       "place": 6182,
       "country": "LT",
-      "localTrips": 2314413.0,
+      "localTrips": 2314107.0,
       "realm": "baltic"
     },
     {
@@ -112154,7 +112353,7 @@
       ],
       "place": 6195,
       "country": "NO",
-      "localTrips": 3197814.0,
+      "localTrips": 3194492.0,
       "realm": "nordic"
     },
     {
@@ -112674,7 +112873,7 @@
       ],
       "place": 6215,
       "country": "PT",
-      "localTrips": 3933958.0,
+      "localTrips": 3927078.0,
       "realm": "iberia"
     },
     {
@@ -112700,7 +112899,7 @@
       ],
       "place": 6216,
       "country": "PT",
-      "localTrips": 2824684.0,
+      "localTrips": 2822016.0,
       "realm": "iberia"
     },
     {
@@ -112726,7 +112925,7 @@
       ],
       "place": 6217,
       "country": "PT",
-      "localTrips": 2044701.0,
+      "localTrips": 2036036.0,
       "realm": "iberia"
     },
     {
@@ -112752,7 +112951,7 @@
       ],
       "place": 6218,
       "country": "PT",
-      "localTrips": 1407556.0,
+      "localTrips": 1405099.0,
       "realm": "iberia"
     },
     {
@@ -112778,7 +112977,7 @@
       ],
       "place": 6219,
       "country": "RO",
-      "localTrips": 3561401.0,
+      "localTrips": 3563582.0,
       "realm": "ro-md"
     },
     {
@@ -112804,7 +113003,7 @@
       ],
       "place": 6220,
       "country": "RO",
-      "localTrips": 3156116.0,
+      "localTrips": 3156580.0,
       "realm": "ro-md"
     },
     {
@@ -112830,7 +113029,7 @@
       ],
       "place": 6221,
       "country": "RO",
-      "localTrips": 3102705.0,
+      "localTrips": 3109855.0,
       "realm": "ro-md"
     },
     {
@@ -112856,7 +113055,7 @@
       ],
       "place": 6222,
       "country": "RO",
-      "localTrips": 2839667.0,
+      "localTrips": 2839796.0,
       "realm": "ro-md"
     },
     {
@@ -112882,7 +113081,7 @@
       ],
       "place": 6223,
       "country": "RO",
-      "localTrips": 2670721.0,
+      "localTrips": 2671028.0,
       "realm": "ro-md"
     },
     {
@@ -112908,7 +113107,7 @@
       ],
       "place": 6224,
       "country": "RO",
-      "localTrips": 2624047.0,
+      "localTrips": 2624448.0,
       "realm": "ro-md"
     },
     {
@@ -112934,7 +113133,7 @@
       ],
       "place": 6225,
       "country": "RO",
-      "localTrips": 2556401.0,
+      "localTrips": 2556900.0,
       "realm": "ro-md"
     },
     {
@@ -112960,7 +113159,7 @@
       ],
       "place": 6226,
       "country": "RO",
-      "localTrips": 2397797.0,
+      "localTrips": 2400227.0,
       "realm": "ro-md"
     },
     {
@@ -112986,7 +113185,7 @@
       ],
       "place": 6227,
       "country": "RO",
-      "localTrips": 2334396.0,
+      "localTrips": 2339744.0,
       "realm": "ro-md"
     },
     {
@@ -113012,7 +113211,7 @@
       ],
       "place": 6228,
       "country": "RO",
-      "localTrips": 2164324.0,
+      "localTrips": 2164000.0,
       "realm": "ro-md"
     },
     {
@@ -113038,7 +113237,7 @@
       ],
       "place": 6229,
       "country": "RO",
-      "localTrips": 2099629.0,
+      "localTrips": 2093278.0,
       "realm": "ro-md"
     },
     {
@@ -113064,7 +113263,7 @@
       ],
       "place": 6230,
       "country": "RO",
-      "localTrips": 1954951.0,
+      "localTrips": 1954466.0,
       "realm": "ro-md"
     },
     {
@@ -113090,7 +113289,7 @@
       ],
       "place": 6231,
       "country": "RO",
-      "localTrips": 1916391.0,
+      "localTrips": 1916601.0,
       "realm": "ro-md"
     },
     {
@@ -113116,7 +113315,7 @@
       ],
       "place": 6232,
       "country": "RO",
-      "localTrips": 1522428.0,
+      "localTrips": 1523287.0,
       "realm": "ro-md"
     },
     {
@@ -113272,7 +113471,7 @@
       ],
       "place": 6238,
       "country": "SE",
-      "localTrips": 3735079.0,
+      "localTrips": 3723221.0,
       "realm": "nordic"
     },
     {
@@ -113298,7 +113497,7 @@
       ],
       "place": 6239,
       "country": "SE",
-      "localTrips": 1036937.0,
+      "localTrips": 1029092.0,
       "realm": "nordic"
     },
     {
@@ -113375,7 +113574,7 @@
       ],
       "place": 6242,
       "country": "FR",
-      "localTrips": 3149040.0,
+      "localTrips": 3149587.0,
       "realm": "france"
     },
     {
@@ -113401,7 +113600,7 @@
       ],
       "place": 6243,
       "country": "BA",
-      "localTrips": 57077.0,
+      "localTrips": 54498.0,
       "realm": "balkans"
     },
     {
@@ -113453,7 +113652,7 @@
       ],
       "place": 6245,
       "country": "HR",
-      "localTrips": 295864.0,
+      "localTrips": 294363.0,
       "realm": "balkans"
     },
     {
@@ -132513,6 +132712,1772 @@
       "country": "PS",
       "localTrips": 3177929.0,
       "realm": "levant"
+    },
+    {
+      "id": "pyo",
+      "name": "P'yŏngyang",
+      "origin": {
+        "lon": 125.7419,
+        "lat": 39.0105
+      },
+      "center": [
+        125.7419,
+        39.0105
+      ],
+      "zoom": 11.2,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.312,
+        38.679,
+        126.245,
+        39.298
+      ],
+      "place": 7341,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 11077280.0
+    },
+    {
+      "id": "hmh",
+      "name": "Hamhung City",
+      "kind": "zone",
+      "origin": {
+        "lon": 127.622,
+        "lat": 39.8399
+      },
+      "center": [
+        127.622,
+        39.8399
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        126.637,
+        39.354,
+        128.226,
+        40.323
+      ],
+      "place": 7342,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3908855.0
+    },
+    {
+      "id": "chj",
+      "name": "Chongjin City",
+      "kind": "zone",
+      "origin": {
+        "lon": 129.7894,
+        "lat": 41.7902
+      },
+      "center": [
+        129.7894,
+        41.7902
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        129.161,
+        41.431,
+        130.723,
+        42.722
+      ],
+      "place": 7343,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3860665.0
+    },
+    {
+      "id": "phy",
+      "name": "Phyongsan",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.395,
+        "lat": 38.3354
+      },
+      "center": [
+        126.395,
+        38.3354
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.668,
+        37.997,
+        127.052,
+        39.191
+      ],
+      "place": 7344,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3299787.0
+    },
+    {
+      "id": "sny",
+      "name": "Sunchon City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.9306,
+        "lat": 39.4292
+      },
+      "center": [
+        125.9306,
+        39.4292
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.742,
+        39.201,
+        127.203,
+        40.368
+      ],
+      "place": 7345,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3454909.0
+    },
+    {
+      "id": "sch",
+      "name": "Sinchon",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.4861,
+        "lat": 38.3531
+      },
+      "center": [
+        125.4861,
+        38.3531
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        124.627,
+        38.035,
+        125.833,
+        38.745
+      ],
+      "place": 7346,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3362250.0
+    },
+    {
+      "id": "tco",
+      "name": "Tanchon City",
+      "kind": "zone",
+      "origin": {
+        "lon": 128.9105,
+        "lat": 40.4219
+      },
+      "center": [
+        128.9105,
+        40.4219
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        127.855,
+        39.965,
+        129.192,
+        41.204
+      ],
+      "place": 7347,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3266204.0
+    },
+    {
+      "id": "hut",
+      "name": "Huichon City",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.2762,
+        "lat": 40.171
+      },
+      "center": [
+        126.2762,
+        40.171
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.585,
+        39.867,
+        127.992,
+        41.191
+      ],
+      "place": 7348,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3160484.0
+    },
+    {
+      "id": "sjc",
+      "name": "Sinuiju City",
+      "kind": "zone",
+      "origin": {
+        "lon": 124.4,
+        "lat": 40.1083
+      },
+      "center": [
+        124.4,
+        40.1083
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        124.164,
+        39.773,
+        125.647,
+        40.69
+      ],
+      "place": 7349,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3025273.0
+    },
+    {
+      "id": "woa",
+      "name": "Wonsan City",
+      "kind": "zone",
+      "origin": {
+        "lon": 127.4299,
+        "lat": 39.1618
+      },
+      "center": [
+        127.4299,
+        39.1618
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        126.646,
+        38.345,
+        128.116,
+        39.437
+      ],
+      "place": 7350,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 3314706.0
+    },
+    {
+      "id": "spi",
+      "name": "Splitsko-dalmatinska županija",
+      "kind": "zone",
+      "origin": {
+        "lon": 16.4696,
+        "lat": 43.5161
+      },
+      "center": [
+        16.4696,
+        43.5161
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        14.541,
+        42.373,
+        18.559,
+        45.142
+      ],
+      "place": 7351,
+      "country": "HR",
+      "realm": "balkans",
+      "localTrips": 2216996.0
+    },
+    {
+      "id": "bja",
+      "name": "Banja Luka",
+      "kind": "zone",
+      "origin": {
+        "lon": 17.1974,
+        "lat": 44.7721
+      },
+      "center": [
+        17.1974,
+        44.7721
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        15.686,
+        43.744,
+        18.751,
+        45.295
+      ],
+      "place": 7352,
+      "country": "BA",
+      "realm": "balkans",
+      "localTrips": 2431935.0
+    },
+    {
+      "id": "foc",
+      "name": "Foča",
+      "kind": "zone",
+      "origin": {
+        "lon": 18.771,
+        "lat": 43.507
+      },
+      "center": [
+        18.771,
+        43.507
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        17.527,
+        42.584,
+        19.648,
+        44.191
+      ],
+      "place": 7353,
+      "country": "BA",
+      "realm": "balkans",
+      "localTrips": 244258.0
+    },
+    {
+      "id": "kso",
+      "name": "Kusong City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.2577,
+        "lat": 39.983
+      },
+      "center": [
+        125.2577,
+        39.983
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        124.328,
+        39.25,
+        125.457,
+        40.383
+      ],
+      "place": 7354,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 2643959.0
+    },
+    {
+      "id": "kgg",
+      "name": "Kanggye City",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.5935,
+        "lat": 40.9697
+      },
+      "center": [
+        126.5935,
+        40.9697
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.412,
+        40.333,
+        127.176,
+        41.829
+      ],
+      "place": 7355,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 2619237.0
+    },
+    {
+      "id": "hej",
+      "name": "Haeju City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.6965,
+        "lat": 38.043
+      },
+      "center": [
+        125.6965,
+        38.043
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        124.93,
+        37.658,
+        125.987,
+        38.339
+      ],
+      "place": 7356,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 2679832.0
+    },
+    {
+      "id": "key",
+      "name": "Kaechon City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.8931,
+        "lat": 39.7059
+      },
+      "center": [
+        125.8931,
+        39.7059
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.311,
+        39.406,
+        126.158,
+        39.882
+      ],
+      "place": 7357,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 2758044.0
+    },
+    {
+      "id": "sms",
+      "name": "Samsu",
+      "kind": "zone",
+      "origin": {
+        "lon": 128.1798,
+        "lat": 41.402
+      },
+      "center": [
+        128.1798,
+        41.402
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        126.885,
+        40.393,
+        129.085,
+        42.114
+      ],
+      "place": 7358,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 2136394.0
+    },
+    {
+      "id": "kie",
+      "name": "Kim Chaek City",
+      "kind": "zone",
+      "origin": {
+        "lon": 129.1899,
+        "lat": 40.6731
+      },
+      "center": [
+        129.1899,
+        40.6731
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        128.907,
+        40.555,
+        129.83,
+        41.65
+      ],
+      "place": 7359,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 2246737.0
+    },
+    {
+      "id": "peh",
+      "name": "Paechon",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.2989,
+        "lat": 37.9899
+      },
+      "center": [
+        126.2989,
+        37.9899
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.752,
+        37.723,
+        126.463,
+        38.257
+      ],
+      "place": 7362,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1831375.0
+    },
+    {
+      "id": "fie",
+      "name": "Fier",
+      "kind": "zone",
+      "origin": {
+        "lon": 19.554,
+        "lat": 40.727
+      },
+      "center": [
+        19.554,
+        40.727
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        19.24,
+        39.626,
+        21.082,
+        41.414
+      ],
+      "place": 7364,
+      "country": "AL",
+      "realm": "balkans",
+      "localTrips": 2972262.0
+    },
+    {
+      "id": "evo",
+      "name": "Evvoia",
+      "kind": "zone",
+      "origin": {
+        "lon": 23.6077,
+        "lat": 38.4684
+      },
+      "center": [
+        23.6077,
+        38.4684
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        20.517,
+        37.93,
+        24.709,
+        39.292
+      ],
+      "place": 7365,
+      "country": "GR",
+      "realm": "gr-cy",
+      "localTrips": 1810522.0
+    },
+    {
+      "id": "kgd",
+      "name": "Kangdong",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.1011,
+        "lat": 39.144
+      },
+      "center": [
+        126.1011,
+        39.144
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.931,
+        38.893,
+        127.096,
+        39.581
+      ],
+      "place": 7366,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1718399.0
+    },
+    {
+      "id": "hoe",
+      "name": "Hoeryong City",
+      "kind": "zone",
+      "origin": {
+        "lon": 129.7492,
+        "lat": 42.4331
+      },
+      "center": [
+        129.7492,
+        42.4331
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        128.776,
+        41.543,
+        130.286,
+        43.028
+      ],
+      "place": 7367,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1787759.0
+    },
+    {
+      "id": "nmp",
+      "name": "Nampo City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.4025,
+        "lat": 38.7348
+      },
+      "center": [
+        125.4025,
+        38.7348
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.071,
+        38.61,
+        125.653,
+        39.018
+      ],
+      "place": 7371,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1435830.0
+    },
+    {
+      "id": "kyx",
+      "name": "Kumya",
+      "kind": "zone",
+      "origin": {
+        "lon": 127.2464,
+        "lat": 39.5452
+      },
+      "center": [
+        127.2464,
+        39.5452
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        126.675,
+        39.185,
+        127.601,
+        39.624
+      ],
+      "place": 7373,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1227391.0
+    },
+    {
+      "id": "avi",
+      "name": "Ávila",
+      "kind": "zone",
+      "origin": {
+        "lon": -4.6971,
+        "lat": 40.6552
+      },
+      "center": [
+        -4.6971,
+        40.6552
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        -5.762,
+        40.063,
+        -1.751,
+        42.165
+      ],
+      "place": 7375,
+      "country": "ES",
+      "realm": "iberia",
+      "localTrips": 874103.0
+    },
+    {
+      "id": "zax",
+      "name": "Zamora",
+      "kind": "zone",
+      "origin": {
+        "lon": -5.7388,
+        "lat": 41.5103
+      },
+      "center": [
+        -5.7388,
+        41.5103
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        -7.059,
+        41.099,
+        -5.204,
+        42.273
+      ],
+      "place": 7376,
+      "country": "ES",
+      "realm": "iberia",
+      "localTrips": 389861.0
+    },
+    {
+      "id": "pci",
+      "name": "Palencia",
+      "kind": "zone",
+      "origin": {
+        "lon": -4.5306,
+        "lat": 42.0072
+      },
+      "center": [
+        -4.5306,
+        42.0072
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        -5.057,
+        41.74,
+        -3.865,
+        43.08
+      ],
+      "place": 7377,
+      "country": "ES",
+      "realm": "iberia",
+      "localTrips": 354394.0
+    },
+    {
+      "id": "cce",
+      "name": "Cáceres",
+      "kind": "zone",
+      "origin": {
+        "lon": -6.3803,
+        "lat": 39.4649
+      },
+      "center": [
+        -6.3803,
+        39.4649
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        -7.566,
+        39.013,
+        -4.929,
+        40.505
+      ],
+      "place": 7378,
+      "country": "ES",
+      "realm": "iberia",
+      "localTrips": 876763.0
+    },
+    {
+      "id": "cbh",
+      "name": "Cuenca",
+      "kind": "zone",
+      "origin": {
+        "lon": -2.1385,
+        "lat": 40.0725
+      },
+      "center": [
+        -2.1385,
+        40.0725
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        -3.194,
+        39.208,
+        0.318,
+        41.373
+      ],
+      "place": 7379,
+      "country": "ES",
+      "realm": "iberia",
+      "localTrips": 769635.0
+    },
+    {
+      "id": "hes",
+      "name": "Huesca",
+      "kind": "zone",
+      "origin": {
+        "lon": -0.4026,
+        "lat": 42.134
+      },
+      "center": [
+        -0.4026,
+        42.134
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        -0.959,
+        41.329,
+        0.796,
+        42.943
+      ],
+      "place": 7380,
+      "country": "ES",
+      "realm": "iberia",
+      "localTrips": 498413.0
+    },
+    {
+      "id": "jon",
+      "name": "Jongju City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.2136,
+        "lat": 39.697
+      },
+      "center": [
+        125.2136,
+        39.697
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        124.928,
+        39.391,
+        126.106,
+        40.467
+      ],
+      "place": 7381,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1849985.0
+    },
+    {
+      "id": "pyg",
+      "name": "Pyongwon",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.591,
+        "lat": 39.3044
+      },
+      "center": [
+        125.591,
+        39.3044
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.181,
+        38.939,
+        125.857,
+        39.508
+      ],
+      "place": 7382,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1689274.0
+    },
+    {
+      "id": "kja",
+      "name": "Kujang",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.0303,
+        "lat": 39.8668
+      },
+      "center": [
+        126.0303,
+        39.8668
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.29,
+        39.511,
+        126.363,
+        40.149
+      ],
+      "place": 7383,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1328292.0
+    },
+    {
+      "id": "pyx",
+      "name": "Phyonggang",
+      "kind": "zone",
+      "origin": {
+        "lon": 127.2949,
+        "lat": 38.4152
+      },
+      "center": [
+        127.2949,
+        38.4152
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        126.759,
+        38.14,
+        128.389,
+        38.941
+      ],
+      "place": 7384,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1515980.0
+    },
+    {
+      "id": "srw",
+      "name": "Sariwon",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.7642,
+        "lat": 38.5128
+      },
+      "center": [
+        125.7642,
+        38.5128
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.611,
+        38.393,
+        126.114,
+        38.665
+      ],
+      "place": 7385,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1522132.0
+    },
+    {
+      "id": "hwn",
+      "name": "Hwangju",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.6334,
+        "lat": 38.7437
+      },
+      "center": [
+        125.6334,
+        38.7437
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.497,
+        38.59,
+        125.952,
+        38.953
+      ],
+      "place": 7386,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1230581.0
+    },
+    {
+      "id": "ksc",
+      "name": "Kaesong City",
+      "kind": "zone",
+      "origin": {
+        "lon": 126.5574,
+        "lat": 37.9722
+      },
+      "center": [
+        126.5574,
+        37.9722
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        126.36,
+        37.743,
+        126.993,
+        38.25
+      ],
+      "place": 7387,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1348102.0
+    },
+    {
+      "id": "pyc",
+      "name": "Pyongsong City",
+      "kind": "zone",
+      "origin": {
+        "lon": 125.8703,
+        "lat": 39.2509
+      },
+      "center": [
+        125.8703,
+        39.2509
+      ],
+      "zoom": 10.5,
+      "utcOffset": 9,
+      "market": -1,
+      "box": [
+        125.7,
+        39.167,
+        126.016,
+        39.433
+      ],
+      "place": 7388,
+      "country": "KP",
+      "realm": "north-korea",
+      "localTrips": 1066718.0
+    },
+    {
+      "id": "aen",
+      "name": "Alentejo Central",
+      "kind": "zone",
+      "origin": {
+        "lon": -7.9224,
+        "lat": 38.5661
+      },
+      "center": [
+        -7.9224,
+        38.5661
+      ],
+      "zoom": 10.5,
+      "utcOffset": 0,
+      "market": -1,
+      "box": [
+        -8.935,
+        37.3,
+        -6.908,
+        39.045
+      ],
+      "place": 7389,
+      "country": "PT",
+      "realm": "iberia",
+      "localTrips": 873926.0
+    },
+    {
+      "id": "atj",
+      "name": "Alto Alentejo",
+      "kind": "zone",
+      "origin": {
+        "lon": -7.163,
+        "lat": 38.8771
+      },
+      "center": [
+        -7.163,
+        38.8771
+      ],
+      "zoom": 10.5,
+      "utcOffset": 0,
+      "market": -1,
+      "box": [
+        -8.368,
+        38.733,
+        -6.84,
+        40.343
+      ],
+      "place": 7390,
+      "country": "PT",
+      "realm": "iberia",
+      "localTrips": 496345.0
+    },
+    {
+      "id": "trs",
+      "name": "Terras de Trás-os-Montes",
+      "kind": "zone",
+      "origin": {
+        "lon": -6.7622,
+        "lat": 41.8173
+      },
+      "center": [
+        -6.7622,
+        41.8173
+      ],
+      "zoom": 10.5,
+      "utcOffset": 0,
+      "market": -1,
+      "box": [
+        -7.392,
+        41.175,
+        -6.164,
+        42.011
+      ],
+      "place": 7391,
+      "country": "PT",
+      "realm": "iberia",
+      "localTrips": 255557.0
+    },
+    {
+      "id": "ces",
+      "name": "Creuse",
+      "kind": "zone",
+      "origin": {
+        "lon": 1.8753,
+        "lat": 46.1683
+      },
+      "center": [
+        1.8753,
+        46.1683
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        1.346,
+        45.645,
+        2.638,
+        46.474
+      ],
+      "place": 7392,
+      "country": "FR",
+      "realm": "france",
+      "localTrips": 298580.0
+    },
+    {
+      "id": "loz",
+      "name": "Lozère",
+      "kind": "zone",
+      "origin": {
+        "lon": 3.5041,
+        "lat": 44.5238
+      },
+      "center": [
+        3.5041,
+        44.5238
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        2.956,
+        44.091,
+        4.024,
+        44.994
+      ],
+      "place": 7393,
+      "country": "FR",
+      "realm": "france",
+      "localTrips": 199326.0
+    },
+    {
+      "id": "tce",
+      "name": "Tulcea",
+      "kind": "zone",
+      "origin": {
+        "lon": 28.8077,
+        "lat": 45.1684
+      },
+      "center": [
+        28.8077,
+        45.1684
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        27.969,
+        44.597,
+        29.794,
+        45.486
+      ],
+      "place": 7395,
+      "country": "RO",
+      "realm": "ro-md",
+      "localTrips": 414362.0
+    },
+    {
+      "id": "inn",
+      "name": "Innlandet",
+      "kind": "zone",
+      "origin": {
+        "lon": 10.6866,
+        "lat": 60.7858
+      },
+      "center": [
+        10.6866,
+        60.7858
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        7.305,
+        59.822,
+        12.908,
+        62.716
+      ],
+      "place": 7396,
+      "country": "NO",
+      "localTrips": 1040066.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "nod",
+      "name": "Nordland",
+      "kind": "zone",
+      "origin": {
+        "lon": 14.4225,
+        "lat": 67.291
+      },
+      "center": [
+        14.4225,
+        67.291
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        11.83,
+        64.921,
+        31.217,
+        71.204
+      ],
+      "place": 7398,
+      "country": "NO",
+      "localTrips": 1247782.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "age",
+      "name": "Agder",
+      "kind": "zone",
+      "origin": {
+        "lon": 8.008,
+        "lat": 58.1525
+      },
+      "center": [
+        8.008,
+        58.1525
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        6.346,
+        57.942,
+        9.401,
+        59.691
+      ],
+      "place": 7399,
+      "country": "NO",
+      "localTrips": 856053.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "meo",
+      "name": "Møre og Romsdal",
+      "kind": "zone",
+      "origin": {
+        "lon": 6.3634,
+        "lat": 62.4704
+      },
+      "center": [
+        6.3634,
+        62.4704
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        5.364,
+        61.905,
+        9.405,
+        63.523
+      ],
+      "place": 7400,
+      "country": "NO",
+      "localTrips": 667058.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "das",
+      "name": "Dalarnas län",
+      "kind": "zone",
+      "origin": {
+        "lon": 15.629,
+        "lat": 60.617
+      },
+      "center": [
+        15.629,
+        60.617
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        11.937,
+        59.835,
+        19.325,
+        65.137
+      ],
+      "place": 7401,
+      "country": "SE",
+      "localTrips": 2560803.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "vab",
+      "name": "Västerbottens län",
+      "kind": "zone",
+      "origin": {
+        "lon": 20.3009,
+        "lat": 63.8168
+      },
+      "center": [
+        20.3009,
+        63.8168
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        14.284,
+        63.387,
+        24.197,
+        69.079
+      ],
+      "place": 7402,
+      "country": "SE",
+      "localTrips": 1401195.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "vrm",
+      "name": "Värmlands län",
+      "kind": "zone",
+      "origin": {
+        "lon": 13.5087,
+        "lat": 59.3818
+      },
+      "center": [
+        13.5087,
+        59.3818
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        11.655,
+        58.707,
+        14.512,
+        61.075
+      ],
+      "place": 7403,
+      "country": "SE",
+      "localTrips": 764625.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "kae",
+      "name": "Kalmar län",
+      "kind": "zone",
+      "origin": {
+        "lon": 16.6352,
+        "lat": 57.7529
+      },
+      "center": [
+        16.6352,
+        57.7529
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        15.303,
+        56.176,
+        17.185,
+        58.161
+      ],
+      "place": 7404,
+      "country": "SE",
+      "localTrips": 635281.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "got",
+      "name": "Gotlands län",
+      "kind": "zone",
+      "origin": {
+        "lon": 18.3003,
+        "lat": 57.6405
+      },
+      "center": [
+        18.3003,
+        57.6405
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        17.922,
+        56.887,
+        19.385,
+        58.418
+      ],
+      "place": 7405,
+      "country": "SE",
+      "localTrips": 153452.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "phs",
+      "name": "Pohjois-Savo",
+      "kind": "zone",
+      "origin": {
+        "lon": 27.6973,
+        "lat": 62.9023
+      },
+      "center": [
+        27.6973,
+        62.9023
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        25.999,
+        60.648,
+        31.627,
+        65.54
+      ],
+      "place": 7406,
+      "country": "FI",
+      "localTrips": 2018859.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "ksu",
+      "name": "Keski-Suomi",
+      "kind": "zone",
+      "origin": {
+        "lon": 25.743,
+        "lat": 62.2445
+      },
+      "center": [
+        25.743,
+        62.2445
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        22.77,
+        61.59,
+        26.82,
+        64.112
+      ],
+      "place": 7407,
+      "country": "FI",
+      "localTrips": 919319.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "ete",
+      "name": "Etelä-Pohjanmaa",
+      "kind": "zone",
+      "origin": {
+        "lon": 22.8322,
+        "lat": 62.7941
+      },
+      "center": [
+        22.8322,
+        62.7941
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        21.471,
+        61.961,
+        24.624,
+        63.517
+      ],
+      "place": 7408,
+      "country": "FI",
+      "localTrips": 523920.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "lpp",
+      "name": "Lappi",
+      "kind": "zone",
+      "origin": {
+        "lon": 25.7305,
+        "lat": 66.503
+      },
+      "center": [
+        25.7305,
+        66.503
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        20.503,
+        65.57,
+        30.063,
+        70.111
+      ],
+      "place": 7409,
+      "country": "FI",
+      "localTrips": 473052.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "lox",
+      "name": "Lõuna-Eesti",
+      "kind": "zone",
+      "origin": {
+        "lon": 26.7248,
+        "lat": 58.3786
+      },
+      "center": [
+        26.7248,
+        58.3786
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        24.036,
+        57.491,
+        27.854,
+        59.841
+      ],
+      "place": 7410,
+      "country": "EE",
+      "localTrips": 1108783.0,
+      "realm": "baltic"
+    },
+    {
+      "id": "lst",
+      "name": "Lääne-Eesti",
+      "kind": "zone",
+      "origin": {
+        "lon": 22.4862,
+        "lat": 58.2552
+      },
+      "center": [
+        22.4862,
+        58.2552
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        21.773,
+        57.761,
+        25.342,
+        59.323
+      ],
+      "place": 7411,
+      "country": "EE",
+      "localTrips": 390263.0,
+      "realm": "baltic"
+    },
+    {
+      "id": "vim",
+      "name": "Vidzeme",
+      "kind": "zone",
+      "origin": {
+        "lon": 25.2728,
+        "lat": 57.3143
+      },
+      "center": [
+        25.2728,
+        57.3143
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        24.299,
+        55.656,
+        28.275,
+        58.104
+      ],
+      "place": 7412,
+      "country": "LV",
+      "localTrips": 1473862.0,
+      "realm": "baltic"
+    },
+    {
+      "id": "kuz",
+      "name": "Kurzeme",
+      "kind": "zone",
+      "origin": {
+        "lon": 21.0168,
+        "lat": 56.5032
+      },
+      "center": [
+        21.0168,
+        56.5032
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        20.934,
+        56.051,
+        23.586,
+        57.778
+      ],
+      "place": 7413,
+      "country": "LV",
+      "localTrips": 786767.0,
+      "realm": "baltic"
+    },
+    {
+      "id": "tlk",
+      "name": "Telemark",
+      "kind": "zone",
+      "origin": {
+        "lon": 9.6219,
+        "lat": 59.1222
+      },
+      "center": [
+        9.6219,
+        59.1222
+      ],
+      "zoom": 10.5,
+      "utcOffset": 1,
+      "market": -1,
+      "box": [
+        7.06,
+        58.751,
+        9.932,
+        60.207
+      ],
+      "place": 7415,
+      "country": "NO",
+      "localTrips": 482844.0,
+      "realm": "nordic"
+    },
+    {
+      "id": "ute",
+      "name": "Utenos apskritis",
+      "kind": "zone",
+      "origin": {
+        "lon": 25.5997,
+        "lat": 55.4978
+      },
+      "center": [
+        25.5997,
+        55.4978
+      ],
+      "zoom": 10.5,
+      "utcOffset": 2,
+      "market": -1,
+      "box": [
+        24.621,
+        55.012,
+        26.868,
+        55.963
+      ],
+      "place": 7416,
+      "country": "LT",
+      "localTrips": 340557.0,
+      "realm": "baltic"
+    },
+    {
+      "id": "dry",
+      "name": "Dryden",
+      "kind": "zone",
+      "origin": {
+        "lon": -92.8353,
+        "lat": 49.7713
+      },
+      "center": [
+        -92.8353,
+        49.7713
+      ],
+      "zoom": 10.5,
+      "utcOffset": -6,
+      "market": -1,
+      "box": [
+        -95.182,
+        47.916,
+        -85.301,
+        50.251
+      ],
+      "place": 7419,
+      "country": "CA",
+      "localTrips": 69728.0,
+      "realm": "canada"
+    },
+    {
+      "id": "ago",
+      "name": "Algoma, Unorganized, North Pa",
+      "kind": "zone",
+      "origin": {
+        "lon": -86.38,
+        "lat": 48.72
+      },
+      "center": [
+        -86.38,
+        48.72
+      ],
+      "zoom": 10.5,
+      "utcOffset": -5,
+      "market": -1,
+      "box": [
+        -88.461,
+        46.213,
+        -81.917,
+        49.058
+      ],
+      "place": 7420,
+      "country": "CA",
+      "localTrips": 46241.0,
+      "realm": "canada"
+    },
+    {
+      "id": "sin",
+      "name": "Singapore",
+      "origin": {
+        "lon": 103.9026,
+        "lat": 1.3952
+      },
+      "center": [
+        103.9026,
+        1.3952
+      ],
+      "zoom": 11.2,
+      "utcOffset": 8,
+      "market": -1,
+      "box": [
+        103.587,
+        1.191,
+        104.052,
+        1.49
+      ],
+      "place": 7422,
+      "country": "SG",
+      "localTrips": 17748332.0,
+      "realm": "singapore"
     }
   ]
 }

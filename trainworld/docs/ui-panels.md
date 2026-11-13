@@ -550,7 +550,7 @@ with Ctrl, Meta or Alt held]. Each button's or tab's hover shows its key.
 | U, O | start a new bus line, a new ferry line (`BUS_KEY`, `FERRY_KEY`) | any tab |
 | M | swap the map for the network diagram, and back (`DIAGRAM_KEY`, `diagram/view.ts`) | any tab |
 | T | explore a trip; the tab stays | any tab |
-| D | demand bubbles: None, Homes, Destinations, Total and round again, once the view's demand is ready (`DEMAND_KEY`, T-2338); each of the four buttons' hovers names it | any tab |
+| D | demand bubbles: None, Homes, Destinations, Total and then None again, once the view's demand is ready (`DEMAND_KEY`, T-2338); each of the four buttons' hovers names it | any tab |
 | N, S, G, C | new line, edit the selected line's stops, add every station the selected line passes, construct blueprints (`ACTION_KEYS`) | any tab |
 | E, Delete | E enables the picked blueprints when any is off and disables them when all are on (`SWITCH_PICK_KEY`, T-2338; the Enable hover, and the Disable hover while all are on, name it); Delete removes them | select tool |
 | Space, Esc, F2, Ctrl+S/Z/Y, `/`, Ctrl+K | pause, back out, hide the interface, save, undo and redo, search | any tab |
@@ -599,7 +599,7 @@ the third by default; its hover reads "How many bubbles are aggregated together"
 choice (3-color by default [T-1724], the old Mode mix, 2-color [T-833], the old Train share, which shows two colour pickers labelled 0% train and
 100% train, Purpose [T-2886] or Color blind [T-3005]; no hovers on any of it [T-804, T-1838]; both in [ui-demand-views.md](ui-demand-views.md) "Local trip bubbles"), Station circles with a Size slider (0.5-2x, 1x by default, the station ridership circles' radius; [T-1565], [ui-demand-views.md](ui-demand-views.md) "Station ridership circles"), Show (trains, station names [off by default, T-1729], "Track at capacity" [the capacity markers; hover "Marks where stations or track cannot smoothly handle scheduled train frequencies", T-1843], "Crowded trains" [T-1152, T-1843, T-2236: the Traffic view's red edges, on by default; hover "Stretches where trains carry more than their rated load at the busiest hour"; [ui-map.md](ui-map.md) "Track display"], flat junctions and crossings [no hover, T-1843], "Lines side by side" [T-1886: lines sharing track as bands beside each other, on by default, T-2346; [ui-map.md](ui-map.md) "Lines sharing track side by side"], map labels, Real network, Terrain [hover "Construction is more expensive in steep terrain", T-1843]), Riders on trains
 and platforms ("How full each train is", "How full each platform is", both on by default)
-[T-164], Stations up close (Faces and Sound, both on by default, no hovers [T-1843], and a Volume slider while Sound is on, the one volume for every sound, building and fare-change sounds included [T-1725]; [ui-map.md](ui-map.md) Life at stations) [T-686], Map (Flat or Globe, flat by default; hover "Zoomed in to a city, the globe becomes the flat map"; [ui-map.md](ui-map.md) "Globe") [T-033], then two sliders: Line width (50-200% of the drawn width of lines, track, casings and trains, 100% by default; station shapes and picking follow it; once double track parts into its two tracks up close, those keep their width on the ground) [T-1248] and Base map (contrast, 0-100%, 100% by default: below it every basemap colour but water and the land, so roads, parks, woods, buildings, boundaries and airfields, is mixed that much toward the land colour, in both themes, the basemap's labels fade toward transparent by it instead, text and halo alike, so a faded name never leaves a pale patch on water [T-1266]; the real network is left as it is, T-1291; `map/basemap.ts`) [T-1249], and "Rotate map with right drag" (off by default, Anita 2026-11-02: with no tilt it adds little; off turns the map back to north; [ui-map.md](ui-map.md) "Globe") [T-2031], and "Show zoom buttons" (on by default: a plus and a minus at the map's right edge, halfway down, one zoom step a click with the map's own easing, `ui/ZoomButtons.tsx`; no hover, just aria labels) [T-3268], Line shapes (below), Theme (Light or Dark, light by default, over Pink, Blue or Green) [T-039], Panel and text size, Units and performance, Game (normal or sandbox, T-728), then,
+[T-164], Stations up close (Faces and Sound, both on by default, no hovers [T-1843], and a Volume slider while Sound is on, the one volume for every sound, building and fare-change sounds included [T-1725]; [ui-map.md](ui-map.md) Life at stations) [T-686], Map (Flat or Globe, flat by default; hover "Zoomed in to a city, the globe becomes the flat map"; [ui-map.md](ui-map.md) "Globe") [T-033], then two sliders: Line width (50-200% of the drawn width of lines, track, casings and trains, 100% by default; station shapes and picking follow it; once double track parts into its two tracks up close, those keep their width on the ground) [T-1248] and Base map (contrast, 0-100%, 100% by default: below it every basemap colour but water and the land, so roads, parks, woods, buildings, boundaries and airfields, is mixed that much toward the land colour, in both themes, the basemap's labels fade toward transparent by it instead, text and halo alike, so a faded name never leaves a pale patch on water [T-1266]; the real network is left as it is, T-1291; `map/basemap.ts`) [T-1249], and "Rotate map with right drag" (off by default, Anita 2026-11-02: with no tilt it adds little; off turns the map back to north; [ui-map.md](ui-map.md) "Globe") [T-2031], and "Show zoom buttons" (on by default: a plus and a minus at the map's right edge, halfway down, one zoom step a click with the map's own easing, `ui/ZoomButtons.tsx`; no hover, just aria labels) [T-3268], Theme (Light or Dark, light by default, over Pink, Blue or Green) [T-039], Panel and text size, Units (US units, Currency), Performance (Use more cores, Run in background, Memory), Game (normal or sandbox, T-728), Default bullet shapes (below), then,
 when accounts are on, Account [T-1139]: who is logged in ("Logged in as alice", "Logged in with
 Google" or "Not logged in") and a button, Account settings or Sign in, that opens the same account
 panel as the icon at the top and the start menu's (sign in, recovery email, change password, sign
@@ -612,15 +612,17 @@ Beside the message the report carries the browser, memory, language, the last lo
 `state` [T-3313, `game/diagnostics.ts`]: the clock worker's oldest unanswered edit or read and the last hour of trips,
 and the demand pool's newest solve, last step and oldest download, each with its age, so a report of figures that
 stopped says where they stuck.
+Screenshots [T-3326, `game/feedbackImages.ts`]: against a server whose config has `trainworldFeedbackImages` above 0, an "Attach screenshots" button, a count ("n/4") and thumbnails with a remove button sit under the message. Up to 4, from the picker, a paste (Ctrl/Cmd+V) or a file dropped on the form; PNG, JPEG or WebP only. Each is shrunk to 1920 px on its long edge and encoded as WebP (JPEG where the browser cannot) under the server's 1.5 MB, then sent with the message. Replies take none. The inbox page shows them as small thumbnails that open the full image.
 Signed in, the session rides along so the report names the account [T-1719]. A send that works closes the panel and shows a passing note at the map's upper left under the edit note, "sent! thank you for feedback" (plain text as the edit note's, 5 s; `showPassingNote` in `ui/PassingNote.tsx`) [T-1709, T-2166]; a failure says why (no server for this copy,
 not reachable, too many from here, or a server whose `/noritetsu/config` lacks `trainworldFeedback`: "Feedback can't be
 sent yet") and keeps the text. Station ridership
 circles are a row on the map instead, under the demand buttons [T-1448].
 
-**Line shapes** [T-3319]: a row per mode, Train, Tram, Bus and Ferry, each a row of the four bullet shapes
-(circle, square, diamond, pill; no hovers, aria labels only), the shape of that mode's lines that have none of their
+**Default bullet shapes** [T-3319, T-3329]: after the Game section, a row per mode, Train, Tram, Bus and Ferry, each a row of the three bullet shapes,
+the buttons touching in one compact grid (no gaps between rows or buttons)
+(circle, square, diamond; no hovers, aria labels only), the shape of that mode's lines that have none of their
 own ([ui-inspectors.md](ui-inspectors.md) "Line shapes"). Train and Tram start on the circle, Bus on the square,
-Ferry on the pill, as the bullets were before; a change redraws at once every line of the mode without its own.
+Ferry on the pill, as the bullets were before (the pill is not pickable, so no button is lit on Ferry until one is picked); a change redraws at once every line of the mode without its own.
 
 **Panel and text size** [T-247]: 80% to 120% in 5% steps, 90% by default (T-703), no reset button. It
 zooms the dock, top bar, map buttons, search, loading card, tool notes and dialogs, and sizes the
@@ -634,17 +636,21 @@ station names and map controls follow the `--font` variable (`style.css`; `game/
 files), and station names and capacity tags are measured again once it has loaded. The map's own
 labels are glyph tiles and are Zen Maru Gothic.
 
-**Units and performance** [T-381]: "US units" (off by default) shows every distance, length and
+**Units** [T-381]: "US units" (off by default) shows every distance, length and
 speed in miles, mph and feet instead of kilometres, km/h and metres: panels, inspectors, hovers, the
 track, station and line tools' readouts, the placing rings, the scale bar of a station complex, and
 prices per mile. All go through the distance functions in `game/format.ts`; the game itself stays
-metric. "Use more cores" (off by default) allows up to 5 demand workers instead of 3 at most; its
+metric. The Currency row follows.
+
+**Performance** [T-381, T-3329]: "Use more cores" (off by default) allows up to 5 demand workers instead of 3 at most; its
 hover says it takes effect after a reload ([architecture.md](architecture.md) 7). "Run in background"
 (off by default) keeps the clock running while the tab is hidden (the top bar's clock, above;
-[architecture.md](architecture.md) "A hidden page") [T-826]. "Map detail" (Low, High; High by
-default; Low is the old lighter map's On and High its Off, the saved `lighterMap` values unchanged; hover "Show fewer roads and other details" [T-1838]) draws the basemap with fewer layers at a lower resolution when Low [T-1207].
-There is no Auto: it switched to Low for the rest of the page on one slow zoom, and a stored "auto" now reads
-as High [T-2840]. Low saves no resident memory (notes/T-2840.md).
+[architecture.md](architecture.md) "A hidden page") [T-826]. There is no Map detail choice: the map is always the full one
+(the lighter map and its Auto are gone, DECISIONS.md 2026-11-12; a stored Low is dropped). A **Memory** row ends the section:
+"1.4 GB / 8 GB", the memory the game takes now against the most it aims for here (`memBudget`: 8 GB, or 0.75 of a device
+that reports less; 6 where the browser does not say), red above 85% of it, refreshed every 2 s while Settings is open; hover, two lines,
+"About 0.5 GB more per 1,000 stations" and "8 GB limit is an estimate" [T-3329; `game/memoryEstimate.ts`]. The reading is 1.15 GB plus
+1.76 times what the demand workers report (WASM and heap), within about 0.2 GB of the browser's own total over 22 runs (notes/T-3329.md).
 
 **Game** [T-728], last before the account section: the game's mode, "Normal" or "Sandbox" (hover: what
 it means). A normal game has "Switch to sandbox mode", which asks first ("Confirm?", then
@@ -653,11 +659,11 @@ and Switch to sandbox mode) [T-822]; a sandbox has no way back, so a later campa
 or a hard start's achievements cannot be had for free. The mode is the game's, kept in its save,
 not the browser's. First in the section, **Trains run on** Left or Right [T-3297; `ui/SideSwitch.tsx`]: picking
 the other side switches the whole game (world.md "Running side"), at once on a network with no track, else after
-a question ("Switch trains, trams and buses to the left? One-way track and flyover legs turn round to match, and
+a question ("Switch trains, trams and buses to the left? One-way track and flyover legs turn around to match, and
 lines move onto them. Anything that still doesn't work is listed after. Undo history is cleared.", Switch side and
 Keep this side). After a switch with anything to report, a list opens ("Switched to the left"): To fix (lines
 that can't get through their stops, junctions now crossing flat, one-way track no train can use) and Fixed (one-way
-track turned round, lines rerouted), each row a click that shows the place and selects the line, junction or track
+track turned around, lines rerouted), each row a click that shows the place and selects the line, junction or track
 and closes the list; under the row "3 places to fix after the switch" (or "Nothing left to fix after the switch")
 with Show list, until another game opens. In a normal game a
 row "Tutorial" with a Start again button (restarts the [tutorial card](#tutorial-card))
@@ -965,6 +971,13 @@ keeps what it had and earns no more.
     browser. Still on your account until the server can be reached." and the deletion is sent at the
     next load.
 
+**Memory a game takes** [T-3329]: a line under the facts of every card with stations, just "2.5 GB" (hover "Uses about 2.5 GB of memory"), from the
+station count (1.8 GB plus 0.65 GB per 1,000 stations plus 0.5 GB per solving worker past the first; within about 0.2 GB on
+the real-network saves). Where the browser reports the device's memory (Chrome, Edge) or is 32-bit, a game over the budget
+shows it in red and its Open (saves panel and start menu, not the versions list) first asks "This game needs about 5 GB of
+memory and this device has about 4. It may not load." with Open anyway and Cancel. Elsewhere the line is plain and nothing asks.
+This is separate from the refusal [T-1197], which judges a save by its zones and still blocks a game no worker can hold.
+
 ### Card actions
 
 - **Rename** [T-1247]: the pencil or a double click on a card's name (any card) puts a box in its
@@ -1068,10 +1081,11 @@ then removed from the address bar; other URL parameters are untouched [T-310, T-
   with, so the player picks one on purpose [T-1302]. Picking a city makes it the start; picking another
   start in any other way blanks the list again [T-3225]. The game starts from that network, built and
   running; the hover "Start with Tokyo's real rail lines already built." shows once a network is picked.
-- **Trains run on** Left or Right [T-3297; `ui/SideSwitch.tsx`, `game/runningSide.ts`]: the game's running side, for
-  trains, trams and buses alike (world.md "Running side"). Until the player picks, it follows the start: the side
-  its country's railways keep to, a real network's its metro's, Right on the world map; a pick stays while the
-  start changes. Hover "Trams and buses too. Set from the country you start in." A real network started on the
+- **No running side control** [T-3367; `game/runningSide.ts`]: the sheet never asks. The game's running side, for
+  trains, trams and buses alike (world.md "Running side"), follows the start: the side its country's railways keep
+  to, a real network's its metro's; on the world map (and a location outside every zone) the player's own country
+  from the browser's time zone, else its language's region (`homeCountry`, no permission prompt), else Right. Settings'
+  "Trains run on" changes it later. A real network started on the
   other side than its save is switched as it opens.
 - **Start in Tokyo** (the zone picked or located) or **Start**, bigger than the other buttons (36 px
   high, bold, tinted) and centred in the sheet's last row, with Back at its left [T-1215]. If a real network cannot be downloaded, a
@@ -1214,6 +1228,34 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   copy and is shown nowhere else). Account and device ids, playtime and settings are never in a save. Line and group names are, and
   only there (the drawing has none): Anita's inbox can download a reported share's save to read them.
 
+## Schedule panel
+
+[T-3346 stage 1, `ui/inspector/SchedulePanel.tsx`, sim `TrackApi.station_departures`; notes/T-3346.md]
+
+- **Hidden for players** unless the address has `?timetables` (v0.3.3, Anita 2026-11-13): no icon opens it, line or group.
+- **A line's**: opened from the fourth icon by a running rail line's schedule heading (a station timetable,
+  hover "Detailed schedule"); a centred modal in the saved games panel's frame, about 1040 px wide; closed by its
+  close button, Esc or a click outside it (the dock's timetable chart, open under it, keeps going). Heading: the
+  line's bullet and name, "schedule" in grey, then the mode choice, which offers Simple only until Detailed and
+  Exact are built (stages 3 and 6). A player who never opens it sees nothing else new.
+- **Left**: the line panel's schedule table, its steppers, dots and hovers, under a "Set by" Trains / Headway
+  switch; an edit here is the line panel's edit.
+- **Right**: Departures or Chart, the choice kept for the session. Both are 410 px tall so switching moves nothing.
+- **Departures**: a station picker (the line's stops in order, each station once, the first stop to start), then
+  the board: one row per local hour of the line, from 4:00 through to 3:00, kept to the hours from the first train to
+  the last, each direction's minutes in its own column headed by where its trains go ("to Gum"; on a loop, both
+  ending where they start, the next stop that way, "via Birch"). The hours are the next 24 from the start of this
+  one, so each row is the line's timetable as it stands now; the hour now is tinted and scrolled to the top. Only a
+  run's leaving times count (a run's last stop is no departure), and a line on both pairs of quad track shows its
+  hidden twin's trains too. Times come from the sim, each trip's own (`station_departures`: its `draw` plus its
+  profile's `dep` at the stop), the trips the chart and map draw.
+- **Chart**: the timetable chart ([ui-inspectors.md](ui-inspectors.md) "The timetable chart") at the right side's
+  width, its stops 380 px tall, scaled by distance; the other lines toggle beside the tabs.
+- **A group's**: from the group view's chart icon, for a group with two or more running rail lines. Heading the
+  group's pill and name, then "schedule"; the body is the chart at the panel's width, the longest line (by length)
+  down the side and the group's other lines drawn at full strength in their colours where they share its track
+  (T-2660's mapping); the other lines toggle adds lines outside the group as the line chart does.
+
 ## Start menu
 
 [T-677; `ui/StartMenu.tsx`; the startup order in [architecture.md](architecture.md) "Loading and readiness"]
@@ -1278,7 +1320,7 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   [T-895; `startOpenFit` in `ui/locate.ts`, `fitNextGame` in `workers/clockClient.ts`]. Once the
   player has moved the camera since the pick (a drag, the wheel, a pinch, a rotation, the arrow keys, a
   search pick or a Cities tab double click), the game being entered fits it no more, so the player can
-  look round while it loads [T-2477; `enterGame` in `ui/locate.ts`].
+  look around while it loads [T-2477; `enterGame` in `ui/locate.ts`].
 - URL switches that already say which game skip it: `?new=1` (a new game owning no slot; normal
   in New York, or `&mode=sandbox` and `&city=<zone id>`),
   `?synth=1`, `?demandTest=1`, `?paused=1` and `?continue=1` (the game opened last).
@@ -1311,7 +1353,7 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   drawn bunny rides a toy train in the theme's accent (104 px wide; wheels turn, the track's ties run
   by, the train chugs, the ears bob; paused under reduced motion; the card alone has it, T-2693
   follow-up); a pill drawn as the map draws a train (a rim in a darker shade of the theme's accent
-  round a fill of it) runs round a 13 px ring leading the status tag's text and the diagram tag (a CSS
+  around a fill of it) runs around a 13 px ring leading the status tag's text and the diagram tag (a CSS
   turn of 1.1 s, nothing per frame; paused under reduced motion); a small ring turning (`.spin`, 1.2 s a turn, 8 px, grey) in place
   of each line's crowding dot per demand level in the line panel until the line has figures
   (while no final result is shown or a solve is updating it; not after a failure or over dead

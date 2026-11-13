@@ -109,12 +109,9 @@ the map's other controls', and the level buttons' numbers 15 px (also in the pho
   The second row: **Regular** or **High speed** track [T-255, T-817], the
   selection bar's words, then three icon buttons, **Single track** (one line), **Double track** (two lines)
   and **Quad track** (four lines) [T-2931, T-3093]. Single is 0.6x the cost and the single-track upkeep shown;
-  quad is two double tracks' price (2x the cost and upkeep shown). Single is never high speed:
-  picking it on High speed keeps High speed and double and says "High-speed track can't be single track. Pick
-  Regular first." [T-3262]; quad can be high speed [T-3126]; picking single clears quad. Tram has
-  Double and Quad only [T-3166]: quad tram is off-street tram track, so picking it turns Snap to streets off,
-  and turning that on picks Double again. The count picked is kept across the type: single picked on Regular
-  shows as double on High speed or Tram and comes back with Regular [T-3262]. A browser remembers the
+  quad is two double tracks' price (2x the cost and upkeep shown). Single goes with every type, High speed and Tram too [T-3352]
+  (0.6x of the type's price); quad can be high speed [T-3126]; picking single clears quad. Quad tram is off-street tram track, so
+  picking it turns Snap to streets off, and turning that on picks Double again. A browser remembers the
   count picked (`build.tracks`). Double up (the track inspector's and the selection bar's) still adds the pair beside a run.
   Then the **keep placing** switch, the **snap switch** (a magnet, "Snap to real world network") [T-727]:
   while it is on and the track tool is in hand, the real network is drawn at full strength
@@ -382,7 +379,7 @@ tag over a point states what these do there. Loops are described under each tool
 | Left click, a lone point | Nothing | Remove it | none |
 | Right click, the last point | Delete it | Nothing | Nothing |
 | Right click, a lone point | Delete it | none | none |
-| Right click, a middle point | Loop back to it and save | Turn the line round a loop of track if it offers one, else "Can't loop back here" | Nothing |
+| Right click, a middle point | Loop back to it and save | Turn the line around a loop of track if it offers one, else "Can't loop back here" | Nothing |
 | Right click, the first point | Close the loop and save | Close into a circle if it offers one | Nothing |
 | Right click, a point of a ring | Open the ring there | Open the ring there | none |
 | Right click, a point of a route that loops back | Stop looping back | Stop looping back (a turned line) | none |
@@ -447,6 +444,10 @@ lighter; at most 16 of each.
   pan), and the legs either side are searched again on every move; Escape during the drag puts it
   back. Over a point the tag says what a click there does ("Click to delete", or finishing; nothing over a lone point),
   "Drag to move", and what a right click does where it does something, and the network's hover is left out.
+  A press on the route's path between points (within 7 px, 12 with a finger) dragged the same 3 px puts a new point
+  there that follows the pointer (T-3366): the legs either side are searched again as for any point, Escape
+  during the drag removes it, Ctrl+Z takes it out and a click on it deletes it. Over the path the tag leads with
+  "Drag to add a point"; a click without a drag still adds a point at the active end.
   With a finger (T-1517): a press within 18 px of a point drags it as the mouse does, the map does
   not pan, and a second finger puts it back; a press held still for 500 ms (moving up to 8 px)
   does a right click's work there (the phone buzzes) and the lift adds nothing; a tap on a point is a click on it.
@@ -463,7 +464,7 @@ lighter; at most 16 of each.
   route is a loop line (track-and-service.md 6.7); Edit route on one reopens it closed.
 - **Loop back** (T-3109, T-3063): a right click on a point partway along, two points or more from the active end,
   joins the active end back to it by road and makes the line or saves the route ("Right click to loop back here"):
-  the bus runs out, round the loop one way and back the way it came. The route is sent as a loop whose last legs are
+  the bus runs out, around the loop one way and back the way it came. The route is sent as a loop whose last legs are
   its first ones run backward (`bus::loop_back_at`, track-and-service.md 6.7); Edit route folds it back to the way
   out and the loop, its last point a copy of the one it joins. The joining point acts as a closed route's first
   point: a click finishes, a drag moves both copies, and deleting it or Backspace takes the closing leg off. A right
@@ -476,18 +477,23 @@ lighter; at most 16 of each.
 - **Finishing** makes the line (selects it and asks its name) or saves the edited route: a click on
   the active end, a double click on empty ground (its first click places the last point), Enter, or the button in
   the tool's bar at the map's bottom left ("Make line", "Save route"; beside it Cancel, as Escape).
-  **Escape** drops a new route's points (a second Escape leaves the tool), and leaves an edit with
-  the route as it was. A click on the active end of a single point does nothing.
+  **Escape** drops a new route's points (a second Escape leaves the tool); in an edit it leaves the extend mode
+  first (below), then leaves the edit with the route as it was. A click on the active end of a single point does nothing.
 - **Edit route** in the bus panel reopens the tool on the line's route with its clicked points and
   the road stretches between them as they were (a straight one from an older save is searched again,
-  red if it still finds no road), the last point active; the same button, now **Save
+  red if it still finds no road). It opens in plain editing: no leg follows the pointer and a click on empty
+  ground adds nothing, but points and the path drag, a click on a point deletes it, and the other gestures
+  below work. A click on the route's end (its last point; the tag says "Click to extend the route", the cursor is
+  a pointer) enters the **extend mode**, which is how a new line always starts: the leg from that end follows the
+  pointer, clicks add points, and a click on the end again finishes. **Escape** in the extend mode goes back to plain
+  editing (T-3366 follow-up, Anita 2026-11-13); the same button, now **Save
   route**, saves it. Finishing an edit that changed nothing closes it untouched; otherwise it redraws
   the route (final for a constructed route, which pays any longer road). A new bus line is planned
   until Construct. While the tool is open on a line, that line's current route is drawn muted (the map
   ink at half strength, no stops) under the draft, so the draft reads as the new one (T-3084;
-  `BusLayer.setMuted`). A press on one of the selected bus line's clicked points or stops that moves
-  3 px with no tool on opens Edit route and carries on as a drag of the draft (a stop becomes a point
-  of the route where it stands); the game's route changes only when the edit is saved, as one undo step
+  `BusLayer.setMuted`). A press on one of the selected bus line's clicked points or stops, or on its
+  path between them (T-3366), that moves 3 px with no tool on opens Edit route and carries on as a drag of the
+  draft (a stop becomes a point of the route where it stands, the path gets a new point); the game's route changes only when the edit is saved, as one undo step
   (none for a constructed route). Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z) in the tool step the draft's
   points back and forward and leave the game's own undo alone.
 - **By touch**: a tap previews, a second tap or the check places it; a tap on the active end with
@@ -558,8 +564,8 @@ route is found over the basemap's water (track-and-service.md 6.8), never drawn 
   the line ends at that port ("Right click to open the loop"); taking out a port of a ring of three leaves an open
   line of two. The tag's port count and the price count the first port once.
 - **Loop back** (T-3118): a right click on a port partway along, two ports or more from the active end, joins the
-  active end back to it and makes the line ("Right click to loop back here"): the boats run out, round the loop and
-  back. The ports are sent out, round and back again (`[A, B, C, D, B, A]`, a loop calling at the way out's ports
+  active end back to it and makes the line ("Right click to loop back here"): the boats run out, around the loop and
+  back. The ports are sent out, around and back again (`[A, B, C, D, B, A]`, a loop calling at the way out's ports
   twice; the sim takes it as any loop), and Edit route folds them back to `[A, B, C, D, B]`. A right click on any
   port of it stops it looping back ("Right click to stop looping back"). The touch Loop button works here as in the
   bus tool. In the panel's port list a loop keeps its order (no dragging); taking out its first or last port
@@ -595,7 +601,7 @@ switch on, the track tool follows the real network the layer draws.
   times its length, so a subway click follows the subway and an intercity route keeps off it;
   high-speed track (flag 8 in the graph) at 0.8 times its length, so London to Paris keeps to HS1
   and the LGV by Lille (493 km) over the shorter classic line by Amiens [T-838]; otherwise a metre
-  costs a metre. The length shown and built is the real one. A long way round is allowed: the
+  costs a metre. The length shown and built is the real one. A long way around is allowed: the
   player sees it in the ghost before clicking [T-839]. A
   region's graph is fetched when the view, a click or the search first reaches it (a border
   junction loads the neighbour's file, joined by OSM node id). The search stops after 2 s or 3
@@ -827,8 +833,8 @@ is the pan and Shift+drag is MapLibre's zoom box, so a box needs a mode.
   track"), after the track type buttons, shown while the pick holds rail track that is not a crossover. The one for
   what the pick's rail track is now is on; neither when it holds both. For blueprint, picking the other makes every
   piece that can change single or double at once, free, one undoable edit, with the notice ("5 pieces set to single
-  track."; "3 of 5 pieces set to double track. 2 could not change.", then why where the track model names it, "Passing
-  tracks need double track."). For a built pick it is a choice like the level buttons (picking the pick's own count
+  track."; "3 of 5 pieces set to double track. 2 could not change.", then why where the track model names it, "A crossover
+  needs double track."). For a built pick it is a choice like the level buttons (picking the pick's own count
   again drops the choice) and Rebuild spends: the hover, question and notice say "double track" or "single track"
   ("Rebuild 3.1 km to single track"). Double costs the full price of the double track and of the stations on it as
   double-track stations; single is free, so the hover's second line is "Free" and the question "Rebuild 3.1 km of
@@ -1010,7 +1016,7 @@ running line's trains stop at then wins over one they do; then the nearest.
   the last answer stands with only the stops changed (T-648). A click on a marker adds or removes a stop and
   nothing else (T-3109, trains and trams alike): on a station that is no stop it is one edit (`insertStop`): the
   worker fits the station in where `TrackApi::insert_stop` puts it, among the stops it holds then, and never turns
-  the line round a loop (`TrackApi::add_stop`, T-3140, track-and-service.md "Only the right click turns an end"); on a stop it
+  the line around a loop (`TrackApi::add_stop`, T-3140, track-and-service.md "Only the right click turns an end"); on a stop it
   takes out every visit of it (`setStops`), and a loop that loses its first stop closes again on its new first stop.
   A **right click** (or a finger held 500 ms on the marker, moving up to 8 px; the lift adds nothing) closes, opens
   or turns a loop where the marker offers one (the loop items below); anywhere else it changes nothing and the tag
@@ -1042,10 +1048,10 @@ running line's trains stop at then wins over one they do; then the nearest.
   back (`openLoop`). The closing stop's cross
   in the stop list also opens it ("Open the loop"). New stops on a loop go between its first stop and the
   closing one (`best_insert`); on a turned line's stem, on both passes.
-- **Loops at an end** (T-3021; track-and-service.md 6.3 "Turning round a loop at an end"): the stop
+- **Loops at an end** (T-3021; track-and-service.md 6.3 "Turning around a loop at an end"): the stop
   before a loop of track at an end of the line (the last stop at or before where the loop rejoins
   the line; the end stop itself when the loop has no stop of its line) says "Right click to loop back here"
-  (tier 7) and the right click turns the line round it, one way (`turnEnd`). On a line so turned the same
+  (tier 7) and the right click turns the line around it, one way (`turnEnd`). On a line so turned the same
   stop says "Right click to stop looping back here" (tier 8) and the right click opens it (`openLoop`). The stop
   list shows a turned line one row per station (`game/turnedLine.ts`, T-3025; ui-inspectors.md), its stops being
   edited or not (T-3109): a cross takes a station out on every pass, the turn's row has a button that opens the

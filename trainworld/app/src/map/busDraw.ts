@@ -66,6 +66,9 @@ const DRAG_PX = 3;
 /** a finger's reach to a handle, and how far it may wander (px) before the press is a drag, not a hold */
 const TOUCH_HANDLE_PX = 18;
 const TOUCH_SLOP_PX = 8;
+/** a press this close (px) to the route's path, between its points, drags a new point out of it (T-3366) */
+const PATH_PX = 7;
+const TOUCH_PATH_PX = 12;
 /** a finger held still on a handle this long (ms) deletes the point (T-1517) */
 const LONG_PRESS_MS = 500;
 
@@ -128,6 +131,9 @@ export class BusDraw {
   private legs: Leg[] = [];
   /** new points go before the first (true) or after the last */
   private head = false;
+  /** the extend mode: a leg follows the pointer and a click adds a point. A new line is always in it; an edit
+   * starts without and enters it by a click on the route's end (Escape leaves it). */
+  private extend = true;
   readonly roads: BusRoads;
   /** changes whenever the corners or their legs do */
   private rev = 0;
@@ -138,11 +144,13 @@ export class BusDraw {
   /** the handle under the pointer (an index into `pts`), -1 for none */
   private over = -1;
   /** a press on a handle, and the drag it became: the point's index and the route before it */
-  private press: { i: number; x: number; y: number; timer?: number } | null = null;
-  private drag: { i: number; pts: Pt[]; legs: Leg[] } | null = null;
+  private press: { i: number; x: number; y: number; timer?: number; touch?: boolean; ins?: Pt } | null = null;
+  private drag: { i: number; pts: Pt[]; legs: Leg[]; added?: boolean } | null = null;
+  /** the pointer is on the route's path between points (T-3366): a drag from here adds a point */
+  private overPath: Pt | null = null;
   private dragEnded = false;
   /** T-3084: a press on a point of the selected bus line while no tool is on; it opens Edit route once it moves */
-  private pre: { line: number; at: Pt; x: number; y: number } | null = null;
+  private pre: { line: number; at: Pt; x: number; y: number; path?: boolean } | null = null;
   /** the draft after its last edit, the steps back from it and the steps forward again; `orig` the route as opened */
   private base: Snap = { pts: [], legs: [] };
   private undos: Snap[] = [];
@@ -243,6 +251,7 @@ export class BusDraw {
     }
     this.rev++;
     this.head = false;
+    this.extend = line === null;
     this.line = line;
     this.dirty = false;
     this.orig = [...this.pts];
@@ -293,7 +302,7 @@ export class BusDraw {
 
   /** where a leg to the pointer goes: none while the pointer is on a handle or a point is dragged */
   private hoverPt(): Pt | null {
-    if (this.looped()) return null;
+    if (this.looped() || !this.extend) return null;
     if (touchInput.peek()) return this.touchAt;
     return this.over >= 0 || this.drag ? null : this.at;
   }
@@ -530,7 +539,7 @@ export class BusDraw {
 
   /** What a press at a screen point could drag on the selected bus line while no tool is on: one of its
    * clicked points, or one of its stops (which becomes a point of the route where it stands). */
-  private preHit(px: number, py: number): { line: number; at: Pt } | null {
+  private preHit(px: number, py: number): { line: number; at: Pt; path?: boolean } | null {
     const w = world.peek(), sel = selection.peek();
     if (!w || sel?.kind !== "line") return null;
     const l = w.save.lines.find((x) => x.id === sel.line), b = l && w.lineStats[l.id]?.bus;
@@ -546,7 +555,34 @@ export class BusDraw {
       if (hit(b.routeLL[2 * i], b.routeLL[2 * i + 1])) return { line: l.num, at: { lng: b.routeLL[2 * i], lat: b.routeLL[2 * i + 1] } };
     }
     for (const st of b.stops) if (hit(st.lng, st.lat)) return { line: l.num, at: { lng: st.lng, lat: st.lat } };
-    return null;
+    // anywhere else on the route's path: a drag adds a point there (T-3366)
+    const on = this.nearOnPath([b.routeLL], px, py, PATH_PX);
+    return on ? { line: l.num, at: on, path: true } : null;
+  }
+
+  /** The point of the polylines (longitude, latitude, flat) nearest to a screen point, if within `reach` px of one. */
+  private nearOnPath(lines: ArrayLike<number>[], px: number, py: number, reach: number): Pt | null {
+    let best = reach * reach, hit: Pt | null = null;
+    for (const pts of lines) {
+      let a = this.map.project([pts[0], pts[1]]);
+      for (let m = 2; m + 1 < pts.length; m += 2) {
+        const b = this.map.project([pts[m], pts[m + 1]]);
+        const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+        const f = l2 > 0 ? Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / l2)) : 0;
+        const d = (a.x + f * dx - px) ** 2 + (a.y + f * dy - py) ** 2;
+        if (d < best) {
+          best = d;
+          hit = { lng: pts[m - 2] + f * (pts[m] - pts[m - 2]), lat: pts[m - 1] + f * (pts[m + 1] - pts[m - 1]) };
+        }
+        a = b;
+      }
+    }
+    return hit;
+  }
+
+  /** The draft's path under a screen point, for a press that adds a point (T-3366). */
+  private pathAt(px: number, py: number, reach = PATH_PX): Pt | null {
+    return this.legs.length ? this.nearOnPath(this.legs.map((l) => l.pts), px, py, reach) : null;
   }
 
   private preDown(e: MouseEvent) {
@@ -572,6 +608,7 @@ export class BusDraw {
     if (!l) return void this.map.dragPan.enable();
     editBusRoute(l);
     if (tool.peek() !== "bus" || this.line !== p.line) return void this.map.dragPan.enable();
+    if (p.path) return void (this.press = { i: -1, x: p.x, y: p.y, ins: p.at });
     // the nearest clicked point, else the stop becomes one
     let i = -1, best = NEAR_POINT_SQ_M;
     this.pts.forEach((c, k) => {
@@ -606,10 +643,11 @@ export class BusDraw {
     const r = this.map.getContainer().getBoundingClientRect();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     const i = this.handleAt(px, py);
-    if (i < 0) return;
+    const ins = i < 0 ? this.pathAt(px, py) : null;
+    if (i < 0 && !ins) return;
     // a press without a drag still reaches MapLibre as a click
     this.map.dragPan.disable();
-    this.press = { i, x: px, y: py };
+    this.press = ins ? { i: -1, x: px, y: py, ins } : { i, x: px, y: py };
   }
 
   /** A finger on a handle: it drags the point and does not pan the map; held still it does a right click's
@@ -623,7 +661,13 @@ export class BusDraw {
     const r = this.map.getContainer().getBoundingClientRect();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     const i = this.handleAt(px, py, TOUCH_HANDLE_PX);
-    if (i < 0) return;
+    if (i < 0) {
+      const ins = this.pathAt(px, py, TOUCH_PATH_PX);
+      if (!ins) return;
+      this.map.dragPan.disable();
+      this.press = { i: -1, x: px, y: py, touch: true, ins };
+      return;
+    }
     // before MapLibre's touchstart, which the pointerdown precedes
     this.map.dragPan.disable();
     const timer = window.setTimeout(() => this.longPress(), LONG_PRESS_MS);
@@ -660,7 +704,7 @@ export class BusDraw {
   private onDrag(e: MouseEvent) {
     const p = this.press;
     if (!p) return;
-    const touch = p.timer !== undefined;
+    const touch = p.timer !== undefined || !!p.touch;
     const r = this.map.getContainer().getBoundingClientRect();
     const px = e.clientX - r.left, py = e.clientY - r.top;
     if (!this.drag) {
@@ -668,6 +712,13 @@ export class BusDraw {
       clearTimeout(p.timer);
       this.touchAt = null;
       this.drag = { i: p.i, pts: [...this.pts], legs: [...this.legs] };
+      if (p.i < 0 && p.ins) {
+        // a drag from the path between points: a new point goes in there and follows the pointer (T-3366)
+        const k = this.insertPoint(p.ins);
+        if (k < 0) return this.endDrag();
+        p.i = this.drag.i = k;
+        this.drag.added = true;
+      }
       setGrabbing(true);
     }
     const ll = this.map.unproject([px, py]);
@@ -756,7 +807,7 @@ export class BusDraw {
   }
 
   /** Dropped where the roads do not reach: back where it was, unless its legs had no road before either. */
-  private async checkDrop(was: { i: number; pts: Pt[]; legs: Leg[] }) {
+  private async checkDrop(was: { i: number; pts: Pt[]; legs: Leg[]; added?: boolean }) {
     const i = was.i, last = this.pts.length - 1, join = this.joinAt();
     const sides = this.closed() && (i === 0 || i === last) ? [last - 1, 0]
       : join >= 0 && (i === join || i === last) ? [join - 1, join, last - 1]
@@ -771,7 +822,7 @@ export class BusDraw {
       if (tool.peek() !== "bus") return;
     }
     const unready = sides.some((k) => !this.legs[k].ready);
-    const lost = unready ? "tiles" : sides.map((k) => (this.legs[k].refused && !was.legs[k]?.refused ? this.legs[k].refused : undefined)).find((r) => r);
+    const lost = unready ? "tiles" : sides.map((k) => (this.legs[k].refused && (was.added || !was.legs[k]?.refused) ? this.legs[k].refused : undefined)).find((r) => r);
     if (!lost) return;
     this.pts = was.pts;
     this.legs = was.legs;
@@ -852,7 +903,8 @@ export class BusDraw {
     this.at = { lng: e.lngLat.lng, lat: e.lngLat.lat };
     this.roads.look(this.at);
     this.over = this.drag ? this.drag.i : this.handleAt(e.point.x, e.point.y);
-    const cur = this.over >= 0 ? "grab" : "crosshair";
+    this.overPath = this.over < 0 && !this.drag && !touchInput.peek() ? this.pathAt(e.point.x, e.point.y) : null;
+    const cur = this.over >= 0 ? (this.opensExtend(this.over) ? "pointer" : "grab") : this.extend ? "crosshair" : "";
     if (this.map.getCanvas().style.cursor !== cur) this.map.getCanvas().style.cursor = cur;
     this.ask();
     this.place();
@@ -866,22 +918,34 @@ export class BusDraw {
       // a double click acts on empty ground (T-3149); where its first click took a point out, the second does nothing
       const skip = this.firstEdited;
       this.firstEdited = false;
-      if (skip) return;
+      if (skip || !this.extend) return;
       if (i < 0 ? this.pts.length >= 2 : this.pts.length >= 2 && (this.isSeam(i) || (!this.looped() && i === this.endIndex()))) void this.finish();
       return;
     }
-    this.firstEdited = i >= 0 && this.pts.length >= 2 && !(this.isSeam(i) || (!this.looped() && i === this.endIndex()));
+    this.firstEdited = i >= 0 && this.pts.length >= 2 && !(this.isSeam(i) || (!this.looped() && i === this.endIndex())) && !this.opensExtend(i);
     if (i >= 0) return this.handleClick(i);
+    if (!this.extend) return;
     void this.add({ lng: e.lngLat.lng, lat: e.lngLat.lat });
   }
 
-  /** A click on a point (T-3109): the active end, or where a loop closes, finishes; any other point is deleted. */
+  /** In an edit that is not extending, the route's end: a click there starts extending. */
+  private opensExtend(i: number): boolean {
+    return !this.extend && !this.looped() && this.pts.length >= 2 && i === this.endIndex();
+  }
+
+  /** A click on a point (T-3109): the active end, or where a loop closes, finishes; any other point is deleted.
+   * Not extending, a click on the end starts extending instead. */
   private handleClick(i: number) {
     const n = this.pts.length;
     if (n < 2) return;
     if (loopTap.peek()) {
       loopTap.value = false;
       return this.rightClick(i);
+    }
+    if (this.opensExtend(i)) {
+      this.extend = true;
+      this.touchAt = null;
+      return this.changed();
     }
     if (this.isSeam(i) || (!this.looped() && i === this.endIndex())) return void this.finish();
     void this.remove(i);
@@ -986,7 +1050,7 @@ export class BusDraw {
   /** Add a point at the active end where the click lands on a road the route reaches (T-2467): waits
    * for the roads there if they are still loading, then adds it or says why not. */
   private async add(p: Pt) {
-    if (this.busy) return;
+    if (this.busy || !this.extend) return;
     if (this.looped()) return void say(t("busDraw.loopClosed"), true);
     const end = this.endPt(), head = this.head;
     if (end) {
@@ -1035,6 +1099,12 @@ export class BusDraw {
   key(e: KeyboardEvent): boolean {
     if (e.key === "Escape") {
       if (this.cancelDrag()) return true;
+      if (this.extend && this.line !== null) {
+        this.extend = false;
+        this.touchAt = null;
+        this.changed();
+        return true;
+      }
       // Esc places a new line, as it ends a track chain (T-2924); an edited route goes back as it was
       if (this.line === null && this.pts.length >= 2) void this.finish();
       else if (this.line !== null || this.pts.length === 0) this.host.exit();
@@ -1082,6 +1152,7 @@ export class BusDraw {
       const i = this.handleAt(e.point.x, e.point.y, SAME_TAP_PX);
       if (i >= 0) return this.handleClick(i);
     }
+    if (!this.extend) return;
     this.touchAt = p;
     this.changed();
   }
@@ -1259,7 +1330,7 @@ export class BusDraw {
     const at = touchInput.peek() ? this.touchAt : this.at;
     const show = (rows: HTMLElement[], bad = false) => {
       tag.className = "tool-tag build-tag" + (bad ? " bad" : "");
-      tag.replaceChildren(...rows);
+      tag.replaceChildren(...(this.overPath && !this.drag ? [row(t("busDraw.dragAdd")), ...rows] : rows));
       tag.style.display = "";
       const s = this.map.project([at!.lng, at!.lat]);
       tag.style.transform = `translate(${Math.round(s.x + 14)}px, ${Math.round(s.y + 12)}px)`;
@@ -1268,7 +1339,7 @@ export class BusDraw {
     const h = this.drag ? -1 : this.over;
     if (h >= 0 && at && !touchInput.peek()) {
       const finishes = this.pts.length >= 2 && (this.isSeam(h) || (!this.looped() && h === this.endIndex()));
-      const first = this.pts.length < 2 ? [] : [row(finishes ? t(this.line === null ? "busDraw.clickMake" : "busDraw.clickSave") : t("busDraw.clickDelete"))];
+      const first = this.pts.length < 2 ? [] : this.opensExtend(h) ? [row(t("busDraw.clickExtend"))] : [row(finishes ? t(this.line === null ? "busDraw.clickMake" : "busDraw.clickSave") : t("busDraw.clickDelete"))];
       const right = { open: "busDraw.rightOpen", stop: "busDraw.rightStopLooping", delete: "busDraw.rightDelete", close: "busDraw.rightClose", loopBack: "busDraw.rightLoopBack" } as const;
       const a = this.rightAction(h);
       return show([...first, row(t("busDraw.dragMove")), ...(a ? [row(t(right[a]))] : [])]);
@@ -1278,6 +1349,7 @@ export class BusDraw {
     const refusal = d ? [d.i - 1, d.i].map((k) => this.legs[k]?.refused).find((r) => r) : b.hoverRefused;
     if (at && refusal) return show([row(refusalTag(refusal), true)], true);
     if (!at || !q || n < 2) {
+      if (at && this.overPath && !this.drag) return show([]);
       tag.style.display = "none";
       return;
     }

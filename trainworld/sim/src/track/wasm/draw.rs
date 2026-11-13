@@ -24,7 +24,6 @@ impl TrackApi {
     }
 
     fn route_op_plain(&mut self, ends: &[f64], pis: &[f64], tracks: u8) -> Result<(Op, Vec<Pi>, Vec<u32>, Vec<u32>), Issue> {
-        let tracks = if self.route_kind.spec().family != 0 && tracks == 1 { 2 } else { tracks };
         if let Some(eb) = self.route_beside.take() {
             if let Some((b_ends, b_pis, on_line, run)) = pis.is_empty().then(|| self.beside_ends(ends, eb)).flatten() {
                 // a start on the line leaves along it; one coming in keeps its lead-in
@@ -633,7 +632,6 @@ impl TrackApi {
     /// speed limit km/h, then the polyline as x, y, height (m) triples]. `issue_kinds()` holds
     /// the problems when not ok.
     pub fn preview_route(&mut self, ends: &[f64], pis: &[f64], tracks: u8, flying: bool) -> Vec<f64> {
-        let tracks = if self.route_kind.spec().family != 0 && tracks == 1 { 2 } else { tracks };
         self.preview_lanes.clear();
         self.preview_speeds.clear();
         self.preview_marks.clear();
@@ -774,8 +772,8 @@ impl TrackApi {
         self.route_street = lonlat.chunks_exact(2).map(|p| f.from_lonlat(p[0], p[1])).collect();
     }
 
-    pub(super) fn route_kind_of(&self, tracks: u8) -> TrackKind {
-        if self.route_kind.spec().family != 0 { self.route_kind } else { TrackKind::from_hsr(self.route_hsr && (tracks == 2 || tracks == 4)) }
+    pub(super) fn route_kind_of(&self, _tracks: u8) -> TrackKind {
+        if self.route_kind.spec().family != 0 { self.route_kind } else { TrackKind::from_hsr(self.route_hsr) }
     }
 
     /// T-1615: whether routes after this ramp over or under track they would cross flat.
@@ -935,7 +933,7 @@ impl TrackApi {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn station_at(&mut self, kind: u32, id: u32, x: f64, y: f64, platform: u16, name: String, dry: bool) -> u32 {
-        let mut st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0 };
+        let mut st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0 };
         // On quad track only the pair clicked gets the station (T-1687); one level with it on the
         // pair beside lends its name, so the two read as one station.
         if kind == 1 {
@@ -1036,7 +1034,7 @@ impl TrackApi {
             self.release(&nn, &ne);
             return self.refuse(Issue::Geom { edge: u32::MAX, issue: GeomIssue::ZeroLeg(0) });
         };
-        let st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0 };
+        let st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0 };
         // on quad, the drawn pair's only (T-1687)
         let r = self.station_ops(Some(&route), &[(e, s)], &st, dry);
         if r != 0 || dry {
@@ -1062,8 +1060,24 @@ impl TrackApi {
             },
             None => None,
         };
+        // T-3332: a one-track station, its platform on the track nearer the point set
+        let mut ones = vec![0u8; at.len()];
+        if let Some(pt) = self.station_one {
+            for (k, &(e, s)) in at.iter().enumerate() {
+                match self.one_at(e, s, pt) {
+                    Some(one) => ones[k] = one,
+                    None => {
+                        if let Some(inv) = sketched {
+                            self.w.unsketch(inv);
+                        }
+                        return self.refuse(Issue::OneTrackHere { node: if e == u32::MAX { s as u32 } else { u32::MAX } });
+                    }
+                }
+            }
+        }
         let (mut nodes, mut edges) = (vec![], vec![]);
-        for &(e, s) in at {
+        for (&(e, s), &one) in at.iter().zip(&ones) {
+            let st = &StationData { one, ..st.clone() };
             if e == u32::MAX {
                 // an existing node, `s` its id; at a loose end the platform runs its whole length
                 // back along the track, so the joints within it go first as they do for a split (T-860)
@@ -1114,6 +1128,40 @@ impl TrackApi {
             self.issues.retain(|i| !matches!(i, Issue::Geom { .. } | Issue::NodeHeading { .. }));
         }
         r
+    }
+
+    /// T-3332: the next station placed has its platform on one track, the one nearer `p` (x, y) on
+    /// double track; empty `p` for platforms on both tracks, as before.
+    pub fn set_station_one(&mut self, p: &[f64]) {
+        self.station_one = (p.len() >= 2).then(|| [p[0], p[1]]);
+    }
+
+    /// `StationData::one` for a one-track station at chainage `s` of edge `e` (`e` MAX: on node `s`)
+    /// whose platform is on the track nearer `pt`; None where one cannot go: anywhere but track
+    /// running through with the same tracks both sides, or on one-way single track.
+    fn one_at(&self, e: u32, s: f64, pt: [f64; 2]) -> Option<u8> {
+        let net = &self.w.net;
+        let (x, y, th, tracks) = if e == u32::MAX {
+            let n = s as u32;
+            if !self.one_fits(n) {
+                return None;
+            }
+            (net.node_x[n as usize], net.node_y[n as usize], net.node_heading[n as usize], net.node_tracks(n))
+        } else {
+            let t = net.edge_tracks[e as usize];
+            if t == 1 && net.edge_way(e) != 0 {
+                return None;
+            }
+            let (x, y, th) = geom::pos_at(net.edge_pieces(e), s);
+            (x, y, th, t)
+        };
+        if tracks == 1 {
+            return Some(1);
+        }
+        // the lane left of the heading carries trains against it on right-hand track
+        let left = th.cos() * (pt[1] - y) - th.sin() * (pt[0] - x) > 0.0;
+        let along = left != net.right_hand;
+        Some(crate::track::net::one_for_travel(if along { th } else { th + std::f64::consts::PI }))
     }
 
     /// The joint a station at chainage `s` of edge `e` goes on (T-1964): one within a split's 5 m
@@ -1266,7 +1314,9 @@ pub(super) const BRANCH_CLEAR: f64 = 20.0;
 /// where it makes a junction of a plain joint, single track's end there takes the track beside it
 /// the same way, as (edge end, join). Every lateral position is 200 m out, as `derive_node` ranks ends.
 fn end_joins(net: &Network, r: &Resolved, out: &[Pi], at: (f64, f64), single: bool) -> (u8, Vec<(u32, u8)>) {
-    if !r.double || r.dirs.is_empty() || r.dirs.len() > 2 || out.len() < 2 {
+    // T-3344: a double drawn at a node of single ends joins those with a set way (`ends_before_double`)
+    let singles_first = !single && !r.double;
+    if !(r.double || singles_first) || r.dirs.is_empty() || r.dirs.len() > 2 || out.len() < 2 {
         return (0, vec![]);
     }
     let (dx, dy) = (out[1].x - r.x, out[1].y - r.y);
@@ -1320,7 +1370,7 @@ fn end_joins(net: &Network, r: &Resolved, out: &[Pi], at: (f64, f64), single: bo
         beside(mine, &there.iter().filter(|t| t.3).map(|t| (t.1, t.2)).collect::<Vec<_>>())
     };
     let mut theirs = vec![];
-    if !split && r.new_junction && there.iter().any(|t| !t.3 && t.2) {
+    if !split && !singles_first && r.new_junction && there.iter().any(|t| !t.3 && t.2) {
         for t in there.iter().filter(|t| t.3) {
             let e = (t.0 >> 1) as usize;
             if net.edge_tracks[e] != 1 || net.edge_crossover[e] || net.edge_join[e][(t.0 & 1) as usize] != 0 {
@@ -1334,7 +1384,28 @@ fn end_joins(net: &Network, r: &Resolved, out: &[Pi], at: (f64, f64), single: bo
             }
         }
     }
+    if singles_first && !split {
+        theirs = ends_before_double(net, &there);
+    }
     (own, theirs)
+}
+
+/// A double drawn out of a node where single ends already are: each single on the far side whose
+/// way the player set joins the track that carries it, as `set_edge_oneway` does, so the double
+/// does not send trains against the way. An end with no way stays unjoined; the next single drawn
+/// there joins it by lateral place (`end_joins`' `theirs`).
+fn ends_before_double(net: &Network, there: &[(u32, f64, bool, bool)]) -> Vec<(u32, u8)> {
+    there
+        .iter()
+        .filter(|t| {
+            let e = (t.0 >> 1) as usize;
+            !t.3 && !t.2 && net.edge_tracks[e] == 1 && !net.edge_crossover[e] && net.edge_join[e][(t.0 & 1) as usize] == 0
+        })
+        .filter_map(|t| match net.edge_oneway[(t.0 >> 1) as usize] {
+            w @ 1..=2 => Some((t.0, crate::track::lanes::join_for((w == 1) == (t.0 & 1 == 0), net.right_hand))),
+            _ => None,
+        })
+        .collect()
 }
 
 fn branch_end(net: &Network, end: End, toward: (f64, f64)) -> Result<(End, Option<(f64, f64)>), Issue> {

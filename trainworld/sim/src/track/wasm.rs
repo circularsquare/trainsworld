@@ -89,6 +89,9 @@ pub struct TrackApi {
     /// T-3137: the points the next route's ends join double track nearest (`set_route_join`), and
     /// while one is laid out (`route_op`) the ones it uses; NaN for the nearer track.
     route_join: Option<[f64; 4]>,
+    /// T-3332: the next station placed is a one-track one, its platform on the track nearer this
+    /// point (`set_station_one`); None for platforms on both tracks.
+    station_one: Option<[f64; 2]>,
     join_at: [f64; 4],
     /// T-3137: the last route's joins at its start and end, and its pieces in the order drawn
     /// (`route_joins`).
@@ -276,7 +279,8 @@ fn bus_upkeep(n: &Network, l: u32) -> Option<f64> {
     n.line_bus.get(l as usize)?.as_ref().filter(|r| r.built && n.line_ok(l)).map(|_| n.bus_road_m(l) / 1000.0 * UPKEEP_BUS_KM * ECONOMY / 1e6)
 }
 fn station_upkeep(n: &Network, i: usize) -> f64 {
-    n.node_kind(i as u32).spec().station_upkeep.unwrap_or_else(|| super::cost::station_upkeep(n.node_level[i])) * ECONOMY / 1e6
+    let share = if n.one_platform(i as u32) { UPKEEP_ONE_PLATFORM_SHARE } else { 1.0 };
+    n.node_kind(i as u32).spec().station_upkeep.unwrap_or_else(|| super::cost::station_upkeep(n.node_level[i]) * share) * ECONOMY / 1e6
 }
 
 fn pis_from(flat: &[f64]) -> Vec<Pi> {
@@ -361,6 +365,7 @@ impl TrackApi {
             route_ramp: false,
             route_beside: None,
             route_join: None,
+            station_one: None,
             join_at: [f64::NAN; 4],
             route_join_out: [0; 2],
             route_pieces: vec![],
@@ -829,6 +834,8 @@ mod related;
 mod bus;
 mod ferry;
 mod buildings;
+mod twin;
+mod onetrack;
 
 /// What buying the cars the running lines need beyond `fleet` costs, US$M.
 fn trains_to_buy(w: &TrackWorld, fleet: [u32; FLEETS]) -> f64 {
@@ -2063,7 +2070,7 @@ impl TrackApi {
         self.run(Op::Edge { id, data: Some(EdgeData { a, b, tracks, pis: pis_from(pis), built: false, off: false, thru: vec![], crossover: false, kind: TrackKind::Regular, sep: false, day: 0, oneway: 0, join: [0; 2] }) })
     }
     pub fn set_station(&mut self, node: u32, platform: u16, name: String) -> u32 {
-        self.run(Op::Station { node, data: Some(StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0 }) })
+        self.run(Op::Station { node, data: Some(StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0 }) })
     }
     /// What constructing these would cost now, US$M (junctions and crossings they complete
     /// included).
@@ -2104,12 +2111,14 @@ impl TrackApi {
         let Some(ls) = self.w.svc.lines.get(line as usize).filter(|l| l.ok) else { return vec![0.0, 0.0] };
         let turns = ls.runs[0].turn.iter().filter(|&&t| t).count() as f64;
         let circle = ls.kind == LoopKind::Circle;
-        let stops = ls.runs[0].stop_s.len().saturating_sub(2) as f64 - turns + if circle { 1.0 } else { 0.0 };
+        // T-2981: a one-way loop goes round once; T-3332: a run passing a stop stands nothing there
+        let stops: f64 = ls.runs.iter().take(ls.live_runs()).map(|r| {
+            (1..r.stop_s.len().saturating_sub(1)).filter(|&j| !r.turn[j] && !r.passes(j)).count() as f64 + if circle { 1.0 } else { 0.0 }
+        }).sum();
         let ends = if circle { 0.0 } else { 2.0 };
         let turns = turns + ls.runs[0].ends.len() as f64;
-        // T-2981: a one-way loop goes round once
         let ways = ls.live_runs() as f64;
-        vec![ways * stops * n.line_dwell[line as usize] as f64, ways * (ends / 2.0 + turns) * n.line_turn[line as usize] as f64]
+        vec![stops * n.line_dwell[line as usize] as f64, ways * (ends / 2.0 + turns) * n.line_turn[line as usize] as f64]
     }
 }
 
@@ -2122,7 +2131,7 @@ impl TrackApi {
         let Some(path) = self.w.net.route(stops) else {
             return self.refuse(Issue::LinePath { line: id });
         };
-        self.run(Op::Line { id, data: Some(LineData { symbol: String::new(), trains: None, auto: None, name, colour, stops: stops.to_vec(), path, tph: [high, medium, low], dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), day: 0, hand: false, one_way: false, limit: 0 }) })
+        self.run(Op::Line { id, data: Some(LineData { symbol: String::new(), trains: None, auto: None, name, colour, stops: stops.to_vec(), path, tph: [high, medium, low], dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), day: 0, hand: false, one_way: false, limit: 0, twin: Default::default() }) })
     }
     pub(crate) fn set_schedule(&mut self, id: u32, high: f32, medium: f32, low: f32) -> u32 {
         self.run(Op::Schedule { id, tph: [high, medium, low] })
@@ -2208,6 +2217,8 @@ mod rebuild_tests;
 #[cfg(test)]
 mod double_tests;
 #[cfg(test)]
+mod onetrack_tests;
+#[cfg(test)]
 mod tram_tests;
 #[cfg(test)]
 mod gap_tests;
@@ -2218,3 +2229,5 @@ mod water_gap_tests;
 mod built_day_tests;
 #[cfg(test)]
 mod lane_preview_tests;
+#[cfg(test)]
+mod twin_tests;
