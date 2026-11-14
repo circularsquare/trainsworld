@@ -40,12 +40,6 @@ pub enum Op {
 const SETTLED: f64 = 0.0001;
 /// Most rounds of one settle.
 const SETTLE_ROUNDS: usize = 80;
-/// Rounds of one settle that rebuild every line's profiles exactly. A network whose lines fit
-/// their fleets settles in a few; one at capacity can keep stepping to the cap, and rebuilding the
-/// whole network's profiles each round is what made that take seconds on a big network, so past
-/// these rounds the round trips come from the capacity solve alone (`Service::probe_trips`) and
-/// the profiles are built once, after the last round.
-const SETTLE_EXACT_ROUNDS: usize = 8;
 /// T-3233: the longest repeat a settle looks for.
 const CYCLE_MAX: usize = 4;
 /// Within this many trains of its fleet, a line whose shortfall keeps turning is settled (T-1283).
@@ -209,14 +203,12 @@ impl TrackWorld {
     /// otherwise (an edit) only the lines off their fleet are (T-1787). Then count lines meeting at
     /// a merge are put in step (T-2973) and settled again, until they hold.
     fn settle_train_counts(&mut self, full: bool) -> Vec<u32> {
-        let (mut affected, mut converged) = self.settle_unpaced(full);
+        let mut affected = self.settle_unpaced(full);
         for _ in 0..PACE_ROUNDS {
-            if !converged || !self.pace_merges() {
+            if !self.pace_merges() {
                 break;
             }
-            let (a, c) = self.settle_unpaced(full);
-            affected.extend(a);
-            converged = c;
+            affected.extend(self.settle_unpaced(full));
         }
         affected.sort_unstable();
         affected.dedup();
@@ -338,33 +330,24 @@ impl TrackWorld {
         true
     }
 
-    /// The settle without `pace_merges`; the flag says whether the last settle came to rest (rather
-    /// than running to its round cap).
-    fn settle_unpaced(&mut self, full: bool) -> (Vec<u32>, bool) {
+    /// The settle without `pace_merges`.
+    fn settle_unpaced(&mut self, full: bool) -> Vec<u32> {
         if !self.net.line_auto.iter().any(|a| a.is_some()) {
             return self.settle_counts(full);
         }
         // T-625: the counts of headway lines follow their round trips, which follow the counts
         // through shared track, so settle and ask again until they hold still (a few rounds).
         let mut affected = vec![];
-        let mut converged = true;
         let first = self.net.line_trains.clone();
         for round in 0..AUTO_ROUNDS {
             let moved = self.auto_counts(round + 1 == AUTO_ROUNDS);
-            let (a, c) = self.settle_counts(full);
-            affected.extend(a);
-            converged = c;
+            affected.extend(self.settle_counts(full));
             if !moved && round > 0 { break; }
         }
         // counts the full track would keep waiting at the ends are not bought
-        if self.trim_auto() {
-            let (a, c) = self.settle_counts(full);
-            affected.extend(a);
-            converged = c;
-        }
+        if self.trim_auto() { affected.extend(self.settle_counts(full)); }
         affected.extend((0..self.net.line_count() as u32).filter(|&l| self.net.line_trains[l as usize] != first[l as usize]));
-        affected.sort_unstable(); affected.dedup();
-        (affected, converged)
+        affected.sort_unstable(); affected.dedup(); affected
     }
 
     /// T-625: each headway line's counts, the fewest trains that keep its headway over the round
@@ -417,11 +400,11 @@ impl TrackWorld {
         trimmed
     }
 
-    fn settle_counts(&mut self, full: bool) -> (Vec<u32>, bool) {
+    fn settle_counts(&mut self, full: bool) -> Vec<u32> {
         self.net.rates_settled = true;
         let ids: Vec<u32> = (0..self.net.line_count() as u32)
             .filter(|&l| self.net.line_ok(l) && self.net.line_trains[l as usize].is_some() && self.svc.lines[l as usize].ok).collect();
-        if ids.is_empty() { return (vec![], true); }
+        if ids.is_empty() { return vec![]; }
         // a loop's trains split evenly between its two directions: an odd count rounds up (T-798)
         for &id in &ids {
             if self.svc.lines[id as usize].paired() {
@@ -441,18 +424,16 @@ impl TrackWorld {
         // only the rounds that end it in the cap's state, to the bit
         let mut seen: std::collections::VecDeque<(Vec<[f32; 3]>, Vec<[f64; 3]>, Vec<[(i8, u8, f64); LEVELS]>)> = Default::default();
         let mut stop_at: Option<usize> = None;
-        let mut touched: Vec<u32> = vec![];
-        let mut converged = false;
         for round in 0..SETTLE_ROUNDS {
             let trips: Vec<[f64; 3]> = ids.iter().map(|&id| self.svc.lines[id as usize].round_trip).collect();
             let rates: Vec<[f32; 3]> = ids.iter().map(|&id| self.net.line_tph[id as usize]).collect();
             match stop_at {
-                Some(s) if round >= s => { converged = true; break; }
+                Some(s) if round >= s => break,
                 Some(_) => {}
                 None => {
                     if let Some(p) = (1..=seen.len()).find(|&p| { let x = &seen[seen.len() - p]; x.0 == rates && x.1 == trips && x.2 == swings }) {
                         stop_at = Some(round + (SETTLE_ROUNDS - round) % p);
-                        if (SETTLE_ROUNDS - round) % p == 0 { converged = true; break; }
+                        if (SETTLE_ROUNDS - round) % p == 0 { break; }
                     } else {
                         if seen.len() == CYCLE_MAX { seen.pop_front(); }
                         seen.push_back((rates.clone(), trips.clone(), swings.clone()));
@@ -494,11 +475,11 @@ impl TrackWorld {
                     if sign != 0 && !held && !keep[j][lev] { active[lev] = true; }
                 }
             }
-            if !active.contains(&true) { converged = true; break; }
+            if !active.contains(&true) { break; }
             // A common 1% upward probe measures the sum of positive congestion derivatives.
             // Dividing by this bound damps shared-track feedback even close to saturation.
-            // Only the lines probed: a capacity pass over the rest would rebuild every profile in
-            // the network on every round.
+            // Only the lines stepped are bumped, and only those are asked for their rise: a probe
+            // over the rest costs a capacity pass a round, and its figures are never read.
             let mut bumped: Vec<u32> = vec![];
             for (j, &id) in ids.iter().enumerate() {
                 for lev in (0..LEVELS).filter(|&lev| active[lev] && (full || off[j][lev])) {
@@ -519,9 +500,9 @@ impl TrackWorld {
                 out
             };
             // T-1787: an edit probes from the capacity solve alone (`Service::probe_trips`), the
-            // profiles worked out once a round; a full settle probes with them, as before. Past
-            let cheap = round >= SETTLE_EXACT_ROUNDS;
-            let probed = if full && !cheap {
+            // profiles worked out once a round; a full settle probes with them, as before. The
+            // probe is read only for the lines that moved, so only those are asked.
+            let probed = if full {
                 let d = self.svc.update_scoped(&self.net, &[], &ids, true, Some((&[], &[])));
                 affected.extend(d.recomputed);
                 None
@@ -557,31 +538,12 @@ impl TrackWorld {
                     self.net.line_tph[id as usize][lev] = got as f32;
                 }
             }
-            if cheap {
-                let mut changed: Vec<u32> = vec![];
-                for (j, &id) in ids.iter().enumerate() {
-                    if (0..LEVELS).any(|lev| self.net.line_tph[id as usize][lev] != rates[j][lev]) { changed.push(id); }
-                }
-                if !changed.is_empty() {
-                    let p = self.svc.probe_trips(&self.net, &changed);
-                    for (k, &id) in changed.iter().enumerate() { self.svc.lines[id as usize].round_trip = p[k]; }
-                    self.svc.cap.update(&self.net, &self.svc.lines, &[], &[], &changed);
-                    touched.extend_from_slice(&changed);
-                }
-            } else {
-                let d = self.svc.update_scoped(&self.net, &[], &ids, true, Some((&[], &[])));
-                affected.extend(d.recomputed);
-            }
+            let d = self.svc.update_scoped(&self.net, &[], &ids, true, Some((&[], &[])));
+            affected.extend(d.recomputed);
             // T-747: a round that ends where it began repeats itself to the cap, ~12 ms a round on
             // 143 lines
             let still = ids.iter().enumerate().all(|(j, &id)| self.net.line_tph[id as usize] == rates[j] && self.svc.lines[id as usize].round_trip == trips[j]);
-            if still { converged = true; break; }
-        }
-        if !touched.is_empty() {
-            touched.sort_unstable();
-            touched.dedup();
-            let d = self.svc.update_scoped(&self.net, &[], &touched, true, Some((&[], &[])));
-            affected.extend(d.recomputed);
+            if still { break; }
         }
         for &id in &ids { self.svc.lines[id as usize].trains = self.net.line_trains[id as usize].unwrap(); }
         self.net.settle_kept.clear();
@@ -592,7 +554,7 @@ impl TrackWorld {
         }
         affected.extend(ids.into_iter().filter(|&id| before[id as usize] != self.net.line_tph[id as usize]));
         affected.sort_unstable(); affected.dedup();
-        (affected, converged)
+        affected
     }
 
     pub fn can_undo(&self) -> bool {
