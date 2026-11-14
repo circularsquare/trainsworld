@@ -17,7 +17,7 @@ fn world_in(kind: FrameKind) -> TrackWorld {
 fn place(w: &mut TrackWorld, lon: f64, lat: f64) -> u32 {
     let (x, y) = w.net.frame().from_lonlat(lon, lat);
     let id = w.net.alloc_node();
-    w.apply(Op::Node { id, data: Some(NodeData { x: quant(x), y: quant(y), level: 0, flying: false }) }).unwrap();
+    w.apply(Op::Node { id, data: Some(NodeData { x: quant(x), y: quant(y), level: 0, flying: false, merge_lane: false }) }).unwrap();
     id
 }
 
@@ -235,7 +235,7 @@ fn track_stops_short_of_the_poles_and_the_antimeridian() {
     let mut w = world_in(FrameKind::Merc);
     let try_node = |w: &mut TrackWorld, x: f64, y: f64| {
         let id = w.net.alloc_node();
-        w.apply(Op::Node { id, data: Some(NodeData { x, y, level: 0, flying: false }) })
+        w.apply(Op::Node { id, data: Some(NodeData { x, y, level: 0, flying: false, merge_lane: false }) })
     };
     let f = w.net.frame();
     let (x, y) = f.from_lonlat(15.6, MERC_MAX_LAT - 0.5);

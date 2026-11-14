@@ -175,7 +175,7 @@ impl TrackApi {
             }
             let m = self.w.net.alloc_node();
             nn.push(m);
-            ops.push(Op::Node { id: m, data: Some(NodeData { x, y, level: self.w.net.node_level[ni], flying: false }) });
+            ops.push(Op::Node { id: m, data: Some(NodeData { x, y, level: self.w.net.node_level[ni], flying: false, merge_lane: false }) });
             beside.push(Some((m, x, y)));
         }
         for (i, verts) in shapes.iter().enumerate() {

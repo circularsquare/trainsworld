@@ -98,7 +98,7 @@ fn main() {
             let level = nd["level"].as_i64().unwrap() as i8;
             let id = net.alloc_node();
             let st = &nd["station"];
-            net.set_node(id, Some(NodeData { x: quant(x), y: quant(y), level, flying: st.is_null() })).unwrap();
+            net.set_node(id, Some(NodeData { x: quant(x), y: quant(y), level, flying: st.is_null(), merge_lane: false })).unwrap();
             if st.is_null() {
                 node_key.push(String::new());
                 node_names.push(String::new());
@@ -364,7 +364,7 @@ fn main() {
             }
             placed.push((x, y));
             let id = net.alloc_node();
-            net.set_node(id, Some(NodeData { x: quant(x), y: quant(y), level, flying: false })).unwrap();
+            net.set_node(id, Some(NodeData { x: quant(x), y: quant(y), level, flying: false, merge_lane: false })).unwrap();
             let s = &stations[stops[k]];
             let raw = s["name"].as_str().unwrap();
             let name = names::tidy_station(raw).unwrap_or_else(|| raw.to_string());

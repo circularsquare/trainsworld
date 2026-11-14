@@ -18,7 +18,7 @@ use super::twin::Twin;
 /// Optional trailing blocks follow the lines: `LUI1` (line numbers and symbols) and, when the
 /// player linked stations, `LNK1` (T-197: count, then node pairs in the dense ids). A save without
 /// them loads with none. An edge's flags `| 32` mark a crossover's diagonal (T-338), `| 64`
-/// high-speed track (T-817); older saves have none; bits 11-12 give one-way single track (T-3094: 0 not set, 1 a to b, 2 b to a, 3 both ways, T-3137), bits 13-14 and 15-16 the joins of its ends a and b (T-3137, `EdgeData::join`). A trailing `LHS1` block (T-817) lists the
+/// high-speed track (T-817); older saves have none; bits 11-12 give one-way single track (T-3094: 0 not set, 1 a to b, 2 b to a, 3 both ways, T-3137), bits 13-14 and 15-16 the joins of its ends a and b (T-3137, `EdgeData::join`). A node's flags bit 11 marks a junction with a merge lane (T-3376). A trailing `LHS1` block (T-817) lists the
 /// lines running high-speed trains; without it all are ordinary. A trailing `LBS2` block (T-1465;
 /// `LBS1`, T-1464, is the same without a kind per point) gives the bus lines their routes; without
 /// it there are none. A trailing `LRT1` block (T-1787) carries the settled rates of the lines with
@@ -65,7 +65,7 @@ pub const BLOCKS: [&[u8; 4]; 24] = [b"LUI1", b"LNK1", b"LAU1", b"LHS1", b"LBS1",
 /// with every new block, every new field inside a header field (a new top-level header field is seen
 /// as unknown on its own) and every new meaning of existing bytes, so an older build knows a newer
 /// save even when it has nothing left over. Saves from before it have none, read as 0.
-pub const LEVEL: u32 = 18;
+pub const LEVEL: u32 = 19;
 
 /// An edge's kind in the flag bits 8-10. Regular and high speed write nothing here (high speed keeps
 /// bit 6), so their saves are byte for byte what earlier builds wrote and earlier builds read them.
@@ -173,7 +173,8 @@ pub fn encode(net: &Network) -> Vec<u8> {
         // station's way (`StationData::one`)
         let ups = if plat > 0 { net.node_upgrades[i] as u64 } else { 0 };
         let one = if plat > 0 { net.node_one[i] as u64 } else { 0 };
-        w.u(net.node_flying[i] as u64 | ((plat > 0) as u64) << 1 | ((plat > 0 && net.node_built[i]) as u64) << 2 | ((plat > 0 && net.node_off[i] && !net.node_built[i]) as u64) << 3 | ups << 4 | ((plat > 0 && net.node_named[i]) as u64) << 8 | one << 9);
+        // T-3376: bit 11 marks a junction with a merge lane
+        w.u(net.node_flying[i] as u64 | ((plat > 0) as u64) << 1 | ((plat > 0 && net.node_built[i]) as u64) << 2 | ((plat > 0 && net.node_off[i] && !net.node_built[i]) as u64) << 3 | ups << 4 | ((plat > 0 && net.node_named[i]) as u64) << 8 | one << 9 | (net.node_merge_lane[i] as u64) << 11);
         if plat > 0 {
             w.u(plat as u64);
             w.s(&net.node_name[i]);
@@ -577,7 +578,7 @@ pub fn convert_frame(bytes: &[u8], to: FrameKind) -> Result<Vec<u8>, String> {
         }
         let i = n as usize;
         let (x, y) = at(net.node_x[i], net.node_y[i]);
-        out.set_node(id, Some(NodeData { x, y, level: net.node_level[i], flying: net.node_flying[i] })).map_err(|e| format!("{e:?}"))?;
+        out.set_node(id, Some(NodeData { x, y, level: net.node_level[i], flying: net.node_flying[i], merge_lane: net.node_merge_lane[i] })).map_err(|e| format!("{e:?}"))?;
         if net.node_platform[i] > 0 {
             let d = net.station_data(n).map(|d| StationData { berth: d.berth.map(|b| { let (x, y) = at(b[0], b[1]); [x, y] }), ..d });
             out.set_station(id, d).map_err(|e| format!("{e:?}"))?;
@@ -644,7 +645,7 @@ pub fn decode_read(bytes: &[u8]) -> Result<(Network, usize), String> {
         let level = r.i()? as i8;
         let flags = r.u()?;
         unknown += (flags >> 12 != 0) as usize;
-        net.set_node(id, Some(NodeData { x, y, level, flying: flags & 1 == 1 })).map_err(|e| format!("{e:?}"))?;
+        net.set_node(id, Some(NodeData { x, y, level, flying: flags & 1 == 1, merge_lane: flags & (1 << 11) != 0 })).map_err(|e| format!("{e:?}"))?;
         if flags & 2 != 0 {
             let platform = r.u()? as u16;
             let name = r.s()?;
@@ -1019,7 +1020,7 @@ mod tests {
         let mut net = Network::new_in(FrameKind::Merc, -73.985, 40.758, true);
         for x in [0.0f64, 1000.0] {
             let n = net.alloc_node();
-            net.set_node(n, Some(NodeData { x, y: 0.0, level: 0, flying: false })).unwrap();
+            net.set_node(n, Some(NodeData { x, y: 0.0, level: 0, flying: false, merge_lane: false })).unwrap();
             net.set_station(n, Some(StationData { platform: 2, name: format!("S{x}"), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0 })).unwrap();
         }
         let e = net.alloc_edge();
@@ -1044,6 +1045,21 @@ mod tests {
         let w2 = crate::track::world::TrackWorld::new(decode(&second).unwrap());
         assert!(w2.net.line_ok(0) && w2.net.check_line(0).is_err(), "still there and still broken on the next load");
         encode(&w2.net);
+    }
+
+    /// T-3376: a junction's merge lane rides in its node's flags bit 11 and no longer counts as an
+    /// unknown flag.
+    #[test]
+    fn a_merge_lane_survives_a_save() {
+        let mut net = decode(&sample()).unwrap();
+        let d = net.node_data(0).unwrap();
+        net.set_node(0, Some(NodeData { merge_lane: true, ..d })).unwrap();
+        let bytes = encode(&net);
+        let (back, unread) = decode_read(&bytes).unwrap();
+        assert!(back.node_merge_lane[0]);
+        assert!(!back.node_merge_lane[1]);
+        assert_eq!(unread, 0);
+        assert_eq!(encode(&back), bytes);
     }
 
     /// T-3109: a line saved in manual mode as a plain out-and-back loads as its open line.
@@ -1163,7 +1179,7 @@ mod tests {
         for tag in &written {
             assert!(BLOCKS.iter().any(|b| &b[..] == tag.as_bytes()), "block {tag} is written but not in BLOCKS");
         }
-        assert_eq!((LEVEL, BLOCKS.len()), (18, 24), "a new block raises LEVEL: raise it, then update this pin");
+        assert_eq!((LEVEL, BLOCKS.len()), (19, 24), "a new block or flag bit raises LEVEL: raise it, then update this pin");
     }
 
     /// T-2217: buildings come back as they were, in their order; a network without them encodes as

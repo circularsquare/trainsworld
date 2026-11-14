@@ -57,12 +57,15 @@ function rowName(r: BlueprintItem) {
   if (r.kind === 0 && (r.tracks === TRAM_ROW || r.tracks === TRAM_ROW + SINGLE_ROW_OFFSET)) return t("blueprint.lengthLevelTram", { distance: distance(r.quantity), level: levelWords(r) });
   if (r.kind === 0 && (r.tracks === STREET_TRAM_ROW || r.tracks === STREET_TRAM_ROW + SINGLE_ROW_OFFSET)) return t("blueprint.lengthLevelStreetTram", { distance: distance(r.quantity), level: levelWords(r) });
   if (r.kind === 0) return t("blueprint.lengthLevel", { distance: distance(r.quantity), level: levelWords(r) });
+  // T-3376: a junction's track field marks whether it has a merge lane, not a track count
+  if (r.kind === 2 && r.tracks === 1) return t("blueprint.withLevel", { what: t("blueprint.mergeJunction", { count: r.quantity }), level: levelWords(r) });
   return t("blueprint.withLevel", { what: counted(NOUN[r.kind] || "item", r.quantity), level: levelWords(r) });
 }
 
 // A display copy of the price list (sim/src/track/params.rs and cost.rs own the real one), so a row's
 // hover can show its price as the sum it is.
 const BASE_M_PER_KM = 75;
+const MERGE_LANE_KM = 0.3;
 const MULT: Record<Level, number> = { 3: 2.0, 2: 1.5, 1: 1.0, 0: 0.5, [-1]: 1.0, [-2]: 1.6, [-3]: 2.0 };
 const STATION_M: Record<Level, number> = { 3: 70, 2: 55, 1: 40, 0: 25, [-1]: 75, [-2]: 100, [-3]: 125 };
 const STATION_FIXED_M = 50;
@@ -116,11 +119,14 @@ function rowTip(r: BlueprintItem) {
   } else if (r.kind === 2 || r.kind === 3 || r.kind === 4) {
     const km = r.kind === 2 ? 0.25 : r.kind === 3 ? 0.6 : 0.1;
     const l = r.kind === 3 ? awayLevel(level) : level;
+    // T-3376: a junction with a merge lane pays for the lane as extra track at its level
+    const lane = r.kind === 2 && r.tracks === 1 ? MERGE_LANE_KM : 0;
     base = t("blueprint.baseCostDist", { price: mil(perDistance(BASE_M_PER_KM)), unit: distUnit() });
     factors.push([r.kind === 2 ? t("blueprint.junctionTrack") : r.kind === 3 ? t("blueprint.flyoverTrack") : t("blueprint.crossingTrack"), withUnit(n * km / perDistance(1)), 1]);
+    if (lane) factors.push([t("blueprint.mergeLane"), withUnit(n * lane / perDistance(1)), 1]);
     lvl(l);
     wet();
-    const product = BASE_M_PER_KM * n * km * MULT[l] * water;
+    const product = BASE_M_PER_KM * n * (km + lane) * MULT[l] * water;
     if (Math.abs(r.cost / 1e6 / product - 1) > 0.005) factors.push([t("blueprint.crossoverTrack"), "", r.cost / 1e6 / product]);
   } else if (r.kind === 10) {
     base = t("blueprint.baseCostDist", { price: mil(perDistance(BUS_ROUTE_M_PER_KM)), unit: distUnit() });

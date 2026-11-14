@@ -704,6 +704,11 @@ pub fn junction_cost(level: i8, flying: bool, wet: bool) -> f64 {
     c * w
 }
 
+/// T-3376: a merge lane, 0.3 km of track at the junction's level.
+pub fn merge_lane_cost(level: i8, wet: bool) -> f64 {
+    MERGE_LANE_KM * BASE_COST_PER_KM * level_mult(level) * if wet { WATER_COST } else { 1.0 }
+}
+
 /// A flat crossing: 0.1 km of track at its level.
 pub fn crossing_cost(level: i8, wet: bool) -> f64 {
     FLAT_CROSSING_KM * BASE_COST_PER_KM * level_mult(level) * if wet { WATER_COST } else { 1.0 }
@@ -788,6 +793,9 @@ mod tests {
         assert!((junction_cost(0, false, false) - 0.25 * 37.5).abs() < 1e-9);
         assert!((junction_cost(0, true, false) - (0.25 * 37.5 + 0.6 * 75.0)).abs() < 1e-9);
         assert!((junction_cost(-2, true, false) - (0.25 * 120.0 + 0.6 * 150.0)).abs() < 1e-9);
+        // T-3376: a merge lane is 0.3 km at the junction's level, doubled over water
+        assert!((merge_lane_cost(0, false) - 0.3 * 37.5).abs() < 1e-9);
+        assert!((merge_lane_cost(-2, true) - 0.3 * 120.0 * 2.0).abs() < 1e-9);
         assert!((crossing_cost(0, false) - 3.75).abs() < 1e-9);
     }
 
