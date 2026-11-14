@@ -108,7 +108,7 @@ impl TrackApi {
         if self.w.net.node_ok(id) && self.w.net.built_ports(id) > 0 {
             return self.refuse(Issue::NodeInUse { node: id });
         }
-        self.run(Op::Node { id, data: Some(NodeData { x: quant(x), y: quant(y), level, flying }) })
+        self.run(Op::Node { id, data: Some(NodeData { x: quant(x), y: quant(y), level, flying, merge_lane: false }) })
     }
     /// Reshape a blueprint edge (T-064): new PIs (x, y, radius 0 = auto, level each), same ends
     /// and tracks. One undoable edit. Constructed track cannot be reshaped.

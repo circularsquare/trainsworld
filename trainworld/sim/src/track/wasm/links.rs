@@ -133,7 +133,7 @@ impl TrackApi {
                 let (m, id) = (self.w.net.alloc_node(), self.w.net.alloc_edge());
                 nn.push(m);
                 ne.push(id);
-                ops.push(Op::Node { id: m, data: Some(NodeData { x: quant(x + k * th.cos()), y: quant(y + k * th.sin()), level, flying: false }) });
+                ops.push(Op::Node { id: m, data: Some(NodeData { x: quant(x + k * th.cos()), y: quant(y + k * th.sin()), level, flying: false, merge_lane: false }) });
                 ops.push(Op::Edge { id, data: Some(EdgeData { b: m, ..d }) });
             }
         }
@@ -148,6 +148,24 @@ impl TrackApi {
             return self.refuse(Issue::Crossover { edge: c >> 1 });
         }
         d.flying = flying;
+        let op = Op::Node { id: node, data: Some(d) };
+        if self.w.net.built_ports(node) >= 3 {
+            self.run_charged(op)
+        } else {
+            self.run(op)
+        }
+    }
+
+    /// T-3376: add or remove a merge lane at `node`. A constructed junction pays it at once
+    /// (final); on a blueprint junction it joins the blueprint. Refused at a crossover's end,
+    /// like a flyover.
+    pub fn set_merge_lane(&mut self, node: u32, on: bool) -> u32 {
+        let Some(mut d) = self.w.net.node_data(node) else { return self.refuse(Issue::NoSuchNode { node }) };
+        let net = &self.w.net;
+        if let Some(&c) = net.node_ports[node as usize].ends().iter().find(|&&c| net.edge_crossover[(c >> 1) as usize]) {
+            return self.refuse(Issue::Crossover { edge: c >> 1 });
+        }
+        d.merge_lane = on;
         let op = Op::Node { id: node, data: Some(d) };
         if self.w.net.built_ports(node) >= 3 {
             self.run_charged(op)

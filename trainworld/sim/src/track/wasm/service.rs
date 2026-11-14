@@ -226,6 +226,30 @@ impl TrackApi {
         out
     }
 
+    /// T-3376: the merge lane at `node`, `[price US$M, on, has a merge now, trains an hour x3,
+    /// utilisation x3, utilisation with the lane x3]`. The price is 0 when it has one already (or
+    /// the node is not a junction); the merge is where running lines join the shared track there
+    /// (wire kind 12, T-2185). With the lane each train takes `MERGE_LANE_OCC` of the section.
+    pub fn merge_lane_info(&mut self, node: u32) -> Vec<f64> {
+        let mut out = vec![0.0; 12];
+        let Some(d) = self.w.net.node_data(node) else { return out };
+        out[1] = d.merge_lane as u8 as f64;
+        if !d.merge_lane {
+            let mut probe = d.clone();
+            probe.merge_lane = true;
+            out[0] = self.w.trial(Op::Node { id: node, data: Some(probe) }).map_or(0.0, |r| r.cost_after - r.cost_before);
+        }
+        if let Some(r) = self.w.svc.cap.merge_at(node) {
+            out[2] = 1.0;
+            for lev in 0..LEVELS {
+                out[3 + lev] = self.w.svc.cap.trains(&self.w.net, r, lev);
+                out[6 + lev] = self.w.svc.cap.rho[r][lev];
+                out[9 + lev] = self.w.svc.cap.rho[r][lev] * if d.merge_lane { 1.0 } else { MERGE_LANE_OCC };
+            }
+        }
+        out
+    }
+
     /// Where a line loses time to capacity at a demand level (T-031): per resource it waits at,
     /// largest first, `[kind (ResKind as u8), node (or -1), x, y, delay per round trip s]`; delay
     /// counts each of its directions that waits there. Behind slower trains (kind 11, T-1924) the

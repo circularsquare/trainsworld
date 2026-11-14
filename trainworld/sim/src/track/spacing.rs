@@ -365,7 +365,7 @@ mod tests {
             for x in [t, m, br] { station(&mut w, x, 200); }
             crate::track::tests::terminals_at_dead_ends(&mut w);
             if flying {
-                w.apply(Op::Node { id: j, data: Some(NodeData { x: 3000.0, y: 0.0, level: 0, flying: true }) }).unwrap();
+                w.apply(Op::Node { id: j, data: Some(NodeData { x: 3000.0, y: 0.0, level: 0, flying: true, merge_lane: false }) }).unwrap();
             }
             let mut ls = vec![];
             for end in [br, m] {

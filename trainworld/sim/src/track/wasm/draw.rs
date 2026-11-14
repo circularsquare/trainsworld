@@ -283,7 +283,7 @@ impl TrackApi {
                 let (x, y) = express_end(&verts, at, side, scaled);
                 let n = self.w.net.alloc_node();
                 nodes.push(n);
-                ops.push(Op::Node { id: n, data: Some(NodeData { x, y, level: r.level, flying: false }) });
+                ops.push(Op::Node { id: n, data: Some(NodeData { x, y, level: r.level, flying: false, merge_lane: false }) });
                 Some((n, (x, y)))
             };
             let own_a = own(0, beside_a, &ra, &mut ops, &mut new_nodes);
@@ -338,7 +338,7 @@ impl TrackApi {
             End::Free { x, y, level } => {
                 let node = self.w.net.alloc_node();
                 nodes.push(node);
-                Ok(Resolved { node, x, y, level, dirs: vec![], new_junction: false, double: false, ops: vec![Op::Node { id: node, data: Some(NodeData { x, y, level, flying: false }) }] })
+                Ok(Resolved { node, x, y, level, dirs: vec![], new_junction: false, double: false, ops: vec![Op::Node { id: node, data: Some(NodeData { x, y, level, flying: false, merge_lane: false }) }] })
             }
             End::Node(n) => {
                 if !net.node_ok(n) {
@@ -867,7 +867,7 @@ impl TrackApi {
                 let joint = *p.last().unwrap();
                 let n = self.w.net.alloc_node();
                 nodes.push(n);
-                ops.push(Op::Node { id: n, data: Some(NodeData { x: joint.x, y: joint.y, level: joint.level, flying: false }) });
+                ops.push(Op::Node { id: n, data: Some(NodeData { x: joint.x, y: joint.y, level: joint.level, flying: false, merge_lane: false }) });
                 n
             };
             let edge = self.w.net.alloc_edge();

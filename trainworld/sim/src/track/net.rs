@@ -133,6 +133,9 @@ pub struct NodeData {
     pub y: f64,
     pub level: i8,
     pub flying: bool,
+    /// T-3376: the junction has a merge lane, a short second track through a merge that raises the
+    /// shared track's capacity there.
+    pub merge_lane: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -438,6 +441,8 @@ pub struct Network {
     pub node_y: Vec<f64>,
     pub node_level: Vec<i8>,
     pub node_flying: Vec<bool>,
+    /// T-3376: a merge lane at the junction (`NodeData::merge_lane`).
+    pub node_merge_lane: Vec<bool>,
     /// Platform length, 0 = not a station.
     pub node_platform: Vec<u16>,
     pub node_name: Vec<String>,
@@ -800,6 +805,7 @@ impl Network {
             node_y: vec![],
             node_level: vec![],
             node_flying: vec![],
+            node_merge_lane: vec![],
             node_platform: vec![],
             node_name: vec![],
             node_named: vec![],
@@ -1041,6 +1047,7 @@ impl Network {
         self.node_y.push(0.0);
         self.node_level.push(0);
         self.node_flying.push(false);
+        self.node_merge_lane.push(false);
         self.node_platform.push(0);
         self.node_name.push(String::new());
         self.node_named.push(false);
@@ -1142,7 +1149,7 @@ impl Network {
     pub fn node_data(&self, n: u32) -> Option<NodeData> {
         self.node_ok(n).then(|| {
             let i = n as usize;
-            NodeData { x: self.node_x[i], y: self.node_y[i], level: self.node_level[i], flying: self.node_flying[i] }
+            NodeData { x: self.node_x[i], y: self.node_y[i], level: self.node_level[i], flying: self.node_flying[i], merge_lane: self.node_merge_lane[i] }
         })
     }
     pub fn edge_data(&self, e: u32) -> Option<EdgeData> {
@@ -1469,6 +1476,7 @@ impl Network {
                 self.node_y[i] = d.y;
                 self.node_level[i] = d.level;
                 self.node_flying[i] = d.flying;
+                self.node_merge_lane[i] = d.merge_lane;
                 let ends: Vec<u32> = self.node_ports[i].ends().to_vec();
                 for c in ends {
                     self.touch.edges.push(c >> 1);
@@ -2608,7 +2616,9 @@ impl Network {
             {
                 let wet = is_wet();
                 let base = cost::junction_cost(level, false, wet);
-                add(2, level, 0, wet, 0, 1.0, base);
+                // T-3376: a merge lane is part of the junction's row; its track field marks it
+                let lane = self.node_merge_lane[n];
+                add(2, level, lane as u8, wet, 0, 1.0, base + if lane { cost::merge_lane_cost(level, wet) } else { 0.0 });
                 if self.node_flying[n] {
                     add(3, level, 0, wet, 0, 1.0, cost::junction_cost(level, true, wet) - base);
                 }
@@ -2676,7 +2686,7 @@ impl Network {
             let nn = n as u32;
             if self.priced_ends(nn, |_| true) >= 3 && self.priced_ends(nn, |e| self.edge_built[e]) < 3 {
                 let on = self.priced_ends(nn, |e| self.edge_built[e] || !self.edge_off[e]) >= 3;
-                row(2, n, n, cost::junction_cost(level, self.node_flying[n], is_wet()), on);
+                row(2, n, n, self.junction_price(n, is_wet()), on);
             }
         }
         for x in &self.crossings {
@@ -2716,7 +2726,7 @@ impl Network {
                 c += self.upgrades_cost(n);
             }
             if self.priced_ends(n as u32, |_| true) >= 3 {
-                c += cost::junction_cost(self.node_level[n], self.node_flying[n], wet());
+                c += self.junction_price(n, wet());
             }
         }
         for x in &self.crossings {
@@ -2760,7 +2770,7 @@ impl Network {
             }
             let (all, built) = (self.priced_ends(n as u32, |_| true) >= 3, self.priced_ends(n as u32, |e| self.edge_built[e]) >= 3);
             if all || built {
-                let junction = cost::junction_cost(self.node_level[n], self.node_flying[n], wet());
+                let junction = self.junction_price(n, wet());
                 if all {
                     t += junction;
                 }
@@ -2806,7 +2816,7 @@ impl Network {
                 c += self.upgrades_cost(n);
             }
             if self.priced_ends(n as u32, |e| self.edge_built[e]) >= 3 {
-                c += cost::junction_cost(self.node_level[n], self.node_flying[n], wet());
+                c += self.junction_price(n, wet());
             }
         }
         for x in &self.crossings {
@@ -2843,6 +2853,12 @@ impl Network {
             return 0.0;
         }
         self.station_upgrades_price(n as u32, ups, self.water_mask.is_water(self.node_x[n], self.node_y[n]))
+    }
+
+    /// The price of a junction's switches and its merge lane, US$M (T-3376).
+    fn junction_price(&self, n: usize, wet: bool) -> f64 {
+        let c = cost::junction_cost(self.node_level[n], self.node_flying[n], wet);
+        if self.node_merge_lane[n] { c + cost::merge_lane_cost(self.node_level[n], wet) } else { c }
     }
 
     /// Edge ends at a node whose edge is constructed.
@@ -3140,7 +3156,7 @@ impl Network {
         let j = geom::piece_at(&f.pieces, s);
         let piece = f.pieces[j];
         let (x, y, th) = piece.at(s - piece.s0);
-        let node = NodeData { x: quant(x), y: quant(y), level, flying: false };
+        let node = NodeData { x: quant(x), y: quant(y), level, flying: false, merge_lane: false };
         let freeze = |vv: &mut Vec<Pi>, k: usize, src: usize| {
             if k > 0 && k < vv.len() - 1 && vv[k].radius == 0.0 && f.radius[src] > 0.0 {
                 vv[k].radius = quant(f.radius[src]);

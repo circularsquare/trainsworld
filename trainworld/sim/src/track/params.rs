@@ -113,6 +113,8 @@ pub const STATION_LEVEL_200: [f64; 7] = [125.0, 100.0, 75.0, 25.0, 40.0, 55.0, 7
 pub const SINGLE_TRACK_STATION: f64 = 0.7;
 pub const JUNCTION_KM: f64 = 0.25;
 pub const FLYOVER_KM: f64 = 0.6;
+/// T-3376: a merge lane, km of track at its junction's level.
+pub const MERGE_LANE_KM: f64 = 0.3;
 pub const FLAT_CROSSING_KM: f64 = 0.1;
 /// Water mask sampling step along track, m: half the pack mask's 25 m pixel (notes/T-004.md).
 pub const WATER_STEP: f64 = 12.5;
@@ -404,6 +406,10 @@ pub const PLATFORM_MARGIN_S: f64 = 60.0;
 pub const PASSING_S: f64 = 40.0;
 pub const TERMINUS_MARGIN_S: f64 = 60.0;
 pub const CONFLICT_S: f64 = 120.0;
+/// T-3376: a merge lane's occupancy per train as a share of a plain merge's: a short second track
+/// through a merge lets trains join the shared track closer together, so it takes about a quarter
+/// more trains.
+pub const MERGE_LANE_OCC: f64 = 0.8;
 /// A reversal's cost to the route search (s) and its least cost to the stop insertion (m; more on
 /// a longer route, `order_cost`), so a route without one wins unless it is much longer (T-797).
 pub const REVERSAL_SEARCH_S: f64 = 600.0;
@@ -539,7 +545,7 @@ mod kind_tests {
         let mut net = Network::new_in(FrameKind::Merc, 0.0, 0.0, false);
         for x in [0.0f64, 500.0, 1000.0] {
             let n = net.alloc_node();
-            net.set_node(n, Some(NodeData { x, y: 0.0, level: 0, flying: false })).unwrap();
+            net.set_node(n, Some(NodeData { x, y: 0.0, level: 0, flying: false, merge_lane: false })).unwrap();
         }
         for (k, kind) in kinds.into_iter().enumerate() {
             let e = net.alloc_edge();

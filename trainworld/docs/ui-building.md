@@ -59,7 +59,7 @@ The rules behind these tools (geometry, levels, stations, costs, edits) are in
   only while the breakdown is open. By kind shows track
   by priced level, single, double or high-speed, land or water and ramps (charged at the dearer end), stations,
   junction switches, flyovers and flat crossings, with lengths, counts and prices from the track
-  model. Each row reads one line, "3.7 km viaduct (+2)" and its price, and its hover is the price worked out, one item a line: "Base cost $90M per km", then "Length × 3.7 km", "Viaduct × 1.3", "Over water × 2", "Hills × 1.25", "Single track × 0.6" or "High-speed track × 1.5" for each factor that is not 1, and "= $430M" [T-1839]. Track rows are split by level, track type, water and terrain class (the sixth quote field, `blueprint_cost_items`; ramps are not told apart, being charged at the dearer end; there is no separate terrain row); stations, junctions, flyovers, crossings, cars, buses, passages and upgrades keep their own rows with the same kind of hover, and the roads crossed at ground level are one "Road crossings" row, "12 road crossings" (hover "Base cost $10M per road crossing", "Road crossings × 12", "= $72M") [T-1929, T-2017]. The fleet quote previews the constructed service, so lines started together include their
+  model. Each row reads one line, "3.7 km viaduct (+2)" and its price, and its hover is the price worked out, one item a line: "Base cost $90M per km", then "Length × 3.7 km", "Viaduct × 1.3", "Over water × 2", "Hills × 1.25", "Single track × 0.6" or "High-speed track × 1.5" for each factor that is not 1, and "= $430M" [T-1839]. Track rows are split by level, track type, water and terrain class (the sixth quote field, `blueprint_cost_items`; ramps are not told apart, being charged at the dearer end; there is no separate terrain row); stations, junctions, flyovers, crossings, cars, buses, passages and upgrades keep their own rows with the same kind of hover, and the roads crossed at ground level are one "Road crossings" row, "12 road crossings" (hover "Base cost $10M per road crossing", "Road crossings × 12", "= $72M") [T-1929, T-2017]. A junction with a merge lane has a row of its own, "2 junctions with a merge lane", its hover adding "Merge lane × 0.6 km" to the junction track [T-3376]. The fleet quote previews the constructed service, so lines started together include their
   resulting delays, without changing the game. The quote, and a planned line's Construct price in
   its panel, are asked of the clock worker only while a panel shows them, 250 ms after the last
   edit (`game/quotes.ts`, T-1171); a state carries neither.
@@ -954,7 +954,10 @@ is the pan and Shift+drag is MapLibre's zoom box, so a box needs a mode.
 - **The junction inspector** [T-031, T-080] draws the junction as a small diagram with its moves,
   says in plain words that it is flat, and offers "Construct a flyover" (built junction) or "Add a flyover" (blueprint), a button under its header, with its price and the waiting
   it saves ([track-and-service.md](track-and-service.md) 6.2), except at a crossover's end, where
-  the flyover offer is left out [T-391]. A junction's capacity tag opens it.
+  the flyover offer is left out [T-391]. Where lines merge there it adds a **Merge lane** section
+  [T-3376]: "Construct a merge lane" or "Add a merge lane", with its price (0.3 km of track at the
+  junction's level, twice over water), the merge's trains an hour and utilisation now, and the
+  utilisation a lane would bring. A junction's capacity tag opens it.
 
 ## Making and editing lines
 

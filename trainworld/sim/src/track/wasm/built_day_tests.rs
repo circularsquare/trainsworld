@@ -10,7 +10,7 @@ fn api() -> TrackApi {
 
 fn joint(a: &mut TrackApi, x: f64) -> u32 {
     let id = a.w.net.alloc_node();
-    a.w.apply(Op::Node { id, data: Some(NodeData { x, y: 0.0, level: 0, flying: false }) }).unwrap();
+    a.w.apply(Op::Node { id, data: Some(NodeData { x, y: 0.0, level: 0, flying: false, merge_lane: false }) }).unwrap();
     id
 }
 

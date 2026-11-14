@@ -52,6 +52,13 @@ function parseJunction(d: Float64Array): { ports: JPort[]; moves: JMove[] } {
   return { ports, moves };
 }
 
+/** `TrackApi.merge_lane_info` (T-3376) in objects: the price, whether it is there, whether lines
+ * merge at the junction now, and the merge's trains an hour, utilisation and utilisation with the
+ * lane, per demand level (high, medium, low). */
+function parseMergeLane(d: Float64Array) {
+  return { price: d[0], on: d[1] > 0, merge: d[2] > 0, tph: [d[3], d[4], d[5]], rho: [d[6], d[7], d[8]], after: [d[9], d[10], d[11]] };
+}
+
 /** The junction from above: each track leaving it, and the moves as curves through the middle,
  * in the first line's colour; a move that crosses another is drawn thicker. */
 function JunctionMap({ ports, moves, colourOf, tip }: { ports: JPort[]; moves: JMove[]; colourOf: (line: number) => string; tip: (m: JMove) => string }) {
@@ -95,6 +102,7 @@ export function JunctionInspector({ node }: { node: number }) {
   const w = world.value;
   const info = useClockQuery({ what: "junction", node }, [node, w?.version], parseJunction);
   const price = useClockQuery({ what: "flyover", node }, [node, w?.version], (d) => d[0]);
+  const lane = useClockQuery({ what: "mergeLane", node }, [node, w?.version], parseMergeLane);
   const demand = clock.demand.value;
   const lev = DEMAND_INDEX[demand];
   const n = w?.nodes.get(node);
@@ -105,6 +113,10 @@ export function JunctionInspector({ node }: { node: number }) {
   const setFlying = async (flying: boolean) => {
     const a = await edit({ op: "flying", node, flying });
     if (a.ok && flying) say(a.charge > 0 ? t("junctionInspector.built", { price: money(a.charge * 1e6) }) : t("junctionInspector.planned"));
+  };
+  const setMergeLane = async (on: boolean) => {
+    const a = await edit({ op: "mergeLane", node, on });
+    if (a.ok && on) say(a.charge > 0 ? t("junctionInspector.mergeBuilt", { price: money(a.charge * 1e6) }) : t("junctionInspector.mergeAdded"));
   };
   const lineOf = linesByNum(w);
   const colourOf = (id: number) => lineOf.get(id)?.colour ?? "#888888";
@@ -151,6 +163,32 @@ export function JunctionInspector({ node }: { node: number }) {
               <Row label={t("junctionInspector.saves")}>{perTrain >= 1 ? t("junctionInspector.savesFigure", { time: duration(perTrain), demand: demandWord }) : t("junctionInspector.none")}</Row>
             </ul>
           )}
+        </>
+      )}
+      {lane && (lane.merge || lane.on) && (
+        <>
+          <div class="h">{t("junctionInspector.mergeLane")}</div>
+          <p class="note muted">{t("junctionInspector.mergeNote")}</p>
+          {lane.on ? (!built && (
+            <Actions>
+              <span />
+              <button class="btn text" onClick={() => setMergeLane(false)}>
+                {t("junctionInspector.mergeRemove")}
+              </button>
+            </Actions>
+          )) : (
+            <Actions>
+              <span class="muted small">{built ? t("junctionInspector.paidAtOnce") : t("junctionInspector.addedToBlueprint")}</span>
+              <button class="btn text" data-tip={t("junctionInspector.mergeTip")} onClick={() => setMergeLane(true)}>
+                {built ? t("junctionInspector.mergeConstruct") : t("junctionInspector.mergeAdd")}
+              </button>
+            </Actions>
+          )}
+          <ul class="rows">
+            {!lane.on && <Row label={t("junctionInspector.mergePrice")}>{money(lane.price * 1e6)}</Row>}
+            <Row label={t("junctionInspector.mergeNow")}>{lane.merge ? t("junctionInspector.mergeBusy", { count: Math.round(lane.tph[lev]), pct: pctWhole(lane.rho[lev]) }) : t("junctionInspector.mergeNoMerge")}</Row>
+            {!lane.on && lane.merge && <Row label={t("junctionInspector.mergeAfter")}>{t("junctionInspector.mergeBusyAfter", { pct: pctWhole(lane.after[lev]) })}</Row>}
+          </ul>
         </>
       )}
       {info && moves.length > 0 && (

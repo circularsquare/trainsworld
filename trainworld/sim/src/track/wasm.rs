@@ -2190,6 +2190,9 @@ mod oneway_tests;
 /// T-3103, T-3092: flat-junction badges and real flyovers.
 #[cfg(test)]
 mod flyover_tests;
+/// T-3376: a junction's merge lane.
+#[cfg(test)]
+mod merge_tests;
 /// T-3137: lanes and the move table.
 #[cfg(test)]
 mod lanes_tests;

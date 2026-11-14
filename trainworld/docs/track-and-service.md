@@ -943,6 +943,13 @@ below zoom 12; each sits on its resource's point, and where two would touch the 
 then the higher utilisation (T-102); names never move or hide them ([ui-map.md](ui-map.md)
 "Station names and capacity tags", T-1772). A junction's dot, like the junction itself, opens the
 junction inspector.
+A junction where lines merge can take a **merge lane** (T-3376, `Network::node_merge_lane`): a
+short second track through the join, 0.3 km of track at the junction's level (twice over water),
+that lets trains from both lines wait side by side and join the shared track closer together. Each
+train then takes 0.8 of what it would (`MERGE_LANE_OCC`), so the merge's utilisation and its
+waiting fall by a fifth: about a quarter more trains pass. The junction inspector offers it where
+lines merge now and shows the merge's utilisation with and without it; on a constructed junction it
+is paid at once, on a blueprint one it joins the blueprint.
 The junction inspector (T-031, [ui-building.md](ui-building.md)) lists the junction's moves (from
 one station or direction to another), with the lines on each, trains an hour at the level in
 force, the wait per train, which moves each crosses, and the busiest crossing's utilisation. The
@@ -1392,8 +1399,9 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   level down: 75 at grade, 90/105/120 at +1/+2/+3, 125/150/175 at -1/-2/-3 (T-1267). So a ground
   station costs half a -2 one, where ground track costs under a third of -2 track. Scaled by
   `0.4 + 0.6 x length / 200`.
-- Junction: 0.25 km of track at its level; a flyover adds 0.6 km one level away; flat
-  crossing 0.1 km (cheap to build, dear in delay). Station upgrades (6.1, T-1281): a terminal
+- Junction: 0.25 km of track at its level; a merge lane adds 0.3 km at the junction's level
+  (T-3376); a flyover adds 0.6 km one level away; flat crossing 0.1 km (cheap to build, dear in
+  delay). Station upgrades (6.1, T-1281): a terminal
   1 km of track at the station's level (US$37.5M at grade, US$120M at -2, 2x over water), passing
   tracks the platform plus 0.4 km of it, 1.5x on high-speed track (US$22.5M for a 200 m station at
   grade, US$72M at -2; T-2231), park and ride US$20M, waiting room US$5M, a passage US$10M plus US$90M a km, a station building US$2,000 a m² of floor (T-2217). A crossover: two junctions, all told (6.1,

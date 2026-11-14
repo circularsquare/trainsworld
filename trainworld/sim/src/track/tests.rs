@@ -14,7 +14,7 @@ pub fn world() -> TrackWorld {
 
 pub fn node(w: &mut TrackWorld, x: f64, y: f64, level: i8) -> u32 {
     let id = w.net.alloc_node();
-    w.apply(Op::Node { id, data: Some(NodeData { x, y, level, flying: false }) }).unwrap();
+    w.apply(Op::Node { id, data: Some(NodeData { x, y, level, flying: false, merge_lane: false }) }).unwrap();
     id
 }
 
@@ -248,7 +248,7 @@ fn crossings_flat_separated_or_invalid() {
     assert!(w.net.crossings.is_empty());
     // A ramp over the other track (from 0 at c to -1 at d, centred on y = 0): refused.
     ed.pis = vec![];
-    let ops = vec![Op::Edge { id: e, data: Some(ed) }, Op::Node { id: d, data: Some(NodeData { x: 2000.0, y: 2000.0, level: -1, flying: false }) }];
+    let ops = vec![Op::Edge { id: e, data: Some(ed) }, Op::Node { id: d, data: Some(NodeData { x: 2000.0, y: 2000.0, level: -1, flying: false, merge_lane: false }) }];
     let err = w.apply(Op::Batch(ops)).unwrap_err();
     assert!(err.iter().any(|i| matches!(i, Issue::Crossing { .. })), "{err:?}");
 }
@@ -291,7 +291,7 @@ fn y_junction(tph: [f32; 3], flying: bool) -> (TrackWorld, u32, u32, u32) {
         station(&mut w, n, 200);
     }
     if flying {
-        w.apply(Op::Node { id: j, data: Some(NodeData { x: 3000.0, y: 0.0, level: 0, flying: true }) }).unwrap();
+        w.apply(Op::Node { id: j, data: Some(NodeData { x: 3000.0, y: 0.0, level: 0, flying: true, merge_lane: false }) }).unwrap();
     }
     let a = line(&mut w, &[t, br], tph);
     let b = line(&mut w, &[t, m], tph);
@@ -388,6 +388,47 @@ fn blueprint_quote_accounts_for_partial_junctions_and_flyovers() {
     assert!((quoted - (w.net.total_cost() - w.net.built_cost())).abs() < 1e-8);
     // T-1540: the one-pass sums are the two passes' to the bit
     assert_eq!(w.net.total_and_built_cost(), (w.net.total_cost(), w.net.built_cost()));
+}
+
+/// T-3376: a merge lane at J lets both lines' trains join the shared track closer together, so the
+/// merge's utilisation falls by the lane's share and its waiting with it.
+#[test]
+fn merge_lane_lowers_the_merges_utilisation() {
+    let (mut w, _, _, j) = y_junction([12.0, 4.0, 0.0], false);
+    let r0 = w.svc.cap.merge_at(j).expect("a merge at J");
+    let (rho0, delay0) = (w.svc.cap.rho[r0][HIGH], w.svc.cap.delay[r0][HIGH]);
+    let occ0: f64 = w.svc.cap.users_of(r0).iter().map(|u| u.occ).sum();
+    let d = w.net.node_data(j).unwrap();
+    w.apply(Op::Node { id: j, data: Some(NodeData { merge_lane: true, ..d }) }).unwrap();
+    let r1 = w.svc.cap.merge_at(j).expect("still a merge");
+    assert!((w.svc.cap.rho[r1][HIGH] - rho0 * MERGE_LANE_OCC).abs() < 1e-9, "{rho0} -> {}", w.svc.cap.rho[r1][HIGH]);
+    let occ1: f64 = w.svc.cap.users_of(r1).iter().map(|u| u.occ).sum();
+    assert!((occ1 - occ0 * MERGE_LANE_OCC).abs() < 1e-9);
+    assert!(w.svc.cap.delay[r1][HIGH] < delay0);
+    // and removing it puts the merge back as it was
+    w.undo().unwrap().unwrap();
+    let r2 = w.svc.cap.merge_at(j).unwrap();
+    assert!((w.svc.cap.rho[r2][HIGH] - rho0).abs() < 1e-9);
+}
+
+/// T-3376: a blueprint junction with a merge lane quotes the lane in its own row, and the quote
+/// still totals the whole blueprint.
+#[test]
+fn blueprint_quote_includes_a_merge_lane() {
+    let (mut w, _, _, j) = y_junction([12.0, 6.0, 3.0], true);
+    let e = w.net.node_ports[j as usize].ends()[2] >> 1;
+    let mut data = w.net.edge_data(e).unwrap();
+    data.built = false;
+    w.apply(Op::Edge { id: e, data: Some(data) }).unwrap();
+    let d = w.net.node_data(j).unwrap();
+    w.apply(Op::Node { id: j, data: Some(NodeData { merge_lane: true, ..d }) }).unwrap();
+    let rows = w.net.blueprint_cost_items();
+    let lane = rows.chunks_exact(7).find(|r| r[0] == 2.0).expect("a junction row");
+    assert_eq!(lane[2], 1.0, "the row's track field marks the merge lane");
+    let want = super::cost::junction_cost(0, false, false) + super::cost::merge_lane_cost(0, false);
+    assert!((lane[6] - want).abs() < 1e-9, "{} != {want}", lane[6]);
+    let quoted: f64 = rows.chunks_exact(7).map(|r| r[6]).sum();
+    assert!((quoted - (w.net.total_cost() - w.net.built_cost())).abs() < 1e-8);
 }
 
 #[test]

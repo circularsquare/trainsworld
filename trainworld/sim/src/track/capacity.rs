@@ -166,6 +166,11 @@ impl Capacity {
         }
     }
 
+    /// The merge at `node`, if a running line joins the shared track there (T-2185, wire kind 12).
+    pub fn merge_at(&self, node: u32) -> Option<usize> {
+        (0..self.res.len()).find(|&r| self.res[r].node == node && self.wire_kind(r) == 12)
+    }
+
     /// Trains an hour through a resource at a level, each line direction once.
     pub fn trains(&self, net: &Network, r: usize, lev: usize) -> f64 {
         let mut seen: Vec<(u32, u8)> = vec![];
@@ -498,6 +503,13 @@ fn build_sections(net: &Network, lines: &[LineSvc], cand: &[u32], in_k: &dyn Fn(
             from.dedup();
             from.len() >= 2
         };
+        if merge && net.node_merge_lane[joins[0].0 as usize] {
+            // T-3376: a merge lane lets trains join the shared track closer together, so every train
+            // on it takes less of the section.
+            for u in &mut users {
+                u.occ *= MERGE_LANE_OCC;
+            }
+        }
         let (x, y, node) = if merge {
             let n = joins[0].0;
             (net.node_x[n as usize], net.node_y[n as usize], n)

@@ -58,7 +58,7 @@ pub fn synth(km: f64, stations: usize, lines: usize, seed: u64) -> Network {
     let mut cors: Vec<Corridor> = vec![];
     let new_node = |net: &mut Network, x: f64, y: f64, level: i8| {
         let id = net.alloc_node();
-        net.set_node(id, Some(NodeData { x: quant(x), y: quant(y), level, flying: false })).unwrap();
+        net.set_node(id, Some(NodeData { x: quant(x), y: quant(y), level, flying: false, merge_lane: false })).unwrap();
         id
     };
     for c in 0..n_corr {
@@ -371,8 +371,8 @@ pub fn run(km: f64, stations: usize, lines: usize, reps: usize) -> (String, Vec<
     out += &report("draw 5 km of new track no line uses", &mut w, &|w| {
         let (a, b, e) = (w.net.alloc_node(), w.net.alloc_node(), w.net.alloc_edge());
         Op::Batch(vec![
-            Op::Node { id: a, data: Some(NodeData { x: far, y: 0.0, level: 0, flying: false }) },
-            Op::Node { id: b, data: Some(NodeData { x: far + 3000.0, y: 4000.0, level: 0, flying: false }) },
+            Op::Node { id: a, data: Some(NodeData { x: far, y: 0.0, level: 0, flying: false, merge_lane: false }) },
+            Op::Node { id: b, data: Some(NodeData { x: far + 3000.0, y: 4000.0, level: 0, flying: false, merge_lane: false }) },
             Op::Edge { id: e, data: Some(EdgeData { a, b, tracks: 2, pis: vec![Pi::new(far + 3000.0, 0.0, 0.0, 0)], built: true, off: false, thru: vec![], crossover: false, kind: TrackKind::Regular, sep: false, day: 0, oneway: 0, join: [0; 2] }) },
         ])
     });

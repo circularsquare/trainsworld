@@ -3714,6 +3714,8 @@ function apply(op: EditOp): Applied {
       return { r: a.delete_pieces(new Uint32Array(op.edges), new Uint32Array(op.stations)) };
     case "flying":
       return { r: a.set_flying(op.node, op.flying) };
+    case "mergeLane":
+      return { r: a.set_merge_lane(op.node, op.on) };
     case "stationUpgrade":
       return { r: a.set_station_upgrade(new Uint32Array(op.nodes), op.bit, op.on) };
     case "addStation":
@@ -4578,6 +4580,7 @@ async function handle(msg: ToClock) {
       : q.what === "junction" ? api.junction_info(q.node)
       : q.what === "edgePis" ? api.edge_pis(q.edge)
       : q.what === "flyover" ? new Float64Array([api.flyover_cost(q.node)])
+      : q.what === "mergeLane" ? api.merge_lane_info(q.node)
       : q.what === "upgradeCosts" ? new Float64Array(q.nodes.map((n) => api!.station_upgrade_cost(n, q.bit)))
       : q.what === "tracksCost" ? new Float64Array([api.station_tracks_cost(q.node)])
       : q.what === "upgradeCost" ?new Float64Array(UPGRADE_BITS.map((b) => api!.station_upgrade_cost(q.node, b)))
