@@ -635,6 +635,26 @@ pub enum LoopKind {
     Balloon,
 }
 
+/// The stretch of a rail line's plan its trains can run (T-3341): the longest contiguous run of
+/// constructed stops joined by constructed track, as ranges of the line's plan: stops
+/// `stop0..stop1` and path entries `path0..path1`. The rest of the plan stays planned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineSpan {
+    pub stop0: u32,
+    pub stop1: u32,
+    pub path0: u32,
+    pub path1: u32,
+}
+
+impl LineSpan {
+    pub fn stops<'a>(&self, stops: &'a [u32]) -> &'a [u32] {
+        &stops[self.stop0 as usize..self.stop1 as usize]
+    }
+    pub fn path<'a>(&self, path: &'a [u32]) -> &'a [u32] {
+        &path[self.path0 as usize..self.path1 as usize]
+    }
+}
+
 pub fn path_edge(p: u32) -> u32 {
     p >> 1
 }
@@ -745,7 +765,7 @@ impl Network {
         if let Some(p) = self.route_points(l) {
             return p.first().map_or(0.0, |p| self.line_shift_at(p[0], p[1]));
         }
-        let Some(&s) = self.line_stops(l).first() else { return 0.0 };
+        let Some(&s) = self.line_run_stops(l).first() else { return 0.0 };
         self.line_shift_at(self.node_x[s as usize], self.node_y[s as usize])
     }
     /// Seconds local time runs ahead of the game clock at a plane point (T-309).
@@ -2862,6 +2882,94 @@ impl Network {
             && self.line_stops(l).iter().all(|&s| self.node_ok(s) && self.node_built[s as usize])
     }
 
+    /// T-3341: the stretch of a rail line's plan its trains can run: the longest contiguous run of
+    /// constructed stops joined by constructed track. None when no two constructed stops are joined
+    /// by constructed track (the whole plan is previewed instead). A fully constructed line's span is
+    /// its whole plan. Ties go to the stretch with more stops, then the earlier one.
+    pub fn line_run_span(&self, l: u32) -> Option<LineSpan> {
+        if self.line_bus.get(l as usize).is_some_and(|b| b.is_some()) || self.line_ferry.get(l as usize).is_some_and(|f| f.is_some()) {
+            return None;
+        }
+        let stops = self.line_stops(l);
+        let path = self.line_path(l);
+        if stops.len() < 2 || path.is_empty() {
+            return None;
+        }
+        let built_stop = |s: u32| self.node_ok(s) && self.node_built[s as usize] && self.node_platform[s as usize] > 0;
+        // a fully built line serves its whole plan, as before: its path may pass a stop twice (a
+        // balloon, or a loop back past the first stop), which the span search below would cut short
+        let built_path = path.iter().all(|&p| {
+            let e = path_edge(p);
+            self.edge_ok(e) && self.edge_built[e as usize] && self.dir_ok(p)
+        });
+        if built_path && stops.iter().all(|&s| built_stop(s)) {
+            return Some(LineSpan { stop0: 0, stop1: stops.len() as u32, path0: 0, path1: path.len() as u32 });
+        }
+        let mut nodes = Vec::with_capacity(path.len() + 1);
+        nodes.push(self.path_nodes(path[0]).0);
+        nodes.extend(path.iter().map(|&p| self.path_nodes(p).1));
+        let pos = match_stops(&nodes, stops, &self.stop_reversals(path))?;
+        let mut best: Option<(LineSpan, f64, usize)> = None;
+        for i in 0..stops.len() {
+            if !built_stop(stops[i]) {
+                continue;
+            }
+            let mut end = pos[i];
+            let mut len = 0.0;
+            for j in i + 1..stops.len() {
+                if !built_stop(stops[j]) {
+                    break;
+                }
+                let next = pos[j];
+                if next <= end {
+                    break;
+                }
+                if !path[end..next].iter().all(|&p| {
+                    let e = path_edge(p);
+                    self.edge_ok(e) && self.edge_built[e as usize] && self.dir_ok(p)
+                }) {
+                    break;
+                }
+                len += path[end..next].iter().map(|&p| self.edge_len[path_edge(p) as usize]).sum::<f64>();
+                end = next;
+                let span = LineSpan { stop0: i as u32, stop1: j as u32 + 1, path0: pos[i] as u32, path1: end as u32 };
+                let more = best.map_or(true, |(_, been, n)| len > been + 1e-9 || ((len - been).abs() <= 1e-9 && j - i + 1 > n));
+                if more {
+                    best = Some((span, len, j - i + 1));
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// T-3341: the stops a rail line's trains serve: its run span's, or the whole plan while it has
+    /// no constructed stretch (a preview).
+    pub fn line_run_stops(&self, l: u32) -> &[u32] {
+        match self.line_run_span(l) {
+            Some(s) => s.stops(self.line_stops(l)),
+            None => self.line_stops(l),
+        }
+    }
+
+    /// T-3341: the path entries a rail line's trains run, as `line_run_stops`.
+    pub fn line_run_path(&self, l: u32) -> &[u32] {
+        match self.line_run_span(l) {
+            Some(s) => s.path(self.line_path(l)),
+            None => self.line_path(l),
+        }
+    }
+
+    /// T-3341: what kind of loop the served stretch is: a whole constructed loop is still a loop, a
+    /// built arc of a planned one is an open line.
+    pub fn line_run_loop(&self, l: u32) -> LoopKind {
+        self.loop_kind(self.line_run_stops(l), self.line_run_path(l))
+    }
+
+    /// T-3341: a one-way loop as served (T-2981); a built arc runs both ways.
+    pub fn line_run_runs_once(&self, l: u32) -> bool {
+        self.line_one_way.get(l as usize).copied().unwrap_or(false) && self.line_run_loop(l) != LoopKind::None
+    }
+
     /// The point of an edge nearest to (x, y): chainage and distance, m.
     pub fn project(&self, e: u32, x: f64, y: f64) -> (f64, f64) {
         geom::project(self.edge_pieces(e), x, y)
@@ -2894,6 +3002,11 @@ impl Network {
 
     pub fn back_path(&self, l: u32) -> Option<Vec<u32>> {
         self.back_path_of(self.line_stops(l), self.line_path(l))
+    }
+
+    /// T-3341: the return run of the stretch of a line's plan its trains serve, as `back_path`.
+    pub fn run_back_path(&self, l: u32) -> Option<Vec<u32>> {
+        self.back_path_of(self.line_run_stops(l), self.line_run_path(l))
     }
 
     /// Rail lines whose return run takes a way of its own, round one-way track: their tracks are not

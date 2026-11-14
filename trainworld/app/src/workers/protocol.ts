@@ -537,9 +537,18 @@ export interface ClockLine {
   delay: [number, number, number];
   dwell: number;
   turnaround: number;
+  /** T-3341: the stops its trains serve: the built stretch of its plan, or the whole plan while
+   * none of it is built. Its full plan is `planStops`. */
   stops: number[];
-  /** `edge << 1 | direction`, first stop to last */
+  /** T-3341: the path entries its trains run, over the served stretch; its full plan is `planPath`. */
   path: number[];
+  /** T-3341: its full planned stops and path (`TrackApi.line_stops`, `line_path`) when `stops` and
+   * `path` are only the built stretch; absent when they are the whole plan. */
+  planStops?: number[];
+  planPath?: number[];
+  /** T-3341: where the served stretch starts in `planStops` and `planPath` */
+  stopStart?: number;
+  pathStart?: number;
   /** T-3117: the return run's path, last stop to first, where it is not `path` run backward (round
    * one-way track: a flyover's other leg) */
   back?: number[];
