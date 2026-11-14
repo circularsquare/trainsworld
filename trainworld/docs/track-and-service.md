@@ -903,7 +903,13 @@ so its rates and run times stay the same to the bit (T-415). On an edit, a line 
 trains of its fleet is left as it is while the rest of its level steps (T-1787: on shared track
 each line moved re-times its neighbours), and the step's 1% probe reads each round trip's rise
 from the capacity solve alone, as the change in the line's hold delays, so the run profiles are
-worked out once a round instead of twice. A save carries the settled rates to the bit, so a load
+worked out once a round instead of twice. From the ninth round on, where a network holding at
+capacity keeps finding a rate to move and no round comes to rest, the round trips come from that
+capacity solve alone and the run profiles are worked out once, after the last round
+(`SETTLE_EXACT_ROUNDS`), so a level that cannot come to rest costs the solve a round rather than
+the profiles. In step at a merge is left to a settle that comes to rest, since even turns at a
+merge mean nothing while the rates still move; a settle that runs to its rounds is not paced.
+A save carries the settled rates to the bit, so a load
 settles from them with an edit's settle and changes nothing; a save without them (older ones, or
 one changed to another frame) settles in full, every line of an unsettled level stepped. A line a save loads at a frequency
 rather than trains takes the whole trains that frequency needs first (architecture.md 11).
@@ -1136,8 +1142,9 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   that meet at a merge (directly or through other merges) and whose headways (round trip over
   trains) are within 3% of the longest of them all run that longest one, 0.2% over it
   (`PACE_SLACK`), so a round trip drifting by a second keeps them together; their trains stand the
-  time over at their ends as a headway line's do (`Network::line_pace`, derived on every settle and
-  saved with the settled rates in `LPC1`, so a load keeps it rather than pacing again, T-3233; the
+  time over at their ends as a headway line's do (`Network::line_pace`, derived on every settle
+  that comes to rest and saved with the settled rates in `LPC1`, so a load keeps it rather than
+  pacing again, T-3233; the
   spacing places where it stands, 6.3 "Departures"). A headway line there counts with its
   set headway and is never moved. Where a merge is full (98%, `PACE_FULL_RHO`) its count lines share
   it evenly: each that could run more often keeps the even share of their trains an hour together,
