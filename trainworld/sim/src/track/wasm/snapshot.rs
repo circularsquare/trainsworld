@@ -197,15 +197,44 @@ impl TrackApi {
             vec![]
         }
     }
+    /// T-3341: the stops its trains serve: the built stretch of its plan, or the whole plan while
+    /// none of it is built (a preview). Its full plan is `line_stops` (`planStops` in the state).
+    pub fn line_run_stops(&self, id: u32) -> Vec<u32> {
+        // a bus's stops follow the stations near its route, as `line_stops` reads them
+        if self.w.net.is_bus(id) {
+            return self.w.svc.lines.get(id as usize).map_or(vec![], |l| l.stops.clone());
+        }
+        if self.w.net.line_ok(id) {
+            self.w.net.line_run_stops(id).to_vec()
+        } else {
+            vec![]
+        }
+    }
+    /// T-3341: the path entries its trains run, as `line_run_stops`.
+    pub fn line_run_path(&self, id: u32) -> Vec<u32> {
+        if self.w.net.line_ok(id) {
+            self.w.net.line_run_path(id).to_vec()
+        } else {
+            vec![]
+        }
+    }
+    /// T-3341: its run span as `[stop0, stop1, path0, path1]`, ranges of its plan; empty while none
+    /// of it is built.
+    pub fn line_run_span(&self, id: u32) -> Vec<u32> {
+        if !self.w.net.line_ok(id) {
+            return vec![];
+        }
+        self.w.net.line_run_span(id).map_or_else(Vec::new, |s| vec![s.stop0, s.stop1, s.path0, s.path1])
+    }
     /// T-3117: the path of the line's return run, last stop to first, where it is not its path run
-    /// backward (round one-way track, T-3094); else empty.
+    /// backward (round one-way track, T-3094); else empty. T-3341: over the served stretch only.
     pub fn line_back_path(&self, id: u32) -> Vec<u32> {
         let n = &self.w.net;
         let rail = n.line_bus.get(id as usize).map_or(true, |b| b.is_none()) && n.line_ferry.get(id as usize).map_or(true, |f| f.is_none());
-        if !n.line_ok(id) || !rail || n.line_runs_once(id) || n.line_path(id).iter().all(|&p| n.dir_ok(p ^ 1)) {
+        if !n.line_ok(id) || !rail || n.line_run_runs_once(id) || n.line_run_path(id).iter().all(|&p| n.dir_ok(p ^ 1)) {
             return vec![];
         }
-        n.back_path(id).unwrap_or_default()
+        n.run_back_path(id).unwrap_or_default()
     }
     /// Where each stop is along a run's path, m (the train's middle when standing).
     pub fn line_stop_s(&self, line: u32, run: usize) -> Vec<f64> {

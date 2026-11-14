@@ -423,10 +423,10 @@ pub struct Service {
 }
 
 fn build_run(net: &Network, l: u32, rev: bool, train_len: f64, dwell: f64) -> Option<Run> {
-    let path = net.line_path(l);
-    let running = net.line_constructed(l);
+    let path = net.line_run_path(l);
+    let running = net.line_run_span(l).is_some();
     let mut run = Run::default();
-    run.segs = if rev { net.back_path(l)? } else { path.to_vec() };
+    run.segs = if rev { net.run_back_path(l)? } else { path.to_vec() };
     let mut s = 0.0;
     run.nodes.push(net.path_nodes(run.segs[0]).0);
     run.node_s.push(0.0);
@@ -460,14 +460,14 @@ fn build_run(net: &Network, l: u32, rev: bool, train_len: f64, dwell: f64) -> Op
     if let Some(f) = raw.first_mut() {
         f[0] = 0.0;
     }
-    let mut stops: Vec<u32> = net.line_stops(l).to_vec();
+    let mut stops: Vec<u32> = net.line_run_stops(l).to_vec();
     if rev {
         stops.reverse();
     }
     let turns = net.stop_reversals(&run.segs);
     run.stop_idx = super::net::match_stops(&run.nodes, &stops, &turns)?.into_iter().map(|k| k as u32).collect();
     if stops.iter().any(|&s| net.one_side(s).is_some()) {
-        run.pass = net.run_passes(&run.segs, &run.stop_idx, net.line_loop(l) == LoopKind::Circle);
+        run.pass = net.run_passes(&run.segs, &run.stop_idx, net.line_run_loop(l) == LoopKind::Circle);
         if !run.pass.contains(&true) {
             run.pass.clear();
         }
@@ -601,11 +601,12 @@ fn build_line(net: &Network, l: u32) -> LineSvc {
     if let Some(r) = net.line_ferry[l as usize].as_ref() {
         return build_ferry(net, l, r);
     }
-    ls.stops = net.line_stops(l).to_vec();
+    let span = net.line_run_span(l);
+    ls.stops = net.line_run_stops(l).to_vec();
     if ls.stops.len() < 2 { return ls; }
-    ls.kind = net.line_loop(l);
+    ls.kind = net.line_run_loop(l);
     ls.one_way = ls.is_loop() && net.line_one_way[l as usize];
-    let min_plat = net.line_stops(l).iter().map(|&s| net.node_platform[s as usize]).min().unwrap_or(0) as f64;
+    let min_plat = ls.stops.iter().map(|&s| net.node_platform[s as usize]).min().unwrap_or(0) as f64;
     let fit = (min_plat / CAR_LEN).floor().max(1.0) as u32;
     let want = net.line_cars[l as usize] as u32;
     ls.cars = if want == 0 { fit } else { want.min(fit) };
@@ -618,7 +619,7 @@ fn build_line(net: &Network, l: u32) -> LineSvc {
         (Some(a), Some(b)) => {
             ls.runs = [a, b];
             ls.ok = true;
-            ls.running = net.line_constructed(l);
+            ls.running = span.is_some();
             ls.shift = net.line_shift(l);
         }
         _ => {}

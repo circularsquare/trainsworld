@@ -176,14 +176,21 @@ const lineEdgeIds = new WeakMap<object, number[]>();
 let lastEdgeLineRows: readonly ClockState["lines"][number][] = [];
 let lastEdgeLines = new Map<number, string[]>();
 
+/** T-3341: the line's whole planned path, which is still what lists the lines on each edge (the
+ * line tool reroutes over planned track, not only over the stretch trains run). */
+function planPathOf(l: ClockState["lines"][number]): number[] {
+  return l.planPath?.length ? l.planPath : l.path;
+}
+
 /** whether two line rows run over the same edges: the same row, or the same line with the same path */
 function samePaths(a: readonly ClockState["lines"][number][], b: readonly ClockState["lines"][number][]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     const x = a[i], y = b[i];
     if (x === y) continue;
-    if (x.id !== y.id || x.path.length !== y.path.length) return false;
-    for (let k = 0; k < x.path.length; k++) if (x.path[k] !== y.path[k]) return false;
+    const xp = planPathOf(x), yp = planPathOf(y);
+    if (x.id !== y.id || xp.length !== yp.length) return false;
+    for (let k = 0; k < xp.length; k++) if (xp[k] !== yp[k]) return false;
   }
   return true;
 }
@@ -202,7 +209,7 @@ function edgesOf(s: ClockState): TrackEdge[] {
       edgeLines = new Map<number, string[]>();
       for (const l of s.lines) {
         let ids = lineEdgeIds.get(l);
-        if (!ids) lineEdgeIds.set(l, ids = [...new Set(l.path.map((p) => p >> 1))]);
+        if (!ids) lineEdgeIds.set(l, ids = [...new Set(planPathOf(l).map((p) => p >> 1))]);
         const id = String(l.id);
         for (const p of ids) {
           const v = edgeLines.get(p);
@@ -262,6 +269,7 @@ function toWorld(s: ClockState): WorldView {
     let v = lineViews.get(l);
     if (!v) lineViews.set(l, v = {
       id: String(l.id), num: l.id, letter: l.letter || letterOf(l.name), symbol: l.letter, name: l.name, colour: l.colour, stops: l.stops.map(String),
+      ...(l.planStops?.length ? { planStops: l.planStops.map(String), stopStart: l.stopStart ?? 0 } : {}),
       ...(l.group ? { group: l.group, groupName: l.groupName, groupSymbol: l.groupSymbol, groupColour: l.groupColour } : {}),
       tph: { high: l.tph[0], medium: l.tph[1], low: l.tph[2] },
       ...(l.twinOf !== undefined ? { twinOf: String(l.twinOf) } : {}),

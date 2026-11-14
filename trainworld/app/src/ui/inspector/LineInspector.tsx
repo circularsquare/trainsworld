@@ -15,7 +15,7 @@ import { peakLoadText, today, useToday } from "../../game/today";
 import { CAR_M, CRUSH_PER_CAR, PLATFORM_MAX_M, RATED_PER_CAR, type CrowdedStretch } from "../../game/boarding";
 import { describeIssues } from "../../game/issues";
 import { complexOf } from "../../game/complexView";
-import { DEMAND_INDEX, DEMANDS, loopHalves, type Demand, type LineInput, type LineStats, type StationInput } from "../../game/types";
+import { DEMAND_INDEX, DEMANDS, loopHalves, planStopsOf, type Demand, type LineInput, type LineStats, type StationInput } from "../../game/types";
 import { display, lineDraft, purposeFilter, relatedLines, selection, shownDayPhrase, tool, TRAM_PLATFORM } from "../../game/ui";
 import { purposeName } from "../../game/purposes";
 import { dailyRiders } from "../../map/trackHover";
@@ -696,7 +696,10 @@ function RailLineInspector({ id }: { id: string }) {
     const a = await edit({ op: "constructLine", line: l.num });
     if (a.ok) say(tr("lineInspector.constructed", { name: l.name, price: money(a.charge * 1e6), vehicle: vehicleOf(st) }));
   };
-  const passed = editingStops ? st.passed : [];
+  const planDiffers = (() => { const p = planStopsOf(l); return p.length !== l.stops.length || p.some((s, k) => s !== l.stops[k]); })();
+  // T-3341: the panel lists what trains serve; passed stations belong to the full plan and are
+  // edited there only while that is the same list.
+  const passed = editingStops && !planDiffers ? st.passed : [];
   const pending = pendingAt && pendingAt.v === w.version ? pendingAt.gaps : null;
   const setPending = (gaps: number[] | null) => setPendingAt(gaps && { v: w.version, gaps });
   const setStops = async (stops: number[]) => {
@@ -705,7 +708,7 @@ function RailLineInspector({ id }: { id: string }) {
   };
   const addGaps = (gs: number[]) => {
     const add = passed.filter((p) => gs.includes(p.gap));
-    const build = (list: { gap: number; node: number }[]) => l.stops.flatMap((s, i) => [Number(s), ...list.filter((p) => p.gap === i).map((p) => p.node)]);
+    const build = (list: { gap: number; node: number }[]) => planStopsOf(l).flatMap((s, i) => [Number(s), ...list.filter((p) => p.gap === i).map((p) => p.node)]);
     setPending(null);
     // T-3039: on a turned line each station goes in as the map click puts it in (`insertStop`: both passes of the
     // stem, and the turn moves to it where it lies between the turn station and the loop)
@@ -724,9 +727,11 @@ function RailLineInspector({ id }: { id: string }) {
   // a loop's closing row opens it: a turned line goes back to its way out (T-3021)
   // T-3122: a loop stops at every pass of a station, so the station goes with all its visits, as from the map
   const removeStop = (i: number) => {
-    if (st.loop && i > 0 && i === l.stops.length - 1) return stopEdit({ op: "openLoop", line: l.num });
-    if (!st.loop) return setStops(l.stops.filter((_, k) => k !== i).map(Number));
-    const left = l.stops.filter((s) => s !== l.stops[i]);
+    if (planDiffers) return;
+    const plan = planStopsOf(l);
+    if (st.loop && i > 0 && i === plan.length - 1) return stopEdit({ op: "openLoop", line: l.num });
+    if (!st.loop) return setStops(plan.filter((_, k) => k !== i).map(Number));
+    const left = plan.filter((s) => s !== plan[i]);
     if (left.length && left[0] !== left[left.length - 1]) left.push(left[0]);
     return setStops(left.map(Number));
   };
@@ -770,7 +775,7 @@ function RailLineInspector({ id }: { id: string }) {
   // T-2895: while stops are edited a row drags to a new place in the list (not by touch; in related lines the
   // line's own rows); a loop keeps its first and closing stop where they are. The line then keeps the order.
   const loopEnds = st.loop ? 1 : 0;
-  const canDrag = editingStops && !turned && nStops >= 3 + 2 * loopEnds;
+  const canDrag = editingStops && !planDiffers && !turned && nStops >= 3 + 2 * loopEnds;
   const orderWhy = (issues: string[]) => {
     const f = issues.find((k) => k.startsWith("StopOrder:"))?.split(":").map(Number); // i18n-ignore
     if (!f) return describeIssues(issues);
@@ -781,8 +786,9 @@ function RailLineInspector({ id }: { id: string }) {
     if (stopEditing) return;
     stopEditing = true;
     try {
-      const stops = l.stops.map(Number).filter((_, k) => k !== from);
-      stops.splice(gap > from ? gap - 1 : gap, 0, Number(l.stops[from]));
+      const plan = planStopsOf(l).map(Number);
+      const stops = plan.filter((_, k) => k !== from);
+      stops.splice(gap > from ? gap - 1 : gap, 0, plan[from]);
       const a = await edit({ op: "orderStops", line: l.num, stops }, true);
       if (!a.ok) return say(orderWhy(a.issues), true);
       const now = world.peek()?.save.lines.find((x) => x.num === l.num);
@@ -833,12 +839,14 @@ function RailLineInspector({ id }: { id: string }) {
   // T-1894: while stops are edited a click on a stop's dot takes it out keeping the path, Shift-click
   // ends the line there, as in the group view; a stop the line needs has no click
   const takeOut = (row: TurnRow) => {
-    const left = l.stops.filter((_, k) => !row.occ.includes(k));
+    if (planDiffers) return;
+    const left = planStopsOf(l).filter((_, k) => !row.occ.includes(k));
     // T-3050: a loop's first station going takes the closing stop too; the line closes again on its new first stop
     if (left.length && left[0] !== left[left.length - 1]) left.push(left[0]);
     return setStops(left.map(Number));
   };
   const dotClick = (i: number, row?: TurnRow): { tip: string; click: (e: MouseEvent) => void } | null => {
+    if (planDiffers) return null;
     if (row) {
       if (!editingStops || turned!.rows.length <= 2 || st.reversals?.some((k) => row.occ.includes(k))) return null;
       return { tip: tr("busInspector.removeStop", { name: name.get(l.stops[i]) ?? "" }), click: () => void takeOut(row) };
@@ -902,12 +910,12 @@ function RailLineInspector({ id }: { id: string }) {
         <StopTransfers l={l} i={i} drawn={drawn} extra={bullets} tall={tall} noSelf={!!row} />
         <StopToday line={l.id} i={row ? row.occ : i} />
         <RouteMarks marks={flip ? marks.filter((m) => m.gap === i - 1).reverse() : marks.filter((m) => m.gap === i)} />
-        {editingStops && row?.turn && (
+        {editingStops && !planDiffers && row?.turn && (
           <button class="btn icon mini" data-tip={tr("lineInspector.openLoop")} aria-label={tr("lineInspector.openLoop")} onClick={() => void stopEdit({ op: "openLoop", line: l.num })}>
             <Icon.uturn />
           </button>
         )}
-        {editingStops && (
+        {editingStops && !planDiffers && (
           <button class="btn icon mini danger" data-tip={tr(!row && st.loop && i > 0 && i === l.stops.length - 1 ? "lineInspector.openLoop" : "lineInspector.takeOut")} aria-label={tr("lineInspector.removeStop", { name: name.get(s) ?? "" })} onClick={() => (row ? void takeOut(row) : removeStop(i))}>
             <Icon.cross />
           </button>

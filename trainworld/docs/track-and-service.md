@@ -1406,9 +1406,13 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   there: all of it, what one line still lacks (the line panel shows its price), one stretch of
   track, or one station. Only constructed track carries trains. Lines can be planned over
   blueprint track: they show their stop times, and run (load capacity, have trains, count for
-  demand) once every edge and stop they use is constructed, so a line drawn over constructed
-  track runs as soon as it has trains; Construct with nothing left to build is refused with the
-  issue `NothingToConstruct` (T-849). A junction is paid when its third
+  demand) over the longest contiguous stretch of their plan whose stops and track are
+  constructed, while the rest stays planned and drawn faded (T-3341, `Network::line_run_span`).
+  A plan with no constructed stretch previews its full stop times and runs no trains, so a line
+  drawn over constructed track runs as soon as it has trains, and a line whose extension is still
+  planned serves the built part meanwhile. A loop's built arc runs both ways until its closing
+  arc is built; Construct with nothing left to build is refused with the issue
+  `NothingToConstruct` (T-849). A junction is paid when its third
   edge is constructed, a flat crossing when its second is.
   **Rebuilding constructed track** (T-3059, Anita 2026-11-10; `rebuild_pieces`, `rebuild_quote` in `wasm/rebuild.rs`):
   constructed edges and stations change level (as `set_edges_level` does for blueprint) and double track changes
@@ -1468,7 +1472,10 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   split there (a ramp), or one whose level or type changes in the same rebuild stays double whole, not refused.
   Blueprint double track made single (`set_edges_tracks` 1) is free and one undoable edit; built is final.
   An unused blueprint extension leaves a constructed line's endpoint stopping position, run
-  time and capacity unchanged. Planned lines preview the full planned station geometry (T-108).
+  time and capacity unchanged, and stays drawn faded. A line serving part of its plan runs its
+  timetable, capacity and demand over that stretch only; its unbuilt stops and track stay in the
+  plan for editing and construction. Planned lines preview the full planned station geometry
+  (T-108).
   **Disabled blueprint** (T-333): a blueprint edge or station can be switched off (`off` on
   `EdgeData` and `StationData`, an undoable edit, saved as spare flag bits so an old reader
   ignores it). Construct all and the blueprint quote skip it, and a junction or crossing is priced
