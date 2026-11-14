@@ -22,14 +22,17 @@ export function cityGeometry(boundary: FeatureCollection<Polygon | MultiPolygon>
 /** A vertex as one number, on a grid of about a metre: neighbouring zones' shared borders repeat
  * the same vertices (T-799). */
 const vertex = (p: Position) => Math.round((p[0] + 180) * 1e5) * 33554432 + Math.round((p[1] + 90) * 1e5);
+const PAIR_SPAN = 2 ** 26;
 
 /** The zones' outlines with each shared border drawn once (T-799): a border two zones both hold
  * belongs to the first zone added, so it is one line at one weight, like an outer edge. A border the
  * focused zone holds is left out entirely, since the focus layers draw it. */
 export class OutlineEdges {
-  /** each segment's holders: the first zone to hold it, or every zone, in the order they were added */
-  private holders = new Map<string, string | string[]>();
-  private zones = new Map<string, { ring: Position[]; keys: string[] }[]>();
+  /** each segment's holders, by its code: the first zone to hold it, or every zone, in the order
+   * they were added */
+  private holders = new Map<number | string, string | string[]>();
+  private vertexIds = new Map<number, number>();
+  private zones = new Map<string, { ring: Position[]; keys: (number | string)[] }[]>();
   /** T-1026: each zone's feature as last drawn (null: none), kept while its borders' holders and the
    * focus stay, so a redraw rebuilds only what changed and the source gets the same objects back */
   private drawn = new Map<string, Feature<MultiLineString> | null>();
@@ -39,8 +42,15 @@ export class OutlineEdges {
 
   has(id: string) { return this.zones.has(id); }
 
+  private vid(v: number) {
+    const ids = this.vertexIds;
+    let id = ids.get(v);
+    if (id === undefined && ids.size < PAIR_SPAN) ids.set(v, (id = ids.size));
+    return id;
+  }
+
   /** the zones sharing a border with these keys redraw */
-  private touch(keys: string[]) {
+  private touch(keys: (number | string)[]) {
     for (const key of keys) {
       const held = this.holders.get(key);
       if (Array.isArray(held)) for (const h of held) this.drawn.delete(h);
@@ -51,11 +61,12 @@ export class OutlineEdges {
   add(id: string, city: MultiPolygon) {
     if (this.zones.has(id)) return;
     const rings = city.coordinates.flat().map((ring) => {
-      const keys: string[] = [];
+      const keys: (number | string)[] = new Array(Math.max(0, ring.length - 1));
       for (let i = 1; i < ring.length; i++) {
         const a = vertex(ring[i - 1]), b = vertex(ring[i]);
-        const key = a < b ? `${a}:${b}` : `${b}:${a}`;
-        keys.push(key);
+        const ia = this.vid(a), ib = this.vid(b);
+        const key = ia === undefined || ib === undefined ? (a < b ? `${a}:${b}` : `${b}:${a}`) : ia < ib ? ia * PAIR_SPAN + ib : ib * PAIR_SPAN + ia;
+        keys[i - 1] = key;
         const held = this.holders.get(key);
         if (held === undefined) this.holders.set(key, id);
         else if (Array.isArray(held)) {
@@ -110,12 +121,12 @@ export class OutlineEdges {
     return { type: "FeatureCollection", features };
   }
 
-  private zoneLines(id: string, rings: { ring: Position[]; keys: string[] }[], focused: string): Feature<MultiLineString> | null {
+  private zoneLines(id: string, rings: { ring: Position[]; keys: (number | string)[] }[], focused: string): Feature<MultiLineString> | null {
     const coordinates: Position[][] = [];
     for (const { ring, keys } of rings) {
       const drawn = keys.map((key) => {
-        const held = this.holders.get(key)!;
-        return typeof held === "string" ? held === id : held[0] === id && !held.includes(focused);
+        const held = this.holders.get(key);
+        return typeof held === "string" ? held === id : held![0] === id && !held!.includes(focused);
       });
       const start = drawn.indexOf(false);
       if (start < 0) { coordinates.push(ring); continue; }
