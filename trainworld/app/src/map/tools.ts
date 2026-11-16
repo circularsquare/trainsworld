@@ -1637,7 +1637,7 @@ export class Tools {
     // a toggle marker (T-233, map/stopMarkers.ts) is on top of the station
     const marker = this.stops?.pick(e.point.x, e.point.y);
     if (marker) {
-      this.stops!.activate(marker, e.point.x, e.point.y);
+      this.stops!.activate(marker, e.point.x, e.point.y, e.originalEvent.shiftKey);
       return;
     }
     const station=this.overlay.renderer.stationAt(e.point.x,e.point.y,(x,y)=>this.screen(x,y),7);
@@ -1656,8 +1656,8 @@ export class Tools {
   }
 
   /** T-3109, a right click or a long press on a stop: close the line into a loop or open it (`tier` "close", "open",
-   * T-798), turn its end round a loop of track or open it again ("turn", "unturn", T-3021). With Shift (or the touch
-   * Branch button), "branch": a branch of the line made there (line branches). */
+   * T-798), turn its end round a loop of track or open it again ("turn", "unturn", T-3021). "branch", a Shift click
+   * (or the touch Branch button) on a station off the line: a branch of the line out to it (line branches). */
   loopStop(station: number, tier: StopTier | "branch") {
     this.queueStop(station, tier);
   }
@@ -1684,7 +1684,9 @@ export class Tools {
     const line = world.peek()?.save.lines.find((l) => Number(l.id) === id);
     if (id === null || !line) return;
     if (tier === "branch") {
-      const a = await edit({ op: "addBranch", line: id, station });
+      // quiet: the refusal is said at the station's marker, as a loop's is
+      const a = await edit({ op: "addBranch", line: id, station }, true);
+      if (!a.ok && session === this.lineSession) this.stops?.noBranch(station);
       // line branches: the stops edited from here on are the new branch's, so later clicks carry it on
       const made = a.line === undefined ? undefined : world.peek()?.save.lines.find((l) => Number(l.id) === a.line);
       // and the panel follows to the branch, as Copy's does, so its stops and chips are the ones edited

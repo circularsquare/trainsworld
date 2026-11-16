@@ -112,7 +112,7 @@ function Notice() {
   const loopButton = (on: boolean) => touch && on && (
     <button class={"btn text" + (looping ? " on" : "")} aria-pressed={looping} onClick={() => { branchTap.value = false; loopTap.value = !looping; }}>{t("toolNotes.loop")}</button>
   );
-  // line branches: a Branch button beside it stands in for the Shift right click
+  // line branches: a Branch button beside it stands in for the Shift click
   const branchButton = (on: boolean) => touch && on && (
     <button class={"btn text" + (branching ? " on" : "")} aria-pressed={branching} onClick={() => { loopTap.value = false; branchTap.value = !branching; }}>{t("toolNotes.branch")}</button>
   );

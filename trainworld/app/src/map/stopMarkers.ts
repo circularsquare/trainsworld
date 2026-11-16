@@ -206,8 +206,7 @@ export class StopMarkers {
       // a held finger makes one too: its own long press has dealt with it
       if (touchInput.peek()) return;
       const id = this.pick(e.point.x, e.point.y);
-      // line branches: a Shift right click is the branch's (pressDown), never a loop's
-      if (id !== null && !e.originalEvent.shiftKey) this.loopAt(id, e.point.x, e.point.y);
+      if (id !== null) this.loopAt(id, e.point.x, e.point.y);
     });
     const box = map.getContainer();
     box.addEventListener("pointerdown", (e) => this.pressDown(e), true);
@@ -434,16 +433,16 @@ export class StopMarkers {
     const name = this.names.get(id) ?? t("stopMarkers.station");
     const branch = this.canBranch(id) ? [t("stopMarkers.shiftBranch")] : [];
     switch (this.tierOf(id)) {
-      case "on": return [name, t("stopMarkers.remove"), ...(this.closedLine() ? [t("stopMarkers.rightOpen")] : []), ...branch];
-      case "close": return [name, t("stopMarkers.remove"), t("stopMarkers.rightClose"), ...branch];
-      case "open": return [name, t("stopMarkers.remove"), t("stopMarkers.rightOpen"), ...branch];
-      case "turn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightLoopBack"), ...branch];
-      case "unturn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightStopLooping"), ...branch];
-      case "route": return [name, t("stopMarkers.add")];
-      case "reroute": return [name, t("stopMarkers.addReroute")];
+      case "on": return [name, t("stopMarkers.remove"), ...(this.closedLine() ? [t("stopMarkers.rightOpen")] : [])];
+      case "close": return [name, t("stopMarkers.remove"), t("stopMarkers.rightClose")];
+      case "open": return [name, t("stopMarkers.remove"), t("stopMarkers.rightOpen")];
+      case "turn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightLoopBack")];
+      case "unturn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightStopLooping")];
+      case "route": return [name, t("stopMarkers.add"), ...branch];
+      case "reroute": return [name, t("stopMarkers.addReroute"), ...branch];
       case "reverse": {
         const at = this.revAt.get(id);
-        return [name, at === "" ? t("stopMarkers.reverseEnd", { tram: this.tram }) : this.names.get(at ?? "") ? t("stopMarkers.reverseAt", { name: this.names.get(at ?? ""), tram: this.tram }) : t("stopMarkers.reverseSome", { tram: this.tram })];
+        return [name, at === "" ? t("stopMarkers.reverseEnd", { tram: this.tram }) : this.names.get(at ?? "") ? t("stopMarkers.reverseAt", { name: this.names.get(at ?? ""), tram: this.tram }) : t("stopMarkers.reverseSome", { tram: this.tram }), ...branch];
       }
       default: return [name, t("stopMarkers.noTrack")];
     }
@@ -474,19 +473,21 @@ export class StopMarkers {
     if (this.reasonFor === null) this.showTag(this.words(id), px, py);
   }
 
-  /** A click on the marker of station `id`: the stop added or taken out. */
-  activate(id: string, px: number, py: number) {
+  /** A click on the marker of station `id`: the stop added or taken out, or with `shift` the line branched out to it. */
+  activate(id: string, px: number, py: number, shift = false) {
     if (this.swallow) return void (this.swallow = false);
     // T-3118: the touch Loop button was on
     if (loopTap.peek()) {
       loopTap.value = false;
       return this.loopAt(id, px, py);
     }
-    // line branches: the touch Branch button was on; a tap off the line's stops only turns it off
+    // line branches: the touch Branch button was on; a tap on a stop of the line (or a station with no track) only turns it off
     if (branchTap.peek()) {
       branchTap.value = false;
       return this.canBranch(id) ? this.branchAt(id) : this.hideTag();
     }
+    // line branches: Shift reaches out to a station off the line; on one of its stops it adds nothing, so the click is plain
+    if (shift && this.canBranch(id)) return this.branchAt(id);
     if (this.tierOf(id) === "cut") {
       const name = this.names.get(id) ?? t("stopMarkers.thatStation");
       this.hideTag();
@@ -514,16 +515,25 @@ export class StopMarkers {
     this.reasonTimer = window.setTimeout(() => this.hideTag(), REASON_MS);
   }
 
-  /** Line branches: station `id` is a stop of the line being edited, and that line can have branches (a bus or
-   * ferry line has no markers here; a branch is no head). */
+  /** Line branches: station `id` is off the line being edited but has track to it, and that line can have branches
+   * (a bus or ferry line has no markers here; a branch is no head). The sim picks where the branch leaves the line. */
   private canBranch(id: string): boolean {
-    const tier = this.tierOf(id);
-    return !!this.line && !this.line.branchOf && (tier === "on" || LOOP_TIERS.has(tier));
+    return !!this.line && !this.line.branchOf && this.line.stops.length >= 2 && !this.line.stops.includes(id) && this.tierOf(id) !== "cut";
   }
 
   private branchAt(id: string) {
     this.hideTag();
     this.loop(Number(id), "branch");
+  }
+
+  /** Line branches: the sim found no way out to station `id` without reversing; said at its marker as a loop's is. */
+  noBranch(id: number) {
+    const key = String(id), m = this.marks.get(key);
+    if (!this.line || !m?.shown) return;
+    this.hideTag();
+    this.reasonFor = key;
+    this.showTag([this.names.get(key) ?? t("stopMarkers.station"), t("stopMarkers.noBranch")], m.x, m.y, true);
+    this.reasonTimer = window.setTimeout(() => this.hideTag(), REASON_MS);
   }
 
   /** the line being edited is a loop: its last stop is its first */
@@ -533,17 +543,9 @@ export class StopMarkers {
   }
 
   private pressDown(e: PointerEvent) {
-    if (!this.line) return this.pressEnd();
+    if (e.pointerType !== "touch" || !this.line || !e.isPrimary) return this.pressEnd();
     const r = this.map.getContainer().getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
-    // line branches: read at the press, as Firefox shows its own menu for a Shift right click and may send the page
-    // no contextmenu; that handler ignores Shift, so a browser that sends both branches once
-    if (e.pointerType !== "touch" && e.button === 2 && e.shiftKey) {
-      const id = this.pick(x, y);
-      if (id !== null && this.canBranch(id)) this.branchAt(id);
-      return;
-    }
-    if (e.pointerType !== "touch" || !e.isPrimary) return this.pressEnd();
     const id = this.pick(x, y);
     this.pressEnd();
     if (id === null) return;

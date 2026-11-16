@@ -303,8 +303,8 @@ export const stopEditing = computed(() => tool.value === "line" && lineDraft.val
 /** T-3118: the touch Loop button is on: the next tap on a stop, a route point or a port does a right click's work
  * (close, loop back or open a loop there), then it goes off. Off whenever the tool changes. */
 export const loopTap = signal(false);
-/** Line branches: the touch Branch button is on: the next tap on a stop branches the line there (a Shift right
- * click's work), then it goes off. Off whenever the tool or the line changes. */
+/** Line branches: the touch Branch button is on: the next tap on a station off the line branches the line out to
+ * it (a Shift click's work), then it goes off. Off whenever the tool or the line changes. */
 export const branchTap = signal(false);
 effect(() => { tool.value; lineDraft.value.line; loopTap.value = false; branchTap.value = false; });
 /** T-1899: the line whose first stops are being picked, from New line until its stop editing ends,
