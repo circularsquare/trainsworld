@@ -44,7 +44,7 @@ import { LineProfile } from "./LineProfile";
 import { LineTopSpeed } from "./LineTopSpeed";
 import type { EditOp } from "../../workers/protocol";
 import { hasUpgrade, UPGRADE } from "../../game/upgrades";
-import { AverageSpeed, carsBought, carsText, demandLabel, type Limit, NO_LIMITS, PastDay, Schedule, useLinePeriods } from "./schedule";
+import { AverageSpeed, carsBought, carsText, demandLabel, type Limit, NO_LIMITS, PastDay, Schedule, useLinePeriods, vehiclesText } from "./schedule";
 import { LineTitle, useLineTitle } from "./LineTitle";
 import { TRACK_SPECS } from "../../game/trackKinds";
 
@@ -113,16 +113,6 @@ function heldFrom(v: Float64Array, vehicle: Vehicle): Held[] {
   });
   return out;
 }
-
-/** Line branches: the stop a chip names for a line, the end that tells it apart from `others` (a head's
- * branches, or a branch's head). A branch can share its last stop with its head (Shift + click toward a
- * station off the head), so "last stop" alone would give two chips one label. */
-export const chipEnd = (l: LineInput, others: LineInput[]) => {
-  const last = l.stops[l.stops.length - 1];
-  const used = new Set(others.flatMap((o) => o.stops));
-  const free = [l.stops[0], last].filter((x) => !used.has(x));
-  return free.length === 1 ? free[0] : last;
-};
 
 /** What limits a line per level (T-679, `Limit`); null where nothing does. From the tail of
  * `TrackApi.line_held`. */
@@ -777,10 +767,11 @@ function RailLineInspector({ id }: { id: string }) {
   };
 
   const shown = title.shown;
-  // line branches: a head and its branches share one name, so the chips tell them apart by where each ends
+  // line branches: a head and its branches share one name, so the routes list tells them apart by their ends
   const head = l.branchOf ? linesById(w).get(l.branchOf) : undefined;
   const branches = branchesOf(w, head?.id ?? l.id);
-  const top = head ?? l;
+  const routes = [head ?? l, ...branches];
+  const family = routes.length > 1;
   const nStops = l.stops.length;
   // T-3025: a line turned round a loop is one row per station, its stops being edited or not (T-3109)
   const byId = stationsById(w);
@@ -1011,15 +1002,27 @@ function RailLineInspector({ id }: { id: string }) {
       <div class="sub muted flush">
         {tr("lineInspector.sub", { fast: !!st.fast, count: turned ? turned.rows.length : l.stops.length - (st.loop ? 1 : 0), distance: distance(st.km * 1000) })}
       </div>
-      {head && <div class="sub muted flush">{tr("lineInspector.branchOf", { line: head.name })}</div>}
-      {branches.length > 0 && (
-        <div class="line-stop-actions">
-          <Segmented<string>
-            options={[[top.id, tr("lineInspector.branchTo", { stop: name.get(chipEnd(top, branches)) ?? "" })], ...branches.map((b): [string, string] => [b.id, tr("lineInspector.branchTo", { stop: name.get(chipEnd(b, [top])) ?? "" })])]}
-            value={l.id}
-            onChange={(id) => (selection.value = { kind: "line", line: id })}
-          />
-        </div>
+      {family && <div class="sub muted flush">{tr("lineInspector.routes", { n: routes.length })}</div>}
+      {family && (
+        <ul class="rows pick line-routes">
+          {routes.map((r) => {
+            const rs = w.lineStats[r.id];
+            const from = name.get(r.stops[0]) ?? "";
+            // the Lines tab's trains cell for this route alone (a head's row there folds its branches in)
+            const n = rs?.status === "running" ? pairStats(w, rs).trainsNeeded[DEMAND_INDEX[demandAt(lineSeconds(rs))]] : 0;
+            const on = r.id === l.id;
+            return (
+              <li class={on ? "on" : ""}>
+                <button aria-current={on ? "true" : undefined} onClick={() => (selection.value = { kind: "line", line: r.id })}>
+                  <span class="route-bar" style={{ background: on ? shown : r.colour }} />
+                  <span class="grow">{rs?.loop ? tr("lineInspector.routeLoop", { from }) : tr("lineInspector.routeEnds", { from, to: name.get(r.stops[r.stops.length - 1]) ?? "" })}</span>
+                  <span class="val muted">{tr("lineInspector.routeStops", { count: r.stops.length - (rs?.loop ? 1 : 0) })}</span>
+                  <span class="val route-trains" data-tip={vehiclesText(vehicleOf(st), n)}>{n}{st.tram ? <Icon.tram /> : <Icon.train />}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
       {st.status === "planned" && l.stops.length >= 2 && (
         <div class="callout">
@@ -1034,7 +1037,7 @@ function RailLineInspector({ id }: { id: string }) {
       <div class="line-stop-actions">
         <button class={"btn text" + (editingStops ? " on" : "")} data-guide={editingStops ? undefined : "stops"} data-tip={tr(editingStops ? "lineInspector.finishTip" : "lineInspector.editTip")} onClick={() => toggleEditStops(l)}><Icon.pencil /><SwapLabel on={editingStops} off={tr("lineInspector.editStops")} onText={tr("lineInspector.stopEditing")} /></button>
         <button class="btn text" onClick={() => void copy()} disabled={copying}>{tr("busInspector.copy")}</button>
-        {(head || branches.length > 0) && <button class="btn text danger" onClick={() => remove(true)}>{tr("lineInspector.removeBranch")}</button>}
+        {family && <button class="btn text danger" onClick={() => remove(true)}>{tr("lineInspector.removeBranch")}</button>}
         <button class="btn text danger" onClick={() => remove(false)}>{tr("busInspector.deleteYes")}</button>
       </div>
       {editingStops && stopsBlock}
