@@ -1146,7 +1146,7 @@
   "lineInspector.behindSlower": "{vehicle, select, tram {Behind slower trams} other {Behind slower trains}}",
   "lineInspector.bothWays": "Both ways",
   "lineInspector.branchOf": "Branch of {line}",
-  "lineInspector.branchTo": "to {stop}",
+  "lineInspector.branchTo": "To {stop}",
   "lineInspector.countedWith": "Counted with {line}",
   "lineInspector.mainLine": "Main line",
   "lineInspector.removeBranch": "Remove branch",

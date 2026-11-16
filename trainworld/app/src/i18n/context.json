@@ -1093,7 +1093,7 @@
   "lineInspector.behindSlower": "Row label and place name in the round trip rows of a line view: time spent following slower trains. vehicle: train or tram.",
   "lineInspector.broken": "Alert in a line view when a track it used has been removed.",
   "lineInspector.branchOf": "Line under the title of a branch's line view. A branch is a service of a line that shares its stops up to a station and then carries on along its own; it shows as the same line. line: the line's name, e.g. \"Red\".",
-  "lineInspector.branchTo": "Choice in a row of choices at the top of a line view that has branches: opens the view of the branch that ends at this station. Short, a fragment, lowercase. stop: the branch's last station's name.",
+  "lineInspector.branchTo": "Choice in a row of choices at the top of a line view that has branches: opens the view of the branch that ends at this station. Short, a fragment, sentence case. stop: the branch's last station's name.",
   "lineInspector.countedWith": "Line in a branch's line view where the line's riders and profit would be: the branch's figures are counted in the main line's. line: the line's name, e.g. \"Red\".",
   "lineInspector.mainLine": "Choice in a row of choices at the top of a line view that has branches: opens the view of the line itself (not a branch). Short.",
   "lineInspector.removeBranch": "Button in a branch's line view that deletes the branch only; the line and its other branches stay. Can be undone.",

@@ -6,7 +6,7 @@ import { computed, signal } from "@preact/signals";
 import { MODE_SHAPES, type LineShape } from "./lineShape";
 import { display } from "./ui";
 import { vehicleOf, type Vehicle } from "./vehicle";
-import { world } from "./world";
+import { linesById, world } from "./world";
 
 /** The shapes lines were given, by line id; a line not in it has its mode's. */
 export const lineShapes = signal<Readonly<Record<string, LineShape>>>({});
@@ -31,14 +31,18 @@ export function lineMode(id: string): Vehicle {
 
 /** Line `id`'s bullet shape: its own, else its mode's. Read while rendering, so a bullet redraws on a change. */
 export function shapeOf(id: string): LineShape {
-  // T-3333: a hidden twin wears its line's
-  const p = world.peek()?.twins.get(id);
+  // T-3333: a hidden twin wears its line's; line branches: a branch its head's, set before it or after
+  const w = world.peek();
+  const p = w && (w.twins.get(id) ?? linesById(w).get(id)?.branchOf);
   if (p) return shapeOf(p);
   return lineShapes.value[id] ?? modeShape(lineMode(id));
 }
 
 /** Give line `id` a shape; its mode's shape, or null, gives it back to the mode, so it follows Settings again. */
 export function setLineShape(id: string, shape: LineShape | null) {
+  // line branches: a branch's picker sets its head's, the shape every one of them wears
+  const w = world.peek();
+  id = (w && linesById(w).get(id)?.branchOf) || id;
   const own = shape === null || shape === modeShape(lineMode(id)) ? null : shape;
   const { [id]: _, ...rest } = lineShapes.peek();
   lineShapes.value = own ? { ...rest, [id]: own } : rest;

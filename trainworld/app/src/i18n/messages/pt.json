@@ -1146,7 +1146,7 @@
   "lineInspector.behindSlower": "{vehicle, select, tram {Atrás de bondes mais lentos} other {Atrás de trens mais lentos}}",
   "lineInspector.bothWays": "Ambos os sentidos",
   "lineInspector.branchOf": "Ramal de {line}",
-  "lineInspector.branchTo": "para {stop}",
+  "lineInspector.branchTo": "Para {stop}",
   "lineInspector.countedWith": "Contabilizado junto com {line}",
   "lineInspector.mainLine": "Linha principal",
   "lineInspector.removeBranch": "Remover ramal",

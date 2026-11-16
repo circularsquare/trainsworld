@@ -429,7 +429,7 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   [T-817], then `LRT1`, the settled rates of the lines with trains to the bit and the lines the
   settle left circling [T-1787], without which a load settles in full, and `LGR1` line groups
   (each grouped line's index and group number, then each named group's number and name) [T-1791],
-  `LBR1` line branches (a count, then each branch's line index and its head's index; line branches), `LGL1` group bullets set by hand (group number, text, colour + 1 or 0) and `LOR1` the Lines and
+  `LGL1` group bullets set by hand (group number, text, colour + 1 or 0) and `LOR1` the Lines and
   Stations tabs' hand order (line indices, then node indices, first first) [T-1813], `LPH1` the
   lines' departure phases [T-1925], `LSP1` the share of a headway line's spare time stood at its last
   stop where not half (count, then per line its index and three f32 bits) [T-2972], `BLD1` the station buildings (count, then per building
@@ -437,7 +437,7 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   build day of each constructed station, edge and line in dense order, as deltas (0 is never
   written: 1 is before recording began, otherwise the game day + 2), written only when some day is
   known [T-2871], then `LBP1` the bus lines' own stop spacings [T-2885] and `LHO1` the lines whose
-  stop order the player set by hand (count, then line indices) [T-2895] and `LBH1` the stops placed by hand on bus lines (count, then per line its index, stop count and stops) [T-2891], and with `LRT1` when any line is paced, `LPC1` the count lines' pacing at merges (count, then per line its index and three f32 bits), which a load keeps instead of pacing again [T-3233], and `LTW1` the lines run on both pairs of quad track and their hidden twins (count, then per line its index and kind, a twin with its line's index) [T-3333]; a save without one loads with none. While a line's trains change over after a service
+  stop order the player set by hand (count, then line indices) [T-2895] and `LBH1` the stops placed by hand on bus lines (count, then per line its index, stop count and stops) [T-2891], and with `LRT1` when any line is paced, `LPC1` the count lines' pacing at merges (count, then per line its index and three f32 bits), which a load keeps instead of pacing again [T-3233], and `LTW1` the lines run on both pairs of quad track and their hidden twins (count, then per line its index and kind, a twin with its line's index) [T-3333] and last `LBR1` the line branches (a count, then each branch's line index and its head's index); a save without one loads with none. While a line's trains change over after a service
   edit, the network bytes end with the service's eras and shifts, their length and the tag `ERA1`
   (`Service::encode_eras`, T-1071), so the trains load where they were; the network decoder stops
   before them. Formats older than TWT4 (TWT2, TWT3) no longer open: the load says the save is from

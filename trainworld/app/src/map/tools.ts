@@ -1687,7 +1687,11 @@ export class Tools {
       const a = await edit({ op: "addBranch", line: id, station });
       // line branches: the stops edited from here on are the new branch's, so later clicks carry it on
       const made = a.line === undefined ? undefined : world.peek()?.save.lines.find((l) => Number(l.id) === a.line);
-      if (a.ok && made && session === this.lineSession && tool.peek() === "line") lineDraft.value = { line: made.num, stops: made.stops.map(Number) };
+      // and the panel follows to the branch, as Copy's does, so its stops and chips are the ones edited
+      if (a.ok && made && session === this.lineSession && tool.peek() === "line") {
+        lineDraft.value = { line: made.num, stops: made.stops.map(Number) };
+        selection.value = { kind: "line", line: made.id };
+      }
       return;
     }
     const before = line.stops.map(Number);

@@ -350,11 +350,12 @@ export const runsTrains = (l: { trains: ArrayLike<number> }) => l.trains[0] + l.
 
 /**
  * The order lines sharing track are drawn in, bottom first (T-533; picking follows the same order).
- * Lines with no trains go under all that run trains; within each group the shorter route is on
- * top, ties to the higher id (T-190).
+ * Lines with no trains go under all that run trains; then (line branches) a branch under the lines
+ * that are none, so on a shared trunk the head is on top and takes the click; within each group the
+ * shorter route is on top, ties to the higher id (T-190).
  */
-export function lineDrawOrder<L extends { id: number; lengthM: number; trains: ArrayLike<number> }>(lines: readonly L[]): L[] {
-  return [...lines].sort((a, b) => Number(runsTrains(a)) - Number(runsTrains(b)) || b.lengthM - a.lengthM || a.id - b.id);
+export function lineDrawOrder<L extends { id: number; lengthM: number; trains: ArrayLike<number>; branchOf?: number }>(lines: readonly L[]): L[] {
+  return [...lines].sort((a, b) => Number(runsTrains(a)) - Number(runsTrains(b)) || Number(b.branchOf !== undefined) - Number(a.branchOf !== undefined) || b.lengthM - a.lengthM || a.id - b.id);
 }
 
 /** The passages drawn without being built (T-1859): a complex's members whose boxes do not touch

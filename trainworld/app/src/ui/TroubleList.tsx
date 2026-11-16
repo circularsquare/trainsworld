@@ -58,7 +58,7 @@ const goLine = (l: LineInput) => () => { locateLine(l.stops); pick({ kind: "line
 
 function itemsOf(w: WorldView, level: number, day: Map<string, LineToday>): Item[] {
   const out: Item[] = [];
-  // line branches: a branch stays in, so a broken one is found (its crowding is in its head's counts)
+  // line branches: a branch stays in, so a broken one is found (today's counts here are unfolded, so a crowded branch is its own item too)
   for (const l of w.save.lines) {
     if (l.twinOf) continue;
     if (!l.stops.length) {
