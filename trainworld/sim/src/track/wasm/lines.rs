@@ -141,6 +141,8 @@ impl TrackApi {
         let Some(mut d) = self.w.net.line_data(source) else { return self.refuse(Issue::NoSuchLine { line: source }) };
         d.name = name;
         d.day = 0;
+        // line branches: a copy of any route stands alone, never a sibling branch
+        d.branch = None;
         // a bus line's copy is a planned route, paid for on Construct (T-1464)
         if let Some(r) = d.bus.as_mut() {
             r.built = false;

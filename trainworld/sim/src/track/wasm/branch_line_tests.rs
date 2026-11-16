@@ -564,3 +564,17 @@ fn removing_a_branch_of_a_plain_line_is_refused() {
     assert_eq!(a.remove_branch(head), 1);
     assert!(a.w.net.line_ok(head) && a.w.net.line_ok(other));
 }
+
+#[test]
+fn a_copy_of_any_route_is_a_plain_line() {
+    let (mut a, head, [b1, _]) = two_branches();
+    let (hs, bs) = (a.w.net.line_stops(head).to_vec(), a.w.net.line_stops(b1).to_vec());
+    for (src, stops) in [(b1, bs), (head, hs)] {
+        let before = [a.line_branch_of(head), a.line_branch_of(b1)];
+        let id = a.new_line_id();
+        assert_eq!(a.copy_line(src, id, "Copy".into()), 0, "{}", a.issues());
+        assert_eq!(a.w.net.line_stops(id), &stops[..]);
+        assert_eq!(a.line_branch_of(id), -1, "a copy joins no head");
+        assert_eq!([a.line_branch_of(head), a.line_branch_of(b1)], before, "the source routes are unchanged");
+    }
+}
