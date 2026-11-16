@@ -208,7 +208,7 @@ impl TrackApi {
         let mut stopping: std::collections::HashMap<u32, (f64, Vec<u32>)> = Default::default();
         for l in 0..w.len() as u32 {
             if weight(l) <= 0.0 || !n.line_ok(l) { continue }
-            let mut stops = n.line_stops(l).to_vec();
+            let mut stops = n.line_run_stops(l).to_vec();
             stops.sort_unstable();
             stops.dedup();
             for s in stops {

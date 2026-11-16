@@ -75,7 +75,13 @@ export interface LineInput {
   name: string;
   /** "#rrggbb", from the saturated line palette or player-set */
   colour: string;
+  /** T-3341: the stops its trains serve (the built stretch of its plan) */
   stops: StationId[];
+  /** T-3341: its full planned stops while `stops` is only the served stretch; absent when the
+   * whole plan is built (line editors use this, displays `stops`) */
+  planStops?: StationId[];
+  /** T-3341: where `stops` starts in `planStops` (0 without a plan) */
+  stopStart?: number;
   tph: Tph;
   /** the player's line group (T-1791), absent for none, and its name, "" for its oldest line's */
   group?: number;
@@ -247,6 +253,12 @@ export interface ModeSplit {
   drive: number;
   /** T-2215: trips no way serves (between two land parts, not by rail), "No route"; absent as 0 */
   none?: number;
+}
+
+/** T-3341: a line's planned stops, which stop editing changes; `stops` is only what its trains
+ * serve while part of the plan is unbuilt. */
+export function planStopsOf(l: Pick<LineInput, "stops" | "planStops">): StationId[] {
+  return l.planStops?.length ? l.planStops : l.stops;
 }
 
 /** A loop run both ways (T-798, T-2981): its round trip is two laps, its trains half each way. */

@@ -278,7 +278,10 @@ purpose filter the purpose drawn is ringed in the bar.
   "<name> clone N" (a copy of "X clone 1" is "X clone 2") with the old symbol's first letter and N (t or tm gives t1, then t2), N the lowest
   not taken, T-1872, `game/cloneNames.ts`), and Delete line (at once: an undo brings it back, and track and stations stay; only a constructed bus route, which is final, is asked about, T-2919). While stops are being edited the Stops list (with a remove
   button on each stop) follows them there, above Schedule; otherwise it sits after the day's figures.
-  Incomplete lines stay planned and run no trains.
+  A line whose plan is only partly built runs the built stretch and lists those stops here; with
+  no built stretch it stays planned and runs no trains. While part of the plan is unbuilt its
+  stop rows keep to the served stretch, and the planned stops stay for the map's stop editor and
+  the line tool (T-3341).
 
 #### Schedule and trains
 

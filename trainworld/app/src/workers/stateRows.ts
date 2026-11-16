@@ -45,8 +45,14 @@ interface Heavy {
   /** T-1813: the group's bullet text and colour set by hand, "" for none */
   groupSymbol: string;
   groupColour: string;
+  /** T-3341: the served stops and path (the built stretch of the plan) */
   stops: number[];
   path: number[];
+  /** T-3341: the full plan (`TrackApi.line_stops`, `line_path`), and where the served stretch starts */
+  planStops: number[];
+  planPath: number[];
+  stopStart: number;
+  pathStart: number;
   /** T-3117: the return run's path where it is not `path` backward (`TrackApi.line_back_path`), else empty */
   back: number[];
   fromStart: number[][];
@@ -353,7 +359,7 @@ export class StateRows {
         upkeep,
         id, name: heavy.name, letter: heavy.letter, group: heavy.group, groupName: heavy.groupName, groupSymbol: heavy.groupSymbol, groupColour: heavy.groupColour, colour: hex(li[i + 1]), ok, running, broken: li[i + 4] === 1, tph: t3(5), cars: li[i + 21] || li[i + 8], carsSet: li[i + 8],
         lengthM: li[i + 9], roundTrip: t3(10), trains: t3(13), auto: autoOf(auto), delay: t3(16), dwell: li[i + 19], turnaround: li[i + 20],
-        stops: heavy.stops, path: heavy.path, ...(heavy.back.length ? { back: heavy.back } : {}),
+        stops: heavy.stops, path: heavy.path, ...(heavy.planPath.length ? { planStops: heavy.planStops, planPath: heavy.planPath, stopStart: heavy.stopStart, pathStart: heavy.pathStart } : {}), ...(heavy.back.length ? { back: heavy.back } : {}),
         fromStart: heavy.fromStart,
         stopS: heavy.stopS,
         fast,
@@ -460,6 +466,16 @@ export class StateRows {
   }
 
   private heavy(a: TrackApi, id: number, ok: boolean): Heavy {
+    const span = a.line_run_span(id);
+    // T-3341: post the full plan only while the served stretch is part of it
+    let plan: number[] = [], planPath: number[] = [];
+    if (span.length === 4) {
+      const stops = a.line_stops(id), path = a.line_path(id);
+      if (span[0] !== 0 || span[1] !== stops.length || span[2] !== 0 || span[3] !== path.length) {
+        plan = [...stops];
+        planPath = [...path];
+      }
+    }
     return {
       name: a.line_name(id),
       letter: a.line_symbol(id),
@@ -467,8 +483,12 @@ export class StateRows {
       groupName: a.line_group_name(id),
       groupSymbol: a.line_group_symbol(id),
       groupColour: ((c) => (c < 0 ? "" : hex(c)))(a.line_group_colour(id)),
-      stops: [...a.line_stops(id)],
-      path: [...a.line_path(id)],
+      stops: [...a.line_run_stops(id)],
+      path: [...a.line_run_path(id)],
+      planStops: plan,
+      planPath,
+      stopStart: span[0] ?? 0,
+      pathStart: span[2] ?? 0,
       back: [...a.line_back_path(id)],
       fromStart: [0, 1, 2].map((lev) => [...a.stop_times(id, 0, lev)]),
       stopS: [[...a.line_stop_s(id, 0)], [...a.line_stop_s(id, 1)]],
