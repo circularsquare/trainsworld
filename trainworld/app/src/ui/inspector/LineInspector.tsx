@@ -23,7 +23,7 @@ import { CROWD_LOAD_FROM, CROWD_LOAD_STRONG, FULL_FLOOR } from "../../map/render
 import { liveMoney, moneyState } from "../../game/money";
 import { fullParts, fullTip, fullTitle, heldText, heldTip, heldTrains } from "../../game/capacityKinds";
 import { toggleEditStops } from "../../game/lineActions";
-import { noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats } from "../../game/world";
+import { branchesOf, noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats } from "../../game/world";
 import { live } from "../../map/live";
 import { setListHot } from "../../map/hovered";
 import { Alert, Check, Chip, Icon, Row, Segmented, shakeEl, Stepper, SwapLabel } from "../widgets";
@@ -745,7 +745,8 @@ function RailLineInspector({ id }: { id: string }) {
       if (!a.ok) return;
       if (lineDraft.peek().line === l.num) live.tools?.exit();
       const selected = selection.peek();
-      if (selected?.kind === "line" && selected.line === l.id) selection.value = null;
+      // line branches: a removed branch leaves its head's panel open, the line still being there
+      if (selected?.kind === "line" && selected.line === l.id) selection.value = l.branchOf ? { kind: "line", line: l.branchOf } : null;
     });
   };
   const copy = async () => {
@@ -761,6 +762,9 @@ function RailLineInspector({ id }: { id: string }) {
   };
 
   const shown = title.shown;
+  // line branches: a head and its branches share one name, so the chips tell them apart by where each ends
+  const head = l.branchOf ? linesById(w).get(l.branchOf) : undefined;
+  const branches = branchesOf(w, head?.id ?? l.id);
   const nStops = l.stops.length;
   // T-3025: a line turned round a loop is one row per station, its stops being edited or not (T-3109)
   const byId = stationsById(w);
@@ -991,6 +995,16 @@ function RailLineInspector({ id }: { id: string }) {
       <div class="sub muted flush">
         {tr("lineInspector.sub", { fast: !!st.fast, count: turned ? turned.rows.length : l.stops.length - (st.loop ? 1 : 0), distance: distance(st.km * 1000) })}
       </div>
+      {head && <div class="sub muted flush">{tr("lineInspector.branchOf", { line: head.name })}</div>}
+      {branches.length > 0 && (
+        <div class="line-stop-actions">
+          <Segmented<string>
+            options={[[head?.id ?? l.id, tr("lineInspector.mainLine")], ...branches.map((b): [string, string] => [b.id, tr("lineInspector.branchTo", { stop: name.get(b.stops[b.stops.length - 1]) ?? "" })])]}
+            value={l.id}
+            onChange={(id) => (selection.value = { kind: "line", line: id })}
+          />
+        </div>
+      )}
       {st.status === "planned" && l.stops.length >= 2 && (
         <div class="callout">
           <p>{tr("busInspector.planned")}</p>
@@ -1004,7 +1018,7 @@ function RailLineInspector({ id }: { id: string }) {
       <div class="line-stop-actions">
         <button class={"btn text" + (editingStops ? " on" : "")} data-guide={editingStops ? undefined : "stops"} data-tip={tr(editingStops ? "lineInspector.finishTip" : "lineInspector.editTip")} onClick={() => toggleEditStops(l)}><Icon.pencil /><SwapLabel on={editingStops} off={tr("lineInspector.editStops")} onText={tr("lineInspector.stopEditing")} /></button>
         <button class="btn text" onClick={() => void copy()} disabled={copying}>{tr("busInspector.copy")}</button>
-        <button class="btn text danger" onClick={remove}>{tr("busInspector.deleteYes")}</button>
+        <button class="btn text danger" onClick={remove}>{tr(head ? "lineInspector.removeBranch" : "busInspector.deleteYes")}</button>
       </div>
       {editingStops && stopsBlock}
 
@@ -1026,7 +1040,9 @@ function RailLineInspector({ id }: { id: string }) {
         </ul>
       )}
 
-      {st.status === "running" && <div class="line-day"><PastDay l={l} st={st} periods={periods} kind={kind} extra={<PurposeSplit scope={[{ line: l.id }]} unit={tr("lineInspector.ridersUnit")} />} /></div>}
+      {/* line branches: a branch's riders and money are counted in its head's figures, so it has none of its own */}
+      {st.status === "running" && head && <div class="line-day"><p class="muted">{tr("lineInspector.countedWith", { line: head.name })}</p></div>}
+      {st.status === "running" && !head && <div class="line-day"><PastDay l={l} st={st} periods={periods} kind={kind} extra={<PurposeSplit scope={[{ line: l.id }]} unit={tr("lineInspector.ridersUnit")} />} /></div>}
 
       {!editingStops && stopsBlock}
       {st.status !== "broken" && l.stops.length >= 2 && <RoundTrip num={l.num} st={st} lev={lev} stops={l.stops.length} spots={spots} waitSpots={waitSpots} />}
