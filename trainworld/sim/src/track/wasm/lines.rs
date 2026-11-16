@@ -166,6 +166,27 @@ impl TrackApi {
         if r == 0 { self.w.net.next_line_number = self.w.net.next_line_number.saturating_add(1); }
         r
     }
+    /// Line branches: a new line `id` on `head`'s trunk up to its first stop at `station`, for the
+    /// player to carry on from there; it keeps the head's look and trains, as one line to the
+    /// player. One undoable edit. Branches hang off one trunk, so a branch, a hidden twin, a bus or
+    /// a ferry line is no head.
+    pub fn add_branch(&mut self, head: u32, id: u32, station: u32) -> u32 {
+        let net = &self.w.net;
+        let Some(mut d) = net.line_data(head) else { return self.refuse(Issue::NoSuchLine { line: head }) };
+        if d.bus.is_some() || d.ferry.is_some() || d.branch.is_some() || matches!(d.twin, crate::track::twin::Twin::Of(_)) {
+            return self.refuse(Issue::LinePath { line: head });
+        }
+        // the first visit: a loop's closing stop is its first one again, never the whole lap
+        let at = d.stops.iter().position(|&s| s == station);
+        let Some((i, path)) = at.and_then(|i| Some((i, net.route(&d.stops[..=i])?))) else {
+            return self.refuse(Issue::LinePath { line: head });
+        };
+        d.stops.truncate(i + 1);
+        d.path = path;
+        d.branch = Some(head);
+        (d.hand, d.one_way, d.day) = (false, false, 0);
+        self.run(Op::Line { id, data: Some(d) })
+    }
 
     // ---- line groups (T-1791): a grouping for the Lines tab; no service edit
     /// A group number no live line has.
