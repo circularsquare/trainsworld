@@ -1116,6 +1116,51 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   headway line's headways at none) until the player sets them, so a copy never doubles a
   service (T-1161); edits and removal are undoable.
 
+#### Branches
+
+- **Branches** (line branches): one line whose trains split onto different ends past a shared
+  trunk (trunk A, B, C, then D, E and F, G). A branch is a line of its own with a link to its
+  head line (`LineData::branch`, the head's index; none for an ordinary line or a head).
+  `TrackApi.add_branch(head, id, target)` makes a branch out to `target`, a station the head
+  does not stop at, as one undoable edit. The sim picks where it leaves the line and which side
+  is its trunk: for every stop k of the head (a loop's closing stop left out), the head's stops
+  up to k then the target, and the target then the head's stops from k on; it keeps those whose
+  route turns back no more often than the head's route over the same stops (so its trains never
+  reverse at the junction or on the way to the target), and takes the one whose hop between the
+  junction stop and the target has the least track time, the longer trunk on a tie. So on a line
+  ending X, Y, Z, a spur that joins between X and Y facing back up the line gives the branch
+  target, Y, Z. It is refused (`LinePath`) for a head that is a bus, ferry, branch or twin
+  line, for a target the head stops at, and when no side reaches the target without turning
+  back; `NoSuchLine` for a missing head. The clicks that follow edit the branch's stops like any
+  line's. Like a copy, a new branch starts with no
+  trains (counts at 0, or a headway line's headways at none), so the gesture never buys a fleet or
+  doubles the trunk's service; it keeps the head's `hand`, so a stop order set by hand stays on
+  its trunk.
+  **Sync**: after every checked edit `branch_ops` copies the head's name, symbol, colour, cars,
+  fast, limit, dwell, turnaround and group fields to each branch, and deletes a branch whose head
+  is gone, is a bus or ferry line, or is itself a branch. A branch keeps its own trains and
+  headway. Service, capacity, spacing and demand see a branch as a line like any other, so
+  spacing staggers it against its head on the trunk.
+  **Trunk edits**: `set_stops`, `add_stop`, `drop_stop`, `end_line_at` and `stop_passed` on the head
+  reach its branches in the same edit and undo step: a station put between two head stops that are
+  next to each other on a branch goes in there too, and a station taken out is taken out of every
+  branch, unless it is a branch's first or last stop. `turn_end`, `open_loop`, `order_stops` and
+  `sort_stops` do not carry stop changes to branches (a drag reorder or sort of the head leaves
+  each branch's trunk in its own order). Copy on any route makes a separate line with that route's stops.
+  **Removing a route**: the head and its branches are peers to the player, so
+  `TrackApi.remove_branch(line)` removes any one of them as one undoable edit. A branch goes as
+  `remove_line` takes it. The head goes and its lowest-id branch becomes the head: its link is
+  cleared and every other branch is linked to it, in the same batch as the old head's delete, so
+  `branch_ops` never sees a branch of a line gone. The new head keeps its own stops, path and
+  trains (its look already being the head's). The line stays in its group, unless no line apart
+  from it is left there, when it leaves it as `remove_line` leaves a group of one. A line with no
+  branches is refused (`LinePath`): Delete line removes it. Delete line on a head (`remove_line`)
+  takes its branches with it.
+  Saved in a trailing `LBR1` block (architecture.md, the save format; `save::LEVEL` 19): a count,
+  then each branch's line index and its head's index. A save without it loads every line
+  unbranched, and a relation that does not hold on load (a head out of range, a bus or ferry line, or itself a
+  branch) is dropped.
+
 #### Scheduling
 
 - **Scheduling** (T-104, Anita): every line sets a whole number of trains on the entire line,

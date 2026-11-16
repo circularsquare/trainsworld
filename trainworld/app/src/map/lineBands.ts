@@ -96,7 +96,8 @@ const HOLD_M = 50;
 const ALIGN_M = 100;
 const ALIGN_NEAR_M = 80;
 
-interface BandLine { id: number; ok: boolean; path: number[]; bus?: unknown }
+/** `branchOf`: line branches, the head line this one branches from */
+interface BandLine { id: number; ok: boolean; path: number[]; bus?: unknown; branchOf?: number }
 interface BandEdge { id: number; a: number; b: number }
 
 /**
@@ -142,9 +143,18 @@ export function lineBands(lines: readonly BandLine[], edges: readonly BandEdge[]
   /** per edge: the lines on it, each with its first entry in its path */
   const on = new Map<number, { line: BandLine; k: number }[]>();
   const rail = lines.filter((l) => l.ok && !l.bus && l.path.length);
+  // line branches: a head and its branches running an edge the same way are one service there, so one
+  // band, the lowest id's; the others are left out of the edge and take that band (`followFamily`)
+  const branched = rail.some((l) => l.branchOf !== undefined);
+  const placed = new Map<number, BandLine>(), follows: Follow[] = [];
   for (const l of [...rail].sort((a, b) => a.id - b.id)) {
     l.path.forEach((p, k) => {
       const e = p >> 1;
+      if (branched) {
+        const key = (l.branchOf ?? l.id) * 2 ** 26 + e, lead = placed.get(key), j = lead && lead !== l ? lead.path.indexOf(p) : -1;
+        if (j >= 0) return void follows.push({ line: l, k, lead: lead!, j });
+        if (!lead) placed.set(key, l);
+      }
       let v = on.get(e);
       if (!v) on.set(e, (v = []));
       if (!v.some((x) => x.line === l)) v.push({ line: l, k });
@@ -152,7 +162,7 @@ export function lineBands(lines: readonly BandLine[], edges: readonly BandEdge[]
   }
   // the same paths over the same edges as last time (a rebuild for trains or a timetable): the same bands
   let sig = `${opts?.corridors ?? CORRIDORS},${opts?.within ?? ""},${bandMode};`;
-  for (const l of rail) sig += `${l.id}:${l.path.join(",")};`;
+  for (const l of rail) sig += `${l.id}${l.branchOf !== undefined ? `/${l.branchOf}` : ""}:${l.path.join(",")};`;
   const used = [...on.keys()].map((e) => [pts.get(e), ends.get(e)?.a, ends.get(e)?.b] as const);
   if (!opts?.debug && last && last.sig === sig && last.used.length === used.length && used.every((u, i) => u[0] === last!.used[i][0] && u[1] === last!.used[i][1] && u[2] === last!.used[i][2])) return { ...last.out, corridor: last.corridor.slice() };
   const out = bands(rail, on, ends, pts, opts);
@@ -160,9 +170,113 @@ export function lineBands(lines: readonly BandLine[], edges: readonly BandEdge[]
     const bad = bandsDiffer(out, bands(rail, on, ends, pts, { ...opts, fresh: true }));
     if (bad) console.error(`T-2238 check: bands worked out again for an edit differ from a whole pass: ${bad}`);
   }
+  if (follows.length) followFamily(out, follows, pts);
   // (a copy: the clock worker transfers the array it posts)
   last = { sig, used, out, corridor: out.corridor.slice() };
   return out;
+}
+
+/** line branches: line `line`'s path entry `k` runs where `lead`, of its family, is placed, as `lead`'s entry `j` */
+interface Follow { line: BandLine; k: number; lead: BandLine; j: number }
+
+/**
+ * Line branches: each followed entry takes its lead's band there, knots and Traffic record, so a
+ * family draws one band where it shares track. A line's own entry next to a followed one eases from
+ * that band's end over SMOOTH_M, as a line leaving or joining a ribbon would, rather than stepping at
+ * the node where the branch parts. Profiles are new arrays: the ones in `out` are kept by the memo.
+ */
+function followFamily(out: LineBands, follows: readonly Follow[], pts: ReadonlyMap<number, Float32Array>): void {
+  const byLine = new Map<BandLine, Map<number, Follow>>();
+  for (const f of follows) {
+    let m = byLine.get(f.line);
+    if (!m) byLine.set(f.line, (m = new Map()));
+    m.set(f.k, f);
+  }
+  const S3 = (t: number) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+  const mix = (x: number[], y: number[], s: number) => x.map((v, i) => v + (y[i] - v) * s);
+  for (const [l, fs] of byLine) {
+    const own = out.of.get(l.id), n = l.path.length;
+    const from = (k: number): [BandProfile | undefined, number] => {
+      const x = fs.get(k);
+      return x ? [out.of.get(x.lead.id), x.j] : [own, k];
+    };
+    const bandAt = (k: number, f: number) => {
+      const [b, j] = from(k);
+      return b ? profileAt(b, j, f) : [0, 0, 0];
+    };
+    const starts: number[] = [], knots: number[] = [];
+    for (let k = 0; k < n; k++) {
+      starts.push(knots.length / KNOT);
+      const [b, j] = from(k), [o, c] = b ? bandKnots(b, j) : [0, 0];
+      const a = !fs.has(k) && fs.has(k - 1) ? bandAt(k - 1, 1) : null, z = !fs.has(k) && fs.has(k + 1) ? bandAt(k + 1, 0) : null;
+      if (!a && !z) {
+        for (let i = o; i < o + c * KNOT; i++) knots.push(b![i]);
+        continue;
+      }
+      const P = pts.get(l.path[k] >> 1);
+      let len = 0;
+      if (P) for (let i = 3; i + 1 < P.length; i += 3) len += Math.hypot(P[i] - P[i - 3], P[i + 1] - P[i - 2]);
+      len = P && P.length >= 6 ? len / kAtY(P[1]) : 0;
+      const r = len > SMOOTH_M ? SMOOTH_M / len : 1;
+      const inRamp = (f: number) => (!!a && f < r) || (!!z && f > 1 - r);
+      const list: number[][] = [];
+      for (let i = 0; i < c; i++) if (!inRamp(b![o + i * KNOT])) list.push(Array.from(b!.subarray(o + i * KNOT, o + (i + 1) * KNOT)));
+      const eased = (f: number) => {
+        let v = bandAt(k, f);
+        if (a) v = mix(a, v, S3(f / r));
+        if (z) v = mix(z, v, S3((1 - f) / r));
+        list.push([f, v[0], v[1], -1, v[2]]);
+      };
+      for (let i = 0; i < SMOOTH_KNOTS; i++) {
+        const t = (r * i) / (SMOOTH_KNOTS - 1);
+        if (a) eased(t);
+        if (z && !(a && 1 - t <= r)) eased(1 - t);
+      }
+      list.sort((x, y) => x[0] - y[0]);
+      for (const q of list) knots.push(...q);
+    }
+    starts.push(knots.length / KNOT);
+    let nonzero = false;
+    for (let i = 0; i < knots.length && !nonzero; i += KNOT) if (Math.abs(knots[i + 1]) > 1e-6 || knots[i + 2] > 0 || Math.abs(knots[i + 4]) > 1e-3) nonzero = true;
+    if (!nonzero) {
+      out.of.delete(l.id);
+      continue;
+    }
+    const p = new Float32Array(1 + starts.length + knots.length);
+    p[0] = n;
+    p.set(starts, 1);
+    p.set(knots, 1 + starts.length);
+    out.of.set(l.id, p);
+  }
+  // Traffic records: each followed entry its lead's there (none: a knot of no recipes, no shift), after
+  // the line's own, as `trafficBands` takes a line's last record on an edge that way
+  const t = out.corridor;
+  let o = 1;
+  for (let r = 0; r < t[0]; r++) o += 1 + 2 * t[o];
+  o += 1 + RECIPE * t[o];
+  const nAt = o++, recAt = new Map<string, [number, number]>();
+  for (let r = 0; r < t[nAt]; r++) {
+    const s = o, c = t[o + 5];
+    o += 6;
+    for (let k = 0; k < c; k++) o += 2 + 2 * t[o + 1];
+    recAt.set(`${t[s]},${t[s + 1]},${t[s + 2]}`, [s, o]);
+  }
+  const more: number[] = [];
+  let added = 0;
+  for (const f of follows) {
+    const p = f.line.path[f.k], e = p >> 1, P = pts.get(e);
+    if (!P || P.length < 6) continue;
+    const s = recAt.get(`${f.lead.id},${e},${p & 1}`);
+    if (s) more.push(f.line.id, ...t.subarray(s[0] + 1, s[1]));
+    else more.push(f.line.id, e, p & 1, P[0], P[1], 1, 0, 0);
+    added++;
+  }
+  if (!added) return;
+  const c = new Float32Array(t.length + more.length);
+  c.set(t);
+  c.set(more, t.length);
+  c[nAt] += added;
+  out.corridor = c;
 }
 
 /** `?patch=check` (T-2238): every build's bands also worked out whole and compared */

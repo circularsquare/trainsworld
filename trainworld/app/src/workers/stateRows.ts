@@ -90,6 +90,8 @@ interface LineRead {
   /** T-3333: `line_pairs`, `line_twin_of` */
   pairs: number;
   twinOf: number;
+  /** line branches: `line_branch_of` */
+  branchOf: number;
 }
 
 export function upgradesOf(a: TrackApi): Map<number, number> {
@@ -335,15 +337,15 @@ export class StateRows {
         heavy: fresh ? this.heavy(a, id, ok) : prev!.heavy,
         auto: a.line_auto(id), fast: a.line_fast(id), tram: a.line_tram(id), loopKind: a.line_loop(id), oneWay: a.line_one_way(id), limit: a.line_limit(id), shift: a.line_shift(id), upkeep: upkeepOf.get(id) ?? 0,
         busRow: bus ? env.busRow(a, id, nodes ?? []) : undefined,
-        pairs: bus ? 0 : a.line_pairs(id), twinOf: bus ? -1 : a.line_twin_of(id),
+        pairs: bus ? 0 : a.line_pairs(id), twinOf: bus ? -1 : a.line_twin_of(id), branchOf: bus ? -1 : a.line_branch_of(id),
       });
     }
     const out: ClockLine[] = [];
     for (const r of read) {
-      const { i, id, ok, running, prev, fresh, heavy, auto, fast, tram, loopKind, oneWay, limit, shift, upkeep, pairs, twinOf } = r;
+      const { i, id, ok, running, prev, fresh, heavy, auto, fast, tram, loopKind, oneWay, limit, shift, upkeep, pairs, twinOf, branchOf } = r;
       // the numbers behind the cheap fields: when all are as kept (and the heavy parts are), the row is the kept one
       const raw = li.slice(i, i + 22);
-      const extra = [upkeep, fast ? 1 : 0, tram ? 1 : 0, loopKind, oneWay ? 1 : 0, limit, shift, pairs, twinOf, ...auto];
+      const extra = [upkeep, fast ? 1 : 0, tram ? 1 : 0, loopKind, oneWay ? 1 : 0, limit, shift, pairs, twinOf, branchOf, ...auto];
       if (!fresh && prev && sameNumbers(raw, prev.raw) && sameNumbers(extra, prev.extra)) {
         out.push(prev.row);
         continue;
@@ -370,6 +372,7 @@ export class StateRows {
         limit,
         ...(pairs === 1 || pairs === 2 ? { pairs } : {}),
         ...(twinOf >= 0 ? { twinOf } : {}),
+        ...(branchOf >= 0 ? { branchOf } : {}),
         ...(r.busRow ? { bus: r.busRow } : {}),
       };
       if (r.bus) kept.delete(id);

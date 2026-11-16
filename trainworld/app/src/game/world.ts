@@ -98,7 +98,7 @@ export async function edit(op: EditOp, quiet = false, silent = false, early: boo
   return a;
 }
 
-const TRAIN_OPS = new Set(["setStops", "insertStop", "dropStop", "endLineAt", "stopPassed", "orderStops", "sortStops", "turnEnd", "openLoop", "setTrainCount", "setHeadway", "lineCars", "copyLine", "undo", "redo"]);
+const TRAIN_OPS = new Set(["setStops", "insertStop", "dropStop", "endLineAt", "stopPassed", "orderStops", "sortStops", "turnEnd", "openLoop", "setTrainCount", "setHeadway", "lineCars", "copyLine", "addBranch", "removeBranch", "undo", "redo"]);
 const BUILD_OPS = new Set(["route", "construct", "constructAll", "constructLine", "addStation", "crossover", "doubleUp", "stationUpgrade", "rebuild"]);
 /** What a refused-for-money edit would have paid for: line edits cost trains only, track edits construction. */
 function buysOf(op: EditOp): Buys | undefined {
@@ -497,14 +497,36 @@ export const stationsByNum = (w: WorldView) => lookup(w, "stationNums", (s) => n
 export const linesById = (w: WorldView) => lookup(w, "lines", (s) => new Map(s.lines.map((l) => [l.id, l])));
 export const linesByNum = (w: WorldView) => lookup(w, "lineNums", (s) => new Map(s.lines.map((l) => [l.num, l])));
 /** T-3333: the lines a player sees listed: every line but the hidden twins of lines run on both pairs of
- * quad track (which every sum still counts). */
-export const listedLines = (w: WorldView) => lookup(w, "listed", (s) => (s.lines.some((l) => l.twinOf) ? s.lines.filter((l) => !l.twinOf) : s.lines));
-/** The lines that stop at each station, in line order; at a twin's stations, the line it runs for (T-3333). */
+ * quad track, and (line branches) the branches, which show as their head (every sum still counts both). */
+export const listedLines = (w: WorldView) => lookup(w, "listed", (s) => (s.lines.some((l) => l.twinOf || l.branchOf) ? s.lines.filter((l) => !l.twinOf && !l.branchOf) : s.lines));
+const noLines: LineInput[] = [];
+/** Line branches: the branches of `head`, in line order (none for a line that is no head). */
+export const branchesOf = (w: WorldView, head: LineId): LineInput[] => lookup(w, "branches", (s) => {
+  const by = new Map<LineId, LineInput[]>();
+  for (const l of s.lines) if (l.branchOf) (by.get(l.branchOf) ?? by.set(l.branchOf, []).get(l.branchOf)!).push(l);
+  return by;
+}).get(head) ?? noLines;
+/** Line branches: `listedLines` for the views that ask which lines serve a station, a head's stops followed
+ * by those of its branches' it does not stop at itself, so a station past the branch point is the head's
+ * too. The added stops are no route: for the stations served only, never a path or stop order. */
+export const servingLines = (w: WorldView) => lookup(w, "serving", (s) => {
+  const ls = listedLines(w);
+  if (!s.lines.some((l) => l.branchOf)) return ls;
+  return ls.map((l) => {
+    const bs = branchesOf(w, l.id);
+    if (!bs.length) return l;
+    const own = new Set(l.stops);
+    return { ...l, stops: [...l.stops, ...new Set(bs.flatMap((b) => b.stops).filter((x) => !own.has(x)))] };
+  });
+});
+/** The lines that stop at each station, in line order; at a twin's stations, the line it runs for (T-3333),
+ * and at a branch's, its head (a branch's twin's, too). */
 export const linesAtMap = (w: WorldView) => lookup(w, "linesAt", (s) => {
   const at = new Map<string, LineInput[]>();
   const byId = new Map(s.lines.map((l) => [l.id, l]));
   for (const t of s.lines) {
-    const l = t.twinOf ? byId.get(t.twinOf) : t;
+    let l = t.twinOf ? byId.get(t.twinOf) : t;
+    if (l?.branchOf) l = byId.get(l.branchOf);
     if (!l) continue;
     for (const st of new Set(t.stops)) {
       const v = at.get(st) ?? at.set(st, []).get(st)!;

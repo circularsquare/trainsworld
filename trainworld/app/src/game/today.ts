@@ -10,7 +10,8 @@ import { t } from "../i18n";
 import { computed, signal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { clock, lineSeconds } from "./clock";
-import { linesById, stationsById, world } from "./world";
+import { branchesOf, linesById, stationsById, world } from "./world";
+import { addDays, foldBranches } from "./todayFold";
 import { queryClock } from "../workers/clockClient";
 import { accountVersion, type CrowdedStretch } from "./boarding";
 import { demandView } from "./demand";
@@ -32,6 +33,8 @@ export interface LineToday {
   riders: number;
   /** boardings at each stop, in the line's stop order */
   stops: number[];
+  /** line branches: a head's branches' boardings at stations the head itself never stops at, by station id */
+  beyond?: Record<string, number>;
   /** fares taken, US$ */
   fares: number;
   /** T-2475: fares a whole day of the line's local day now takes, US$: the expected profit's */
@@ -183,7 +186,7 @@ export function runningToday(l: LineInput, st: LineStats): number {
     cost += tph[lev] * (st.oneWay ? 1 : 2) * st.km * perKm * m.economy *(Math.min(h + 1, t) - Math.max(h, t0));
   }
   // T-2669: at its countries' prices, as the clock worker drains it
-  return cost * lineRunFactor(l.num) + twinsToo(st, runningToday);
+  return cost * lineRunFactor(l.num) + twinsToo(st, runningToday) + branchesToo(l, (b, bs) => (bs.status === "running" ? runningToday(b, bs) : 0));
 }
 
 /** T-3333: a line run on both pairs adds its hidden twin's figure (`today` has the two folded, `foldTwins`). */
@@ -192,8 +195,16 @@ function twinsToo(st: LineStats, f: (l: LineInput, st: LineStats) => number): nu
   return tl && ts ? f(tl, ts) : 0;
 }
 
-/** A line's share of upkeep a day, US$, its hidden twin's added in (T-3333). */
-export const upkeepToday = (l: LineInput, st: LineStats): number => st.upkeep + twinsToo(st, (_, s) => s.upkeep);
+/** Line branches: a head adds its branches' figure (`today` has them folded, `foldBranches`). */
+function branchesToo(l: LineInput, f: (l: LineInput, st: LineStats) => number): number {
+  const w = world.peek();
+  let n = 0;
+  if (w) for (const b of branchesOf(w, l.id)) { const s = w.lineStats[b.id]; if (s) n += f(b, s); }
+  return n;
+}
+
+/** A line's share of upkeep a day, US$, its hidden twin's (T-3333) and its branches' added in. */
+export const upkeepToday = (l: LineInput, st: LineStats): number => st.upkeep + twinsToo(st, (_, s) => s.upkeep) + branchesToo(l, upkeepToday);
 
 /** T-2536: whether a line's profit has been worked out: it runs trains (or buses, boats) and a demand
  * result with an entry for it has landed. Before that its figures are only the upkeep. */
@@ -271,11 +282,7 @@ export function foldTwins(days: Map<string, LineToday>, twins: ReadonlyMap<strin
     const a = days.get(p), b = days.get(t);
     if (b) {
       days.delete(t);
-      days.set(p, a ? {
-        riders: a.riders + b.riders, stops: a.stops.map((x, k) => x + (b.stops[k] ?? 0)), fares: a.fares + b.fares, dayFares: a.dayFares + b.dayFares,
-        fullTrains: a.fullTrains + b.fullTrains, trains: a.trains + b.trains, leftBehind: a.leftBehind + b.leftBehind, trainsNow: a.trainsNow + b.trainsNow, fullNow: a.fullNow + b.fullNow,
-        crowdLoad: Math.max(a.crowdLoad, b.crowdLoad),
-      } : b);
+      days.set(p, a ? addDays(a, b, a.stops.map((x, k) => x + (b.stops[k] ?? 0))) : b);
     }
   }
 }
@@ -287,7 +294,9 @@ export const stationsToday = computed(() => {
   if (!w) return out;
   for (const l of w.save.lines) {
     const d = t.get(l.id);
-    if (d) l.stops.forEach((s, k) => out.set(s, (out.get(s) ?? 0) + (d.stops[k] ?? 0)));
+    if (!d) continue;
+    l.stops.forEach((s, k) => out.set(s, (out.get(s) ?? 0) + (d.stops[k] ?? 0)));
+    for (const [s, v] of Object.entries(d.beyond ?? {})) out.set(s, (out.get(s) ?? 0) + v);
   }
   return out;
 });
@@ -318,6 +327,7 @@ function ask(force = false) {
     readFor = new Map((w?.save.lines ?? []).map((l) => [l.id, l.stops]));
     const next = readToday(d), prev = today.peek();
     if (w?.twins.size) foldTwins(next, w.twins);
+    if (w?.branches.size) foldBranches(next, w.branches, (id) => readFor.get(id));
     // A line's account is worked out again a while after its stops change (new riders, T-164);
     // until then its counts may be per the old stops. The ones moved to the new stops stand meanwhile.
     const pend = linesPending.peek();
@@ -331,9 +341,11 @@ function ask(force = false) {
     }
     // T-2773: a line whose riders are being worked out again keeps its last settled counts and fares, not the
     // half-done answer's (a local solve reads a long line far low); the final one replaces them when it lands
+    // (line branches: a head's counts hold while a branch of it is worked out again, its branches' being in them)
+    const pendOf = (id: string) => pend.get(id) ?? (w ? branchesOf(w, id).map((b) => pend.get(b.id)).find((k) => k === "change") : undefined);
     for (const [id, x] of next) {
-      const s = settled.get(id);
-      if (pend.get(id) === "change" && s && !perfOff("settledHold")) next.set(id, { ...x, riders: s.riders, fullTrains: s.fullTrains, leftBehind: s.leftBehind, fares: s.fares, dayFares: s.dayFares, stops: s.stops.length === x.stops.length ? s.stops : x.stops });
+      const s = settled.get(id), same = s?.stops.length === x.stops.length;
+      if (pendOf(id) === "change" && s && !perfOff("settledHold")) next.set(id, { ...x, riders: s.riders, fullTrains: s.fullTrains, leftBehind: s.leftBehind, fares: s.fares, dayFares: s.dayFares, stops: same ? s.stops : x.stops, beyond: same ? s.beyond : x.beyond });
       else settled.set(id, x);
     }
     for (const id of settled.keys()) if (!next.has(id) && !pend.has(id)) settled.delete(id);

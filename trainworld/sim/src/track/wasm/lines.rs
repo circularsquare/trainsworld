@@ -14,7 +14,7 @@ impl TrackApi {
         let Some((stops, path)) = edited_stops(&self.w.net, stops, false) else {
             return self.refuse(Issue::LinePath { line: id });
         };
-        self.run(Op::Line { id, data: Some(LineData { symbol: String::new(), trains: Some([high, medium, low]), auto: None, name, colour, tph: if stops.len() < 2 { [0.0; 3] } else { [6.0, 3.0, 1.0] }, stops, path, dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), day: 0, hand: false, one_way: false, limit: 0, twin: Default::default() }) })
+        self.run(Op::Line { id, data: Some(LineData { symbol: String::new(), trains: Some([high, medium, low]), auto: None, name, colour, tph: if stops.len() < 2 { [0.0; 3] } else { [6.0, 3.0, 1.0] }, stops, path, dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), branch: None }) })
     }
     /// Change a line's stops, keeping everything else; the path is found again.
     pub fn set_stops(&mut self, id: u32, stops: &[u32]) -> u32 {
@@ -22,7 +22,7 @@ impl TrackApi {
         let Some((stops, path)) = edited_stops(&self.w.net, stops, d.hand) else { return self.refuse(Issue::LinePath { line: id }) };
         d.stops = stops;
         d.path = path;
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
     /// T-2895: the line's stops in the order the player gave, which the line then keeps: no later
     /// stop edit puts them in a straighter one. Refused like `set_stops`, and for a bus or ferry line.
@@ -105,7 +105,7 @@ impl TrackApi {
         let Some(mut d) = self.w.net.line_data(id) else { return self.refuse(Issue::NoSuchLine { line: id }) };
         let Some(stops) = stopped_at(&self.w.net, &d, station) else { return self.refuse(Issue::LinePath { line: id }) };
         d.stops = stops;
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
     /// Stops `lo..=hi` out; `lo..=hi` is one interior stop, a start or an end of the line.
     fn drop_stops(&mut self, id: u32, lo: usize, hi: usize) -> u32 {
@@ -113,7 +113,7 @@ impl TrackApi {
         let Some((stops, path)) = dropped(&self.w.net, &d, lo, hi) else { return self.refuse(Issue::LinePath { line: id }) };
         d.stops = stops;
         d.path = path;
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
     /// Rename or recolour a line; its path stays.
     pub fn set_line_look(&mut self, id: u32, name: String, colour: u32) -> u32 {
@@ -141,6 +141,10 @@ impl TrackApi {
         let Some(mut d) = self.w.net.line_data(source) else { return self.refuse(Issue::NoSuchLine { line: source }) };
         d.name = name;
         d.day = 0;
+        // line branches: a copy of any route stands alone, never a sibling branch; a new group goes
+        // on the head, as the branches follow their head's group
+        let owner = d.branch.unwrap_or(source);
+        d.branch = None;
         // a bus line's copy is a planned route, paid for on Construct (T-1464)
         if let Some(r) = d.bus.as_mut() {
             r.built = false;
@@ -157,14 +161,71 @@ impl TrackApi {
         let mut ops = vec![];
         if d.group == 0 {
             d.group = self.new_line_group();
-            let mut s = self.w.net.line_data(source).unwrap();
+            let mut s = self.w.net.line_data(owner).unwrap();
             s.group = d.group;
-            ops.push(Op::Line { id: source, data: Some(s) });
+            ops.push(Op::Line { id: owner, data: Some(s) });
         }
         ops.push(Op::Line { id, data: Some(d) });
         let r = self.run(if ops.len() == 1 { ops.pop().unwrap() } else { Op::Batch(ops) });
         if r == 0 { self.w.net.next_line_number = self.w.net.next_line_number.saturating_add(1); }
         r
+    }
+    /// Line branches: a new line `id` from `head`'s trunk out to `target`, a station off the head;
+    /// it keeps the head's look, as one line to the player, but like a copy starts with no trains,
+    /// so a gesture never buys a fleet or doubles the trunk's service. One undoable edit. Branches
+    /// hang off one trunk, so a branch, a hidden twin, a bus or a ferry line is no head.
+    pub fn add_branch(&mut self, head: u32, id: u32, target: u32) -> u32 {
+        let net = &self.w.net;
+        let Some(mut d) = net.line_data(head) else { return self.refuse(Issue::NoSuchLine { line: head }) };
+        if d.bus.is_some() || d.ferry.is_some() || d.branch.is_some() || matches!(d.twin, crate::track::twin::Twin::Of(_)) {
+            return self.refuse(Issue::LinePath { line: head });
+        }
+        // a loop's closing stop is its first one again, never a trunk end of its own
+        let mut s = d.stops.clone();
+        if s.len() >= 3 && s[0] == s[s.len() - 1] {
+            s.pop();
+        }
+        if s.contains(&target) {
+            return self.refuse(Issue::LinePath { line: head });
+        }
+        let time = |p: &[u32]| p.iter().map(|&e| net.edge_time[crate::track::net::path_edge(e) as usize]).sum::<f64>();
+        // the trunk is the start of the line up to stop k (then out to the target) or stop k on to
+        // its end (in from the target): whichever leaves the line where its trains need not turn
+        // back, by the shortest run off it, the longer trunk on a tie
+        let mut best: Option<(f64, usize, Vec<u32>, Vec<u32>)> = None;
+        for k in 0..s.len() {
+            for out in [true, false] {
+                let trunk = if out { &s[..=k] } else { &s[k..] };
+                let stops: Vec<u32> = if out { [trunk, &[target]].concat() } else { [&[target], trunk].concat() };
+                let (Some(own), Some(path)) = (net.route(trunk), net.route(&stops)) else { continue };
+                if net.path_reversals(&path).len() > net.path_reversals(&own).len() {
+                    continue;
+                }
+                // found from the junction, not `own`'s length: a trunk revisiting its first stop routes
+                // as a loop on its own, so `own` need not prefix the path
+                let hop = if out {
+                    &path[path.iter().rposition(|&e| net.path_nodes(e).1 == s[k]).map_or(0, |i| i + 1)..]
+                } else {
+                    &path[..path.iter().position(|&e| net.path_nodes(e).1 == s[k]).map_or(path.len(), |i| i + 1)]
+                };
+                let key = (time(hop), usize::MAX - trunk.len());
+                if best.as_ref().is_none_or(|b| key < (b.0, b.1)) {
+                    best = Some((key.0, key.1, stops, path));
+                }
+            }
+        }
+        let Some((_, _, stops, path)) = best else { return self.refuse(Issue::LinePath { line: head }) };
+        d.stops = stops;
+        d.path = path;
+        d.branch = Some(head);
+        // the head's `hand` stays: a hand-set stop order keeps the trunk as the player laid it
+        (d.one_way, d.day) = (false, 0);
+        d.trains = Some([0; 3]);
+        d.tph = [0.0; 3];
+        if d.auto.is_some() {
+            d.auto = Some([0; 3]);
+        }
+        self.run(Op::Line { id, data: Some(d) })
     }
 
     // ---- line groups (T-1791): a grouping for the Lines tab; no service edit
@@ -274,7 +335,7 @@ impl TrackApi {
         };
         let Some((stops, path)) = edited_stops(&self.w.net, &stops, d.hand) else { return self.refuse(Issue::LinePath { line: id }) };
         (d.stops, d.path) = (stops, path);
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
 
     /// The stations a line passes without stopping (T-646): `[gap, node]` pairs in path order, gap
@@ -491,7 +552,8 @@ impl TrackApi {
         // the last other line of its group leaves it too (T-1791)
         let n = &self.w.net;
         let g = self.line_group(id);
-        let rest: Vec<u32> = (0..n.line_count() as u32).filter(|&l| g != 0 && l != id && n.line_ok(l) && n.line_group[l as usize] == g).collect();
+        // line branches: its branches go with it, so they do not count as staying
+        let rest: Vec<u32> = (0..n.line_count() as u32).filter(|&l| g != 0 && l != id && n.line_ok(l) && n.line_group[l as usize] == g && n.line_branch_of(l) != Some(id)).collect();
         if let [other] = rest[..] {
             let mut d = n.line_data(other).unwrap();
             d.group = 0;
@@ -501,6 +563,31 @@ impl TrackApi {
             return self.run_charged(op);
         }
         self.run(op)
+    }
+    /// Line branches: remove one route of a branched line, the rest staying one line to the player,
+    /// as one undoable edit. Its routes are peers, so removing the head makes its lowest branch the
+    /// head of the others; a line with no branches is refused, as Delete line is what removes it.
+    pub fn remove_branch(&mut self, line: u32) -> u32 {
+        let n = &self.w.net;
+        if n.line_branch_of(line).is_some() {
+            return self.remove_line(line);
+        }
+        let family = n.branches_of(line);
+        let Some(&head) = family.first() else { return self.refuse(Issue::LinePath { line }) };
+        // the family stays in its group, which is listed as one line, so one left alone in it leaves it
+        let g = self.line_group(line);
+        let alone = g != 0 && !(0..n.line_count() as u32).any(|l| l != line && !family.contains(&l) && n.line_ok(l) && n.line_group[l as usize] == g);
+        // one batch with the old head's delete, so no branch is ever left on a line gone
+        let mut ops: Vec<Op> = family.iter().map(|&l| {
+            let mut d = n.line_data(l).unwrap();
+            d.branch = (l != head).then_some(head);
+            if alone {
+                d.group = 0;
+            }
+            Op::Line { id: l, data: Some(d) }
+        }).collect();
+        ops.push(Op::Line { id: line, data: None });
+        self.run(Op::Batch(ops))
     }
 
     /// Allocate whole trains to the entire line, across both directions.

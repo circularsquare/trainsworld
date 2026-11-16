@@ -18,7 +18,7 @@ import { stationsToday, today, useToday } from "../../game/today";
 import { selection, shownDay, shownDayOn, shownDayPhrase } from "../../game/ui";
 import { builtCities } from "../../game/worldTotals";
 import { AVERAGE_DAY } from "../../game/days";
-import { listedLines, stationsById, world } from "../../game/world";
+import { servingLines, stationsById, world } from "../../game/world";
 import type { LineInput, StationInput } from "../../game/types";
 import { figures, moneyTip, net, pointsTip } from "../Cities";
 import { goalTip } from "../GoalTicks";
@@ -50,7 +50,7 @@ export function CityFigures({ city, built }: { city: City; built: boolean }) {
   // T-1892: the same counts as the Cities tab's hover and Trips column, and the lines that stop here
   const w = world.value;
   const stations = builtCities().get(city.id) ?? 0;
-  const lines = w ? cityScope(city.id, stationsById(w), listedLines(w)).length : 0;
+  const lines = w ? cityScope(city.id, stationsById(w), servingLines(w)).length : 0;
   return (
     <>
     <ul class="rows">
@@ -100,17 +100,18 @@ export function CityNetwork({ city }: { city: City }) {
   const w = world.value;
   if (!w) return null;
   const byId = stationsById(w);
-  const scope = cityScope(city.id, byId, listedLines(w));
+  const scope = cityScope(city.id, byId, servingLines(w));
   if (!scope.length) return null;
   const t = today.value, known = t.size > 0;
   const lineRows = scope
-    .map(({ line, at }) => ({ line, n: at.reduce((s, k) => s + (t.get(line.id)?.stops[k] ?? 0), 0) }))
+    // (a head's stops past its own are its branches' stations, whose boardings it keeps in `beyond`)
+    .map(({ line, at }) => ({ line, n: at.reduce((s, k) => { const d = t.get(line.id); return s + (d?.stops[k] ?? d?.beyond?.[line.stops[k]] ?? 0); }, 0) }))
     .sort((a, b) => b.n - a.n)
     .slice(0, TOP);
   // one row per complex (as the Stations tab), named after its member with most lines
   const cx = complexes.value, by = stationsToday.value;
   const linesAt = new Map<string, number>();
-  for (const l of listedLines(w)) for (const s of new Set(l.stops)) linesAt.set(s, (linesAt.get(s) ?? 0) + 1);
+  for (const l of servingLines(w)) for (const s of new Set(l.stops)) linesAt.set(s, (linesAt.get(s) ?? 0) + 1);
   const seen = new Set<string>();
   const stationRows: { lead: StationInput; n: number }[] = [];
   for (const s of w.save.stations) {

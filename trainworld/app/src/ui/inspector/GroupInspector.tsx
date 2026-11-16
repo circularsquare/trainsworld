@@ -21,7 +21,7 @@ import { LINE, ROUND_MAX, TALL_MAX, barOffset, pillHeight } from "../../game/rel
 import { today } from "../../game/today";
 import { DEMAND_INDEX, type LineInput, type WorldView } from "../../game/types";
 import { selection } from "../../game/ui";
-import { edit, stationNames, stationsById, world } from "../../game/world";
+import { edit, listedLines, stationNames, stationsById, world } from "../../game/world";
 import { drawnReversed } from "../../game/northUp";
 import { scrollerOf } from "../scroller";
 import type { EditOp } from "../../workers/protocol";
@@ -62,7 +62,8 @@ let kept: { sig: string; lay: GroupLayout } | null = null;
 
 export function GroupInspector({ group }: { group: number }) {
   const w = world.value;
-  const byNum = w ? lineGroups(w.save.lines).get(group) : undefined;
+  // (line branches: a column per line as listed, a head standing for its branches)
+  const byNum = w ? lineGroups(listedLines(w)).get(group) : undefined;
   // T-1813: the columns in the Lines tab's hand order, where it has one
   const ls = byNum && byHand(byNum, (l) => [l.id], handOrder.value.lines);
   const all = groupAllStops.value;

@@ -66,4 +66,9 @@ impl TrackApi {
             _ => -1,
         }
     }
+
+    /// Line branches: the head line `line` branches from, else -1.
+    pub fn line_branch_of(&self, line: u32) -> i32 {
+        self.w.net.line_branch_of(line).filter(|_| self.w.net.line_ok(line)).map_or(-1, |h| h as i32)
+    }
 }

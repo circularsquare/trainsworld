@@ -565,6 +565,15 @@ body.resizing, body.resizing * { user-select: none; }
 .line-list-actions, .line-stop-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .line-identity input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--rule); }
 .line-stop-actions { justify-content: flex-start; margin-top: 12px; }
+/* line branches: a branched line's routes, one row each, the open one's bar in full colour */
+.line-routes { margin-top: 8px; }
+.line-routes button { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.line-routes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.line-routes .route-bar { flex: none; width: 4px; height: 16px; opacity: .35; }
+.line-routes li.on .route-bar { opacity: 1; }
+.line-routes .val { white-space: nowrap; }
+.line-routes .route-trains { display: inline-flex; align-items: center; gap: 2px; }
+.line-routes .route-trains svg { width: 14px; height: 14px; }
 .top-speed .val .btn { margin-left: 8px; }
 .improvements { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .improvements .improve { height: auto; min-height: 28px; padding: 3px 8px; grid-auto-flow: row; gap: 0; max-width: 100%; white-space: normal; text-align: center; }

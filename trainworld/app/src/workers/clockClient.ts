@@ -259,6 +259,9 @@ function toWorld(s: ClockState): WorldView {
   // is marked for the lists to leave out, its line for its panel to add it in
   const twinOfLine = new Map<number, number>(), twins = new Map<string, string>();
   for (const l of s.lines) if (l.twinOf !== undefined) { twinOfLine.set(l.twinOf, l.id); twins.set(String(l.id), String(l.twinOf)); }
+  // line branches: likewise each branch keeps its row, its head's figures and list place take it in
+  const branches = new Map<string, string>();
+  for (const l of s.lines) if (l.branchOf !== undefined) branches.set(String(l.id), String(l.branchOf));
   let lines: LineInput[] = s.lines.map((l) => {
     let v = lineViews.get(l);
     if (!v) lineViews.set(l, v = {
@@ -266,6 +269,7 @@ function toWorld(s: ClockState): WorldView {
       ...(l.group ? { group: l.group, groupName: l.groupName, groupSymbol: l.groupSymbol, groupColour: l.groupColour } : {}),
       tph: { high: l.tph[0], medium: l.tph[1], low: l.tph[2] },
       ...(l.twinOf !== undefined ? { twinOf: String(l.twinOf) } : {}),
+      ...(l.branchOf !== undefined ? { branchOf: String(l.branchOf) } : {}),
     });
     return v;
   });
@@ -312,6 +316,7 @@ function toWorld(s: ClockState): WorldView {
       limit: l.limit,
       ...(l.pairs ? { pairs: l.pairs } : {}),
       ...(l.twinOf !== undefined ? { twinOf: String(l.twinOf) } : {}),
+      ...(l.branchOf !== undefined ? { branchOf: String(l.branchOf) } : {}),
       ...(l.bus ? { bus: l.bus } : {}),
     };
   }
@@ -336,6 +341,7 @@ function toWorld(s: ClockState): WorldView {
     save: { cash: s.cash * 1e6, stations, lines, links: pairsOf(s.links ?? []), ...(s.buildings?.length ? { buildings: s.buildings } : {}) },
     lineStats,
     twins,
+    branches,
     edges,
     nodes,
     money: {

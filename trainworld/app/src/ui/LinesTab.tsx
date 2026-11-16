@@ -10,7 +10,7 @@ import { createLine, newBusLine, newFerryLine } from "../game/lineActions";
 import { boatsText, busesText, count, money } from "../game/format";
 import { DEMAND_INDEX, type Demand, type LineInput, type LineStats } from "../game/types";
 import { lineSort, selection, uiScale } from "../game/ui";
-import { listedLines, edit, pairStats, renameLine, stationsById } from "../game/world";
+import { branchesOf, listedLines, edit, pairStats, renameLine, servingLines, stationsById } from "../game/world";
 import { closedGroups, groupName, lineGroups, toggleGroup } from "../game/lineGroups";
 import { byHand, handOrder, setHandOrder } from "../game/handOrder";
 import { GroupPill } from "./GroupPill";
@@ -176,12 +176,14 @@ export function LinesTab() {
     try { await createLine(); } finally { setCreating(false); }
   };
   // a line that is not running has no train count and no riders: it sorts as zero
-  const trains = (id: string) => (w.lineStats[id]?.status === "running" ? pairStats(w, w.lineStats[id]).trainsNeeded[levOf(id)] : 0);
+  const ownTrains = (id: string) => (w.lineStats[id]?.status === "running" ? pairStats(w, w.lineStats[id]).trainsNeeded[levOf(id)] : 0);
+  // line branches: a head's row counts its branches' trains
+  const trains = (id: string) => branchesOf(w, id).reduce((n, b) => n + ownTrains(b.id), ownTrains(id));
   // T-1813: while the player's hand order holds, no sort
   const hand = handOrder.value.lines;
   const key = hand.length ? null : lineSort.value.key, dir = lineSort.value.dir;
   // T-332: only the viewed place unless the world is chosen
-  const sc = scopedLists(w.save.stations, listedLines(w), (k, id) => (k === "line" && (sel?.kind === "line" || sel?.kind === "train") && sel.line === id), key === "near");
+  const sc = scopedLists(w.save.stations, servingLines(w), (k, id) => (k === "line" && (sel?.kind === "line" || sel?.kind === "train") && sel.line === id), key === "near");
   // T-670: on the whole world, a city column once lines start in two or more cities (a line's city is where its first stop is)
   const cityOf = new Map<string, string>();
   if (sc.zone === null) {
@@ -359,7 +361,7 @@ export function LinesTab() {
           <>
             <RidersToday l={l} />
             <MoneyToday l={l} st={st} />
-            <TrainsNow line={l.id} n={pairStats(w, st).trainsNeeded[levOf(l.id)]} period={periodOf(l)} at={periodAt(lineSeconds(st))} bus={!!st.bus} ferry={!!st.bus?.ferry} tram={!!st.tram} v={crowdOf(l)} lev={demandAt(lineSeconds(st))} stops={l.stops.length} flip={lineReversed(l, w, !!st.loop)} ends={endNames(l)} />
+            <TrainsNow line={l.id} n={trains(l.id)} period={periodOf(l)} at={periodAt(lineSeconds(st))} bus={!!st.bus} ferry={!!st.bus?.ferry} tram={!!st.tram} v={crowdOf(l)} lev={demandAt(lineSeconds(st))} stops={l.stops.length} flip={lineReversed(l, w, !!st.loop)} ends={endNames(l)} />
           </>
         )}
         {key === "near" && <Near m={sc.lineDist.get(l.id)} />}

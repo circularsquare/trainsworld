@@ -23,7 +23,7 @@ import { CROWD_LOAD_FROM, CROWD_LOAD_STRONG, FULL_FLOOR } from "../../map/render
 import { liveMoney, moneyState } from "../../game/money";
 import { fullParts, fullTip, fullTitle, heldText, heldTip, heldTrains } from "../../game/capacityKinds";
 import { toggleEditStops } from "../../game/lineActions";
-import { noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats } from "../../game/world";
+import { branchesOf, noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats } from "../../game/world";
 import { live } from "../../map/live";
 import { setListHot } from "../../map/hovered";
 import { Alert, Check, Chip, Icon, Row, Segmented, shakeEl, Stepper, SwapLabel } from "../widgets";
@@ -44,7 +44,7 @@ import { LineProfile } from "./LineProfile";
 import { LineTopSpeed } from "./LineTopSpeed";
 import type { EditOp } from "../../workers/protocol";
 import { hasUpgrade, UPGRADE } from "../../game/upgrades";
-import { AverageSpeed, carsBought, carsText, demandLabel, type Limit, NO_LIMITS, PastDay, Schedule, useLinePeriods } from "./schedule";
+import { AverageSpeed, carsBought, carsText, demandLabel, type Limit, NO_LIMITS, PastDay, Schedule, useLinePeriods, vehiclesText } from "./schedule";
 import { LineTitle, useLineTitle } from "./LineTitle";
 import { TRACK_SPECS } from "../../game/trackKinds";
 
@@ -739,13 +739,19 @@ function RailLineInspector({ id }: { id: string }) {
       if (a.ok && now && lineDraft.peek().line === l.num) lineDraft.value = { line: l.num, stops: now.stops.map(Number) };
     } finally { stopEditing = false; }
   };
-  // T-2919: no question, since an undo brings the line back (track and stations stay)
-  const remove = () => {
-    void edit({ op: "removeLine", line: l.num }).then(a => {
+  // T-2919: no question, since an undo brings the line back (track and stations stay). Line branches:
+  // a line's routes are peers, so any one goes on its own, leaving the head's panel open, and Delete
+  // line on any of them deletes the whole line, its head taking its branches with it
+  const remove = (branch: boolean) => {
+    const num = branch ? l.num : head?.num ?? l.num;
+    void edit({ op: branch ? "removeBranch" : "removeLine", line: num }).then(a => {
       if (!a.ok) return;
-      if (lineDraft.peek().line === l.num) live.tools?.exit();
+      const draft = lineDraft.peek().line;
+      if (draft === l.num || draft === num) live.tools?.exit();
       const selected = selection.peek();
-      if (selected?.kind === "line" && selected.line === l.id) selection.value = null;
+      // the line left was there before the edit, so the panel's world has it
+      const left = branch && a.line !== undefined ? linesByNum(w).get(a.line) : undefined;
+      if (selected?.kind === "line" && selected.line === l.id) selection.value = left ? { kind: "line", line: left.id } : null;
     });
   };
   const copy = async () => {
@@ -761,6 +767,11 @@ function RailLineInspector({ id }: { id: string }) {
   };
 
   const shown = title.shown;
+  // line branches: a head and its branches share one name, so the routes list tells them apart by their ends
+  const head = l.branchOf ? linesById(w).get(l.branchOf) : undefined;
+  const branches = branchesOf(w, head?.id ?? l.id);
+  const routes = [head ?? l, ...branches];
+  const family = routes.length > 1;
   const nStops = l.stops.length;
   // T-3025: a line turned round a loop is one row per station, its stops being edited or not (T-3109)
   const byId = stationsById(w);
@@ -991,6 +1002,28 @@ function RailLineInspector({ id }: { id: string }) {
       <div class="sub muted flush">
         {tr("lineInspector.sub", { fast: !!st.fast, count: turned ? turned.rows.length : l.stops.length - (st.loop ? 1 : 0), distance: distance(st.km * 1000) })}
       </div>
+      {family && <div class="sub muted flush">{tr("lineInspector.routes", { n: routes.length })}</div>}
+      {family && (
+        <ul class="rows pick line-routes">
+          {routes.map((r) => {
+            const rs = w.lineStats[r.id];
+            const from = name.get(r.stops[0]) ?? "";
+            // the Lines tab's trains cell for this route alone (a head's row there folds its branches in)
+            const n = rs?.status === "running" ? pairStats(w, rs).trainsNeeded[DEMAND_INDEX[demandAt(lineSeconds(rs))]] : 0;
+            const on = r.id === l.id;
+            return (
+              <li class={on ? "on" : ""}>
+                <button aria-current={on ? "true" : undefined} onClick={() => (selection.value = { kind: "line", line: r.id })}>
+                  <span class="route-bar" style={{ background: on ? shown : r.colour }} />
+                  <span class="grow">{rs?.loop ? tr("lineInspector.routeLoop", { from }) : tr("lineInspector.routeEnds", { from, to: name.get(r.stops[r.stops.length - 1]) ?? "" })}</span>
+                  <span class="val muted">{tr("lineInspector.routeStops", { count: (rs && turnedLine(r.stops, rs)?.rows.length) ?? r.stops.length - (rs?.loop ? 1 : 0) })}</span>
+                  <span class="val route-trains" data-tip={vehiclesText(vehicleOf(st), n)}>{n}{st.tram ? <Icon.tram /> : <Icon.train />}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {st.status === "planned" && l.stops.length >= 2 && (
         <div class="callout">
           <p>{tr("busInspector.planned")}</p>
@@ -1004,7 +1037,8 @@ function RailLineInspector({ id }: { id: string }) {
       <div class="line-stop-actions">
         <button class={"btn text" + (editingStops ? " on" : "")} data-guide={editingStops ? undefined : "stops"} data-tip={tr(editingStops ? "lineInspector.finishTip" : "lineInspector.editTip")} onClick={() => toggleEditStops(l)}><Icon.pencil /><SwapLabel on={editingStops} off={tr("lineInspector.editStops")} onText={tr("lineInspector.stopEditing")} /></button>
         <button class="btn text" onClick={() => void copy()} disabled={copying}>{tr("busInspector.copy")}</button>
-        <button class="btn text danger" onClick={remove}>{tr("busInspector.deleteYes")}</button>
+        {family && <button class="btn text danger" onClick={() => remove(true)}>{tr("lineInspector.removeBranch")}</button>}
+        <button class="btn text danger" onClick={() => remove(false)}>{tr("busInspector.deleteYes")}</button>
       </div>
       {editingStops && stopsBlock}
 
@@ -1026,7 +1060,9 @@ function RailLineInspector({ id }: { id: string }) {
         </ul>
       )}
 
-      {st.status === "running" && <div class="line-day"><PastDay l={l} st={st} periods={periods} kind={kind} extra={<PurposeSplit scope={[{ line: l.id }]} unit={tr("lineInspector.ridersUnit")} />} /></div>}
+      {/* line branches: a branch's riders and money are counted in its head's figures, so it has none of its own */}
+      {st.status === "running" && head && <div class="line-day"><p class="muted">{tr("lineInspector.countedWith", { line: head.name })}</p></div>}
+      {st.status === "running" && !head && <div class="line-day"><PastDay l={l} st={st} periods={periods} kind={kind} extra={<PurposeSplit scope={[{ line: l.id }]} unit={tr("lineInspector.ridersUnit")} />} /></div>}
 
       {!editingStops && stopsBlock}
       {st.status !== "broken" && l.stops.length >= 2 && <RoundTrip num={l.num} st={st} lev={lev} stops={l.stops.length} spots={spots} waitSpots={waitSpots} />}

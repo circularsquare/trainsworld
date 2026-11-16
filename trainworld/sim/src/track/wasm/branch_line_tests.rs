@@ -1,0 +1,584 @@
+//! Line branches: the relation on a line and its `LBR1` save block, the head edits its branches
+//! follow, `add_branch` out to a station, and trunk stop edits carried to the branches.
+
+use super::*;
+use crate::track::tests::{edge, node, station, terminals_at_dead_ends, world};
+
+/// Two lines over the same pair of stations, the second set to branch from the first.
+fn two_lines(branch: bool) -> (TrackApi, u32, u32) {
+    let mut a = TrackApi::new(-73.985, 40.758, true);
+    let ends = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4000.0, 0.0, 0.0];
+    assert_eq!(a.add_route(&ends, &[], 2, false), 0, "{}", a.issues());
+    let stops: Vec<u32> = [500.0, 3500.0].iter().map(|&x| {
+        let e = (0..a.w.net.edge_count() as u32).filter(|&e| a.w.net.edge_ok(e)).min_by(|&p, &q| a.w.net.project(p, x, 0.0).1.total_cmp(&a.w.net.project(q, x, 0.0).1)).unwrap();
+        assert_eq!(a.add_station(2, e, x, 0.0, 200, format!("S{x}")), 0, "{}", a.issues());
+        (0..a.w.net.node_count() as u32).filter(|&k| a.w.net.node_ok(k) && a.w.net.node_platform[k as usize] > 0)
+            .min_by(|&p, &q| (a.w.net.node_x[p as usize] - x).abs().total_cmp(&(a.w.net.node_x[q as usize] - x).abs())).unwrap()
+    }).collect();
+    let ids: Vec<u32> = (0..2).map(|_| {
+        let id = a.new_line_id();
+        assert_eq!(a.set_line(id, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, format!("L{id}")), 0, "{}", a.issues());
+        id
+    }).collect();
+    if branch {
+        let mut d = a.w.net.line_data(ids[1]).unwrap();
+        d.branch = Some(ids[0]);
+        assert_eq!(a.run(Op::Line { id: ids[1], data: Some(d) }), 0, "{}", a.issues());
+    }
+    (a, ids[0], ids[1])
+}
+
+#[test]
+fn a_branch_survives_a_save_and_load() {
+    let (a, head, branch) = two_lines(true);
+    assert_eq!(a.w.net.branches_of(head), vec![branch]);
+    let mut b = TrackApi::new(-73.985, 40.758, true);
+    assert!(b.load(&a.save()));
+    assert_eq!(b.line_branch_of(branch), head as i32);
+    assert_eq!(b.line_branch_of(head), -1);
+}
+
+#[test]
+fn a_save_without_branches_loads_none() {
+    let (a, head, other) = two_lines(false);
+    let bytes = a.save();
+    assert!(!bytes.windows(4).any(|w| w == b"LBR1"));
+    let mut b = TrackApi::new(-73.985, 40.758, true);
+    assert!(b.load(&bytes));
+    assert_eq!([b.line_branch_of(head), b.line_branch_of(other)], [-1, -1]);
+}
+
+/// What a branch takes from its head: the line's look and its trains' kind and timings.
+type Identity = (String, String, u32, u8, bool, u16, f32, f32, u32, String, GroupLook);
+fn identity(a: &TrackApi, l: u32) -> Identity {
+    let d = a.w.net.line_data(l).unwrap();
+    (d.name, d.symbol, d.colour, d.cars, d.fast, d.limit, d.dwell_s, d.turnaround_s, d.group, d.group_name, d.group_look)
+}
+
+#[test]
+fn renaming_the_head_renames_its_branches() {
+    let (mut a, head, branch) = two_lines(true);
+    let was = identity(&a, branch);
+    assert_eq!(a.set_line_look(head, "Red".into(), 0x00ff00), 0, "{}", a.issues());
+    assert_eq!((a.w.net.line_name[branch as usize].as_str(), a.w.net.line_colour[branch as usize]), ("Red", 0x00ff00));
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert_eq!(identity(&a, branch), was, "one undo puts the branch back too");
+    assert_eq!(a.w.net.line_name[head as usize], format!("L{head}"));
+    assert_eq!(a.line_branch_of(branch), head as i32);
+}
+
+#[test]
+fn every_identity_edit_on_the_head_reaches_its_branches() {
+    let (mut a, head, branch) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    // a group of one dissolves, so the head joins one with another line
+    let other = a.new_line_id();
+    assert_eq!(a.set_line(other, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "Other".into()), 0, "{}", a.issues());
+    let g = a.new_line_group();
+    let edits: [(&str, Box<dyn Fn(&mut TrackApi) -> u32>); 8] = [
+        ("badge", Box::new(move |a| a.set_line_badge(head, "Blue".into(), 0x0000ff, "B".into()))),
+        ("cars", Box::new(move |a| a.set_line_cars(head, 3))),
+        ("fast", Box::new(move |a| a.set_line_fast(head, true))),
+        ("limit", Box::new(move |a| a.set_line_limit(head, 80))),
+        ("timings", Box::new(move |a| a.set_line_with_trains(head, &stops, 6, 4, 2, 45.0, 240.0, 3, 0x0000ff, "Blue".into()))),
+        ("group", Box::new(move |a| a.set_line_group(&[head, other], g))),
+        ("group name", Box::new(move |a| a.set_line_group_name(g, "G".into()))),
+        ("group look", Box::new(move |a| a.set_line_group_look(g, "X".into(), 0x123456))),
+    ];
+    for (what, edit) in edits {
+        let was = identity(&a, head);
+        assert_eq!(edit(&mut a), 0, "{what}: {}", a.issues());
+        assert_ne!(identity(&a, head), was, "{what}: the edit changed the head");
+        assert_eq!(identity(&a, branch), identity(&a, head), "{what}");
+        assert_eq!(a.line_branch_of(branch), head as i32, "{what}");
+    }
+    // the head's group loses the branch with the head, leaving one line, which is no group
+    assert_eq!(a.remove_line(head), 0, "{}", a.issues());
+    assert_eq!(a.line_group(other), 0);
+}
+
+#[test]
+fn deleting_the_head_deletes_its_branches() {
+    let (mut a, head, branch) = two_lines(true);
+    assert_eq!(a.remove_line(head), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(head) && !a.w.net.line_ok(branch));
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(head) && a.w.net.line_ok(branch));
+    assert_eq!(a.line_branch_of(branch), head as i32);
+    // the freed id taken again is a new line, with no branches of the old one
+    assert_eq!(a.redo(), 0, "{}", a.issues());
+    let stops = a.w.net.line_stops(head).to_vec();
+    assert_eq!(a.set_line(head, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "New".into()), 0, "{}", a.issues());
+    assert!(a.w.net.branches_of(head).is_empty());
+}
+
+#[test]
+fn deleting_a_branch_keeps_the_head() {
+    let (mut a, head, branch) = two_lines(true);
+    assert_eq!(a.remove_line(branch), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(head) && !a.w.net.line_ok(branch));
+    assert!(a.w.net.branches_of(head).is_empty());
+}
+
+#[test]
+fn a_branch_keeps_its_own_trains() {
+    let (mut a, head, branch) = two_lines(true);
+    assert_eq!(a.set_train_counts(branch, 2, 2, 2), 0, "{}", a.issues());
+    assert_eq!(a.set_train_counts(head, 6, 6, 6), 0, "{}", a.issues());
+    assert_eq!(a.set_line_look(head, "Red".into(), 0x00ff00), 0, "{}", a.issues());
+    assert_eq!(a.w.net.line_trains[branch as usize], Some([2, 2, 2]));
+    assert_eq!(a.w.net.line_trains[head as usize], Some([6, 6, 6]));
+}
+
+#[test]
+fn a_branch_no_head_could_hold_goes_in_the_edit_that_makes_it() {
+    // its own head
+    let (mut a, _, branch) = two_lines(false);
+    let mut d = a.w.net.line_data(branch).unwrap();
+    d.branch = Some(branch);
+    assert_eq!(a.run(Op::Line { id: branch, data: Some(d) }), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(branch));
+    // a head made a branch itself takes its branches with it
+    let (mut a, head, branch) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let top = a.new_line_id();
+    assert_eq!(a.set_line(top, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "Top".into()), 0, "{}", a.issues());
+    let mut d = a.w.net.line_data(head).unwrap();
+    d.branch = Some(top);
+    assert_eq!(a.run(Op::Line { id: head, data: Some(d) }), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(branch));
+    assert_eq!(a.line_branch_of(head), top as i32);
+    assert_eq!(identity(&a, head), identity(&a, top));
+}
+
+#[test]
+fn a_save_with_a_branch_no_head_could_hold_loads_it_as_a_plain_line() {
+    let (mut a, head, branch) = two_lines(true);
+    // a head that is its own branch: both relations are bad
+    a.w.net.line_branch[head as usize] = Some(head);
+    let mut b = TrackApi::new(-73.985, 40.758, true);
+    assert!(b.load(&a.save()));
+    assert!(b.w.net.line_ok(head) && b.w.net.line_ok(branch), "the lines are kept");
+    assert_eq!([b.line_branch_of(head), b.line_branch_of(branch)], [-1, -1]);
+}
+
+#[test]
+fn a_branch_on_both_pairs_keeps_its_twin_in_step() {
+    let mut a = TrackApi::new(-73.985, 40.758, true);
+    a.set_route_tangent(true);
+    let ends = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4000.0, 0.0, 0.0];
+    assert_eq!(a.add_route(&ends, &[], 4, false), 0, "{}", a.issues());
+    let near = |a: &TrackApi, x: f64, y: f64| (0..a.w.net.node_count() as u32).filter(|&k| a.w.net.node_ok(k) && a.w.net.node_platform[k as usize] > 0)
+        .min_by(|&p, &q| { let d = |n: u32| (a.w.net.node_x[n as usize] - x).hypot(a.w.net.node_y[n as usize] - y); d(p).total_cmp(&d(q)) }).unwrap();
+    let mut stops = vec![];
+    for y in [0.0, QUAD_SPACING] {
+        for x in [500.0, 3500.0] {
+            let e = (0..a.w.net.edge_count() as u32).filter(|&e| a.w.net.edge_ok(e) && !a.w.net.edge_crossover[e as usize])
+                .min_by(|&p, &q| a.w.net.project(p, x, y).1.total_cmp(&a.w.net.project(q, x, y).1)).unwrap();
+            assert_eq!(a.add_station(2, e, x, y, 200, format!("S{x}")), 0, "{}", a.issues());
+            if y == 0.0 { stops.push(near(&a, x, y)); }
+        }
+    }
+    let ids: Vec<u32> = (0..2).map(|_| {
+        let id = a.new_line_id();
+        assert_eq!(a.set_line_with_trains(id, &stops, 6, 4, 2, 30.0, 180.0, 0, 0xff0000, format!("L{id}")), 0, "{}", a.issues());
+        id
+    }).collect();
+    let (head, branch) = (ids[0], ids[1]);
+    let mut d = a.w.net.line_data(branch).unwrap();
+    d.branch = Some(head);
+    assert_eq!(a.run(Op::Line { id: branch, data: Some(d) }), 0, "{}", a.issues());
+    assert_eq!(a.set_line_pairs(branch, true), 0, "{}", a.issues());
+    let twin = a.line_twin(branch);
+    assert!(twin >= 0, "the branch runs on both pairs");
+    let twin = twin as u32;
+    assert_eq!(a.line_branch_of(twin), -1, "the twin follows its own line, not the head");
+    assert_eq!(a.w.net.branches_of(head), vec![branch]);
+    assert_eq!(a.set_line_cars(head, 3), 0, "{}", a.issues());
+    assert_eq!(a.w.net.line_cars[twin as usize], 3, "the twin takes what the branch took in the same edit");
+    assert_eq!(a.remove_line(head), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(branch) && !a.w.net.line_ok(twin), "the branch's twin goes with it");
+}
+
+#[test]
+fn a_save_with_a_branch_of_a_dead_or_bus_line_loads_it_as_a_plain_line() {
+    for bus in [false, true] {
+        let (mut a, _, branch) = two_lines(true);
+        let h = a.new_line_id();
+        if bus {
+            assert_eq!(a.set_bus_line(h, &[5000.0, 6100.0, 1.0, 5000.0, 100.0, 1.0], 480, 600, 1200, 30.0, 120.0, 0, "B".into()), 0, "{}", a.issues());
+        } else {
+            let stops = a.w.net.line_stops(branch).to_vec();
+            assert_eq!(a.set_line(h, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "Gone".into()), 0, "{}", a.issues());
+            assert_eq!(a.remove_line(h), 0, "{}", a.issues());
+        }
+        a.w.net.line_branch[branch as usize] = Some(h);
+        let mut b = TrackApi::new(-73.985, 40.758, true);
+        assert!(b.load(&a.save()));
+        assert!(b.w.net.line_ok(branch), "bus {bus}: the line is kept");
+        assert_eq!(b.line_branch_of(branch), -1, "bus {bus}");
+    }
+}
+
+// ---- add_branch
+
+fn api(w: TrackWorld) -> TrackApi {
+    let mut a = TrackApi::new(-73.985, 40.758, true);
+    a.w = w;
+    a
+}
+
+/// Stations A - B - C - D along x, and F on a spur leaving the track past C toward D:
+/// `[A, B, C, D, F]`.
+fn open_layout() -> (TrackApi, [u32; 5]) {
+    spur_layout(7000.0, 1.0, false)
+}
+
+/// Stations A - B - C - D along x, and F on a spur leaving the track at `jx` facing toward D
+/// (`lean` 1) or toward A (-1): `[A, B, C, D, F]`. A `bare_d` D is a track end, no station.
+fn spur_layout(jx: f64, lean: f64, bare_d: bool) -> (TrackApi, [u32; 5]) {
+    let mut w = world();
+    let mut xs = vec![0.0, 3000.0, 6000.0, jx, 10000.0];
+    xs.sort_by(f64::total_cmp);
+    let ns: Vec<u32> = xs.iter().map(|&x| node(&mut w, x, 0.0, 0)).collect();
+    let j = ns[xs.iter().position(|&x| x == jx).unwrap()];
+    let [a, b, c, d] = [0, 1, 2, 3].map(|k| ns.iter().copied().filter(|&n| n != j).nth(k).unwrap());
+    let f = node(&mut w, jx + 1400.0 * lean, 1500.0, 0);
+    for p in ns.windows(2) {
+        edge(&mut w, p[0], p[1], &[], 0).unwrap();
+    }
+    edge(&mut w, j, f, &[(jx + 400.0 * lean, 0.0)], 0).unwrap();
+    for n in [a, b, c, d, f] {
+        if !(bare_d && n == d) {
+            station(&mut w, n, 200);
+        }
+    }
+    terminals_at_dead_ends(&mut w);
+    (api(w), [a, b, c, d, f])
+}
+
+/// A ring of stations A - B - C - D round anticlockwise, and S on a spur leaving it past C:
+/// `[A, B, C, D, S]`.
+fn ring_layout() -> (TrackApi, [u32; 5]) {
+    spur_ring(225.0, 1.0)
+}
+
+/// A ring of stations A - B - C - D round anticlockwise at 0, 90, 180 and 270 degrees, and S on a
+/// spur leaving it at `jdeg` facing anticlockwise (`lean` 1) or clockwise (-1): `[A, B, C, D, S]`.
+fn spur_ring(jdeg: f64, lean: f64) -> (TrackApi, [u32; 5]) {
+    let mut w = world();
+    let r = 3000.0;
+    let at = |deg: f64, k: f64| (k * deg.to_radians().cos(), k * deg.to_radians().sin());
+    let mut degs = vec![0.0, 90.0, 180.0, 270.0, jdeg];
+    degs.sort_by(f64::total_cmp);
+    let j = degs.iter().position(|&g| g == jdeg).unwrap();
+    degs.push(360.0);
+    let ns: Vec<u32> = degs[..5].iter().map(|&g| { let (x, y) = at(g, r); node(&mut w, x, y, 0) }).collect();
+    for i in 0..5 {
+        let half = (degs[i + 1] - degs[i]) / 2.0;
+        edge(&mut w, ns[i], ns[(i + 1) % 5], &[at(degs[i] + half, r / half.to_radians().cos())], 0).unwrap();
+    }
+    // the spur leaves J along the ring and bends out of it
+    let (jx, jy) = at(jdeg, r);
+    let (t, o) = (at(jdeg + 90.0 * lean, 1.0), at(jdeg, 1.0));
+    let s = node(&mut w, jx + 1400.0 * t.0 + 1500.0 * o.0, jy + 1400.0 * t.1 + 1500.0 * o.1, 0);
+    edge(&mut w, ns[j], s, &[(jx + 400.0 * t.0, jy + 400.0 * t.1)], 0).unwrap();
+    let mut stations = [0; 5];
+    for (k, &n) in ns.iter().filter(|&&n| n != ns[j]).enumerate() {
+        stations[k] = n;
+    }
+    stations[4] = s;
+    for n in stations {
+        station(&mut w, n, 200);
+    }
+    terminals_at_dead_ends(&mut w);
+    (api(w), stations)
+}
+
+fn new_line(a: &mut TrackApi, stops: &[u32]) -> u32 {
+    let id = a.new_line_id();
+    assert_eq!(a.set_line(id, stops, 6.0, 6.0, 6.0, 30.0, 180.0, 0, 0xff0000, "Head".into()), 0, "{}", a.issues());
+    id
+}
+
+fn live_lines(a: &TrackApi) -> usize {
+    (0..a.w.net.line_count() as u32).filter(|&l| a.w.net.line_ok(l)).count()
+}
+
+/// A new branch of `head` out to `target`, checked as one: the head's look, no trains, no
+/// reversal.
+fn branch_to(a: &mut TrackApi, head: u32, target: u32) -> u32 {
+    let id = a.new_line_id();
+    assert_eq!(a.add_branch(head, id, target), 0, "{}", a.issues());
+    assert_eq!(a.line_branch_of(id), head as i32);
+    assert_eq!(identity(a, id), identity(a, head));
+    assert_eq!((a.w.net.line_trains[id as usize], a.w.net.line_tph[id as usize]), (Some([0; 3]), [0.0; 3]), "a new branch runs no trains");
+    assert!(a.w.net.path_reversals(a.w.net.line_path(id)).is_empty(), "the branch's trains never reverse");
+    assert!(a.w.svc.lines[id as usize].ok);
+    id
+}
+
+#[test]
+fn a_branch_reaches_off_the_end_of_the_line() {
+    // the spur joins between B and C facing A, so its trains run on to the end of the line
+    let (mut a, [sa, sb, sc, sd, ss]) = spur_layout(4500.0, -1.0, false);
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    let id = branch_to(&mut a, head, ss);
+    assert_eq!(a.w.net.line_stops(id), &[ss, sc, sd]);
+    assert_eq!(a.w.net.line_stops(head), &[sa, sb, sc, sd], "the head keeps its stops");
+}
+
+#[test]
+fn a_branch_reaches_off_the_start_of_the_line() {
+    // the spur joins past C facing D
+    let (mut a, [sa, sb, sc, sd, sf]) = open_layout();
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    let id = branch_to(&mut a, head, sf);
+    assert_eq!(a.w.net.line_stops(id), &[sa, sb, sc, sf]);
+    assert_eq!(a.w.net.line_stops(head), &[sa, sb, sc, sd], "the head keeps its stops");
+}
+
+#[test]
+fn a_circle_takes_a_spur() {
+    let (mut a, [sa, sb, sc, sd, ss]) = ring_layout();
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    assert_eq!(a.set_stops(head, &[sa, sb, sc, sd, sa]), 0, "{}", a.issues());
+    assert_eq!(a.line_loop(head), 1);
+    // the spur leaves the ring past C carrying on round, and the branch never takes the lap's
+    // closing stop
+    let id = branch_to(&mut a, head, ss);
+    assert_eq!(a.w.net.line_stops(id), &[sa, sb, sc, ss]);
+    assert_eq!(a.line_loop(head), 1);
+    assert!(a.w.svc.lines[head as usize].ok);
+}
+
+#[test]
+fn a_circle_branch_leaves_out_the_closing_stop() {
+    // the spur joins between D and the lap's closing A, its trains running on round from A: the
+    // longest trunk that leaves no turn back would be the whole lap back to A
+    let (mut a, [sa, sb, sc, sd, ss]) = spur_ring(315.0, -1.0);
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    assert_eq!(a.set_stops(head, &[sa, sb, sc, sd, sa]), 0, "{}", a.issues());
+    assert_eq!(a.line_loop(head), 1);
+    let id = branch_to(&mut a, head, ss);
+    assert_eq!(a.w.net.line_stops(id), &[ss, sa, sb, sc, sd]);
+    assert_eq!(a.line_loop(head), 1);
+}
+
+/// The times a line's first run leaves its stop `k`, in the hour from 08:00 of day 1.
+fn leaves(a: &TrackApi, l: u32, k: usize) -> Vec<f64> {
+    let t0 = 86400.0 + 8.0 * 3600.0;
+    let mut out = vec![];
+    a.w.svc.run_deps(&a.w.net, l as usize, 0, t0, t0 + 3600.0, &mut out);
+    let run = &a.w.svc.lines[l as usize].runs[0];
+    out.iter().map(|t| t.dep + run.prof[t.level as usize].dep[k]).collect()
+}
+
+#[test]
+fn a_branch_and_its_head_take_turns_on_the_trunk() {
+    let (mut a, [sa, sb, sc, sd, ss]) = ring_layout();
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    assert_eq!(a.set_stops(head, &[sa, sb, sc, sd, sa]), 0, "{}", a.issues());
+    assert_eq!(a.set_auto_headway(head, 600, 600, 600), 0, "{}", a.issues());
+    let id = branch_to(&mut a, head, ss);
+    assert_eq!(a.set_auto_headway(id, 600, 600, 600), 0, "{}", a.issues());
+    for l in [head, id] {
+        assert!((a.w.net.line_tph[l as usize][HIGH] - 6.0).abs() < 0.01, "line {l}: {:?}", a.w.net.line_tph[l as usize]);
+    }
+    // B is the second stop of both
+    let (h, b) = (leaves(&a, head, 1), leaves(&a, id, 1));
+    assert!(!h.is_empty() && !b.is_empty(), "{h:?} {b:?}");
+    let gap = h.iter().flat_map(|x| b.iter().map(move |y| (x - y).abs())).fold(f64::INFINITY, f64::min);
+    assert!(gap >= 120.0, "the two leave B {gap:.0} s apart: head {h:.0?} branch {b:.0?}");
+}
+
+#[test]
+fn a_branch_cannot_branch() {
+    let (mut a, [sa, sb, sc, sd, sf]) = open_layout();
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    let id = branch_to(&mut a, head, sf);
+    let n = live_lines(&a);
+    let twig = a.new_line_id();
+    assert_eq!(a.add_branch(id, twig, sd), 1);
+    assert_eq!(a.issue_kinds(), "LinePath");
+    assert!(!a.w.net.line_ok(twig) && live_lines(&a) == n);
+}
+
+#[test]
+fn a_bus_line_cannot_branch() {
+    let (mut a, [sa, ..]) = open_layout();
+    a.set_cash(1e6);
+    let bus = a.new_line_id();
+    assert_eq!(a.set_bus_line(bus, &[0.0, 1500.0, 1.0, 0.0, 100.0, 1.0], 480, 600, 1200, 30.0, 120.0, 0, "B".into()), 0, "{}", a.issues());
+    let n = live_lines(&a);
+    let id = a.new_line_id();
+    assert_eq!(a.add_branch(bus, id, sa), 1);
+    assert_eq!(a.issue_kinds(), "LinePath");
+    assert!(!a.w.net.line_ok(id) && live_lines(&a) == n);
+}
+
+#[test]
+fn a_branch_to_a_stop_of_the_line_is_refused() {
+    let (mut a, [sa, sb, sc, _, sf]) = open_layout();
+    let head = new_line(&mut a, &[sa, sb, sc]);
+    let n = live_lines(&a);
+    let id = a.new_line_id();
+    assert_eq!(a.add_branch(head, id, sb), 1);
+    assert_eq!(a.issue_kinds(), "LinePath");
+    let gone = a.new_line_id();
+    assert_eq!(a.add_branch(gone, id, sf), 1);
+    assert_eq!(a.issue_kinds(), "NoSuchLine");
+    assert!(!a.w.net.line_ok(id) && live_lines(&a) == n);
+}
+
+#[test]
+fn a_branch_that_would_reverse_is_refused() {
+    // the spur joins past B facing A: a train from A or B reaches it only by turning back at the
+    // bare end D, which routes but is a reversal
+    let (mut a, [sa, sb, _, sd, ss]) = spur_layout(4500.0, -1.0, true);
+    assert!(a.w.net.bare_end(sd));
+    let head = new_line(&mut a, &[sa, sb]);
+    let n = live_lines(&a);
+    let id = a.new_line_id();
+    assert_eq!(a.add_branch(head, id, ss), 1);
+    assert_eq!(a.issue_kinds(), "LinePath");
+    assert!(!a.w.net.line_ok(id) && live_lines(&a) == n);
+}
+
+#[test]
+fn adding_a_branch_is_one_undo() {
+    let (mut a, [sa, sb, sc, sd, sf]) = open_layout();
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    let id = branch_to(&mut a, head, sf);
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(id) && a.w.net.branches_of(head).is_empty());
+    assert_eq!(a.w.net.line_stops(head), &[sa, sb, sc, sd]);
+    assert_eq!(a.redo(), 0, "{}", a.issues());
+    assert_eq!((a.w.net.line_stops(id), a.line_branch_of(id)), (&[sa, sb, sc, sf][..], head as i32));
+}
+
+// ---- trunk stop edits
+
+#[test]
+fn branch_follow_carries_trunk_edits_only() {
+    use super::branch::branch_follow;
+    let [a, b, c, d, f, x] = [1, 2, 3, 4, 5, 6];
+    let old = [a, b, c, d];
+    assert_eq!(branch_follow(&old, &[a, b, x, c, d], &[a, b, c, f]), Some(vec![a, b, x, c, f]), "insert between");
+    assert_eq!(branch_follow(&old, &[a, b, c, x, d], &[a, b, c, f]), None, "insert beyond the junction");
+    assert_eq!(branch_follow(&old, &[a, c, d], &[a, b, c, f]), Some(vec![a, c, f]), "drop on the trunk");
+    assert_eq!(branch_follow(&old, &[a, b, d], &[a, b, c]), None, "the branch keeps its end");
+}
+
+#[test]
+fn adding_a_trunk_stop_adds_it_to_the_branch() {
+    let mut w = world();
+    let [a, b, x, c, j, d] = [0.0, 3000.0, 4500.0, 6000.0, 7000.0, 10000.0].map(|x| node(&mut w, x, 0.0, 0));
+    let f = node(&mut w, 8400.0, 1500.0, 0);
+    for (p, q) in [(a, b), (b, x), (x, c), (c, j), (j, d)] {
+        edge(&mut w, p, q, &[], 0).unwrap();
+    }
+    edge(&mut w, j, f, &[(7400.0, 0.0)], 0).unwrap();
+    for n in [a, b, x, c, d, f] {
+        station(&mut w, n, 200);
+    }
+    terminals_at_dead_ends(&mut w);
+    let mut api = api(w);
+    let head = new_line(&mut api, &[a, b, c, d]);
+    let id = branch_to(&mut api, head, f);
+    assert_eq!(api.add_stop(head, x), 0, "{}", api.issues());
+    assert_eq!(api.w.net.line_stops(head), &[a, b, x, c, d]);
+    assert_eq!(api.w.net.line_stops(id), &[a, b, x, c, f]);
+    assert!(api.w.svc.lines[id as usize].ok);
+    assert_eq!(api.undo(), 0, "{}", api.issues());
+    assert_eq!(api.w.net.line_stops(head), &[a, b, c, d], "one undo puts back both");
+    assert_eq!(api.w.net.line_stops(id), &[a, b, c, f]);
+    assert_eq!(api.drop_stop(head, 1), 0, "{}", api.issues());
+    assert_eq!(api.w.net.line_stops(id), &[a, c, f], "a dropped trunk stop leaves the branch");
+}
+
+/// `two_lines(true)` with a second branch of the head, a later id than the first.
+fn two_branches() -> (TrackApi, u32, [u32; 2]) {
+    let (mut a, head, b1) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let b2 = a.new_line_id();
+    assert_eq!(a.set_line(b2, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "B2".into()), 0, "{}", a.issues());
+    let mut d = a.w.net.line_data(b2).unwrap();
+    d.branch = Some(head);
+    assert_eq!(a.run(Op::Line { id: b2, data: Some(d) }), 0, "{}", a.issues());
+    assert!(b1 < b2);
+    (a, head, [b1, b2])
+}
+
+#[test]
+fn removing_a_branch_keeps_the_head() {
+    let (mut a, head, [b1, b2]) = two_branches();
+    assert_eq!(a.remove_branch(b1), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(head) && !a.w.net.line_ok(b1));
+    assert_eq!(a.w.net.branches_of(head), vec![b2]);
+}
+
+#[test]
+fn removing_the_head_promotes_its_lowest_branch() {
+    let (mut a, head, [b1, b2]) = two_branches();
+    assert_eq!(a.set_train_counts(b1, 2, 2, 2), 0, "{}", a.issues());
+    assert_eq!(a.remove_branch(head), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(head));
+    assert_eq!([a.line_branch_of(b1), a.line_branch_of(b2)], [-1, b1 as i32]);
+    assert_eq!(a.w.net.line_trains[b1 as usize], Some([2, 2, 2]), "the new head keeps its own trains");
+    assert_eq!(identity(&a, b2), identity(&a, b1));
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(head));
+    assert_eq!([a.line_branch_of(head), a.line_branch_of(b1), a.line_branch_of(b2)], [-1, head as i32, head as i32]);
+}
+
+#[test]
+fn removing_the_head_of_one_branch_leaves_a_plain_line_in_its_group() {
+    let (mut a, head, branch) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let other = a.new_line_id();
+    assert_eq!(a.set_line(other, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "Other".into()), 0, "{}", a.issues());
+    let g = a.new_line_group();
+    assert_eq!(a.set_line_group(&[head, other], g), 0, "{}", a.issues());
+    assert_eq!(a.remove_branch(head), 0, "{}", a.issues());
+    assert_eq!(a.line_branch_of(branch), -1);
+    assert_eq!([a.line_group(branch), a.line_group(other)], [g, g], "the family stays in its group");
+}
+
+#[test]
+fn removing_the_head_of_a_group_of_its_family_only_dissolves_it() {
+    let (mut a, head, branch) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let other = a.new_line_id();
+    assert_eq!(a.set_line(other, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "Other".into()), 0, "{}", a.issues());
+    let g = a.new_line_group();
+    assert_eq!(a.set_line_group(&[head, other], g), 0, "{}", a.issues());
+    assert_eq!(a.remove_line(other), 0, "{}", a.issues());
+    assert_eq!(a.remove_branch(head), 0, "{}", a.issues());
+    assert_eq!(a.line_group(branch), 0, "a group of one line is no group");
+}
+
+#[test]
+fn removing_a_branch_of_a_plain_line_is_refused() {
+    let (mut a, head, other) = two_lines(false);
+    assert_eq!(a.remove_branch(head), 1);
+    assert!(a.w.net.line_ok(head) && a.w.net.line_ok(other));
+}
+
+#[test]
+fn a_copy_of_any_route_is_a_plain_line() {
+    let (mut a, head, [b1, _]) = two_branches();
+    let (hs, bs) = (a.w.net.line_stops(head).to_vec(), a.w.net.line_stops(b1).to_vec());
+    assert_eq!(a.line_group(head), 0);
+    for (src, stops) in [(b1, bs), (head, hs)] {
+        let before = [a.line_branch_of(head), a.line_branch_of(b1)];
+        let id = a.new_line_id();
+        assert_eq!(a.copy_line(src, id, "Copy".into()), 0, "{}", a.issues());
+        assert_eq!(a.w.net.line_stops(id), &stops[..]);
+        assert_eq!(a.line_branch_of(id), -1, "a copy joins no head");
+        assert_eq!([a.line_branch_of(head), a.line_branch_of(b1)], before, "the source routes are unchanged");
+        // a copy of a route groups with the line, so branches and copy stay one group
+        assert_ne!(a.line_group(head), 0);
+        assert_eq!([a.line_group(id), a.line_group(b1)], [a.line_group(head); 2]);
+    }
+}

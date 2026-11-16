@@ -136,6 +136,8 @@ export type EditOp =
    * when more than half its route's km is high-speed track, ordinary otherwise */
   | { op: "addLine"; stops: NodeId[]; name: string; colour: string; autoFast?: boolean }
   | { op: "copyLine"; line: number; name?: string }
+  /** line branches: a branch of `line` out to `station`, a station off it, leaving the line where its trains need not reverse (`TrackApi::add_branch`), answered with its `line`; refused with "LinePath" */
+  | { op: "addBranch"; line: number; station: NodeId }
   | { op: "setStops"; line: number; stops: NodeId[]; autoFast?: boolean }
   /** T-648: the station put in where the line tool's search fits it best (`TrackApi::insert_stop`),
    * then set as `setStops`; refused with "InsertStop" when no track joins it in */
@@ -157,6 +159,8 @@ export type EditOp =
    * name, colour or symbol over one still on its way (T-1812); `letter` is the symbol set by hand, "" for none */
   | { op: "lineLook"; line: number; name?: string; colour?: string; letter?: string }
   | { op: "removeLine"; line: number }
+  /** line branches: one route of a branched line removed (`TrackApi::remove_branch`), when the line removed is the head, one of its branches becomes the head; answered with the head's `line` after it; refused with "LinePath" for a line with no branches */
+  | { op: "removeBranch"; line: number }
   /** a line's train length in cars, 0 for the most its shortest platform fits (T-733) */
   | { op: "lineCars"; line: number; cars: number }
   | { op: "lineFast"; line: number; fast: boolean }
@@ -580,6 +584,8 @@ export interface ClockLine {
   pairs?: 1 | 2;
   /** T-3333: a hidden twin, the line it runs the other pair for (`TrackApi::line_twin_of`) */
   twinOf?: number;
+  /** line branches: the head line this one branches from (`TrackApi::line_branch_of`) */
+  branchOf?: number;
   /** T-1464: a bus line's route and stops; absent for a rail line, whose `path` this replaces
    * (a bus line's `path` is empty, its `stops` its `bus.stops`' ids) */
   bus?: ClockBus;

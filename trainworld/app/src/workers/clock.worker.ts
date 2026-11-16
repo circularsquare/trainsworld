@@ -3673,8 +3673,12 @@ function savedShapes(): Pick<SaveHeader, "shapes"> {
 
 /** T-3319: a new line takes no shape left by a deleted line whose id it reuses; a copy takes its source's. */
 function newLineShape(op: EditOp, line: number) {
-  if (op.op !== "addLine" && op.op !== "addBusLine" && op.op !== "addFerryLine" && op.op !== "copyLine") return;
-  const id = String(line), from = op.op === "copyLine" ? lineShapes.get(String(op.line)) : undefined;
+  if (op.op !== "addLine" && op.op !== "addBusLine" && op.op !== "addFerryLine" && op.op !== "copyLine" && op.op !== "addBranch") return;
+  // line branches: a branch wears its head's shape, as it does its look
+  wearShape(String(line), op.op === "copyLine" || op.op === "addBranch" ? lineShapes.get(String(op.line)) : undefined);
+}
+
+function wearShape(id: string, from: LineShape | undefined) {
   if (from === lineShapes.get(id)) return;
   if (from) lineShapes.set(id, from);
   else lineShapes.delete(id);
@@ -3832,6 +3836,10 @@ function applyInner(op: EditOp): Applied {
       if (r === 0) a.set_line_badge(id, name, colour, symbol);
       return { r, line: id };
     }
+    case "addBranch": {
+      const id = a.new_line_id();
+      return { r: a.add_branch(op.line, id, op.station), line: id };
+    }
     case "setStops": {
       const set = () => a.set_stops(op.line, new Uint32Array(op.stops));
       return op.autoFast ? withAutoFast(a, op.line, set) : { r: set() };
@@ -3880,6 +3888,17 @@ function applyInner(op: EditOp): Applied {
     }
     case "removeLine":
       return { r: a.remove_line(op.line) };
+    case "removeBranch": {
+      // a removed head's branches are candidates for the new head; the sim picked one, so ask it which
+      const own = a.line_branch_of(op.line), promote = own < 0, info = a.lines_info();
+      const kin: number[] = [];
+      if (promote) for (let i = 0; i < info.length; i += 22) if (a.line_branch_of(info[i]) === op.line) kin.push(info[i]);
+      const r = a.remove_branch(op.line);
+      const head = promote ? kin.find(id => a.line_branch_of(id) < 0) ?? -1 : own;
+      // the promoted head wears the shape the line wore, as its branches do
+      if (r === 0 && promote) wearShape(String(head), lineShapes.get(String(op.line)));
+      return { r, line: head };
+    }
     case "lineCars": {
       const tram = a.line_tram(op.line);
       const cars = Math.max(0, Math.min(tram ? TRAM_MAX_CARS : 255, Math.round(op.cars)));

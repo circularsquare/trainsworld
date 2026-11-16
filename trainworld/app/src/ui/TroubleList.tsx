@@ -15,7 +15,7 @@ import { nearestStation, stationNameNear } from "../game/places";
 import { readToday, type LineToday } from "../game/today";
 import { DEMAND_INDEX, type LineInput, type Selection, type WorldView } from "../game/types";
 import { selection, tool } from "../game/ui";
-import { listedLines, world } from "../game/world";
+import { world } from "../game/world";
 import { nearestJunction, tramSpot } from "../map/capacityMarkers";
 import { toLngLat } from "../map/geo";
 import { reversalsOf } from "../map/reversalMarks";
@@ -58,7 +58,9 @@ const goLine = (l: LineInput) => () => { locateLine(l.stops); pick({ kind: "line
 
 function itemsOf(w: WorldView, level: number, day: Map<string, LineToday>): Item[] {
   const out: Item[] = [];
-  for (const l of listedLines(w)) {
+  // line branches: a branch stays in, so a broken one is found (today's counts here are unfolded, so a crowded branch is its own item too)
+  for (const l of w.save.lines) {
+    if (l.twinOf) continue;
     if (!l.stops.length) {
       out.push({ key: "n" + l.id, tier: 6, size: 0, lead: <Chip line={l} size="sm" plain />, label: l.name,
         value: <span class="trouble-fig"><Icon.alert /></span>, tip: t("troubleList.noStations"), go: goLine(l) });

@@ -86,6 +86,9 @@ export interface LineInput {
   /** T-3333: the hidden twin of a line run on both pairs of quad track, the line it runs the other pair
    * for: in every sum, never in a list (`listedLines`) */
   twinOf?: LineId;
+  /** line branches: the head line this one branches from, whose name and look it shares: in every sum
+   * (folded into its head's), never in a list (`listedLines`) */
+  branchOf?: LineId;
 }
 
 /** A stretch of track between two nodes (SPEC 6.2). */
@@ -236,6 +239,8 @@ export interface LineStats {
   twin?: LineId;
   /** T-3333: a hidden twin, the line it runs the other pair for */
   twinOf?: LineId;
+  /** line branches: the head line this one branches from */
+  branchOf?: LineId;
   /** T-1464: a bus line's route and stops (its stops that are no station are in `nodes` only,
    * never in the save's stations); absent for a rail line */
   bus?: import("../workers/protocol").ClockBus;
@@ -294,6 +299,8 @@ export interface WorldView {
   lineStats: Record<LineId, LineStats>;
   /** T-3333: each hidden twin's line (twin id to line id) */
   twins: Map<LineId, LineId>;
+  /** line branches: each branch's head (branch id to head id) */
+  branches: Map<LineId, LineId>;
   edges: TrackEdge[];
   nodes: Map<NodeId, TrackNode>;
   money: MoneyStats;

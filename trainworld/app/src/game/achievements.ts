@@ -19,7 +19,8 @@ import { stationZone } from "./listScope";
 import { moneyState } from "./money";
 import { foldTwins, readToday, runningToday, upkeepToday } from "./today";
 import { weekdayOf } from "./days";
-import { stationsById, world } from "./world";
+import { linesById, stationsById, world } from "./world";
+import { foldBranches } from "./todayFold";
 import { RIDES_PER_PERSON, sumModes } from "./worldTotals";
 import { zonesLoaded } from "./zones";
 import type { LineInput, LineStats, StationInput, WorldView } from "./types";
@@ -336,12 +337,16 @@ export const demandFigures = computed(() => {
   // whether the result is this network's: every running line has figures for its stops (after a load
   // the last game's result can stand until the new one's lands)
   let covered = true;
+  // line branches: a head counts its branches' riders (and their twins') as its own
+  const own = (id: string, st: LineStats) => (v.lines.get(id)?.ridersPerDay ?? 0) + (st.twin ? v.lines.get(st.twin)?.ridersPerDay ?? 0 : 0);
+  const branchRiders = new Map<string, number>();
+  for (const { l, st } of run) if (l.branchOf) branchRiders.set(l.branchOf, (branchRiders.get(l.branchOf) ?? 0) + own(l.id, st));
   for (const { l, st } of run) {
     const dm = v.lines.get(l.id);
     if (!dm || !lineFiguresIn(v, l.id, l.stops.length)) { covered = false; continue; }
     // T-3333: a line on both pairs counts its hidden twin's riders as its own; the twin is not a line of its own
-    const riders = dm.ridersPerDay + (st.twin ? v.lines.get(st.twin)?.ridersPerDay ?? 0 : 0);
-    if (!l.twinOf && (!line || riders > line.v!)) line = { of: l.name, v: riders };
+    const riders = own(l.id, st) + (branchRiders.get(l.id) ?? 0);
+    if (!l.twinOf && !l.branchOf && (!line || riders > line.v!)) line = { of: l.name, v: riders };
     const s = longestRide(l, st, dm.loads, dm.board);
     if (s >= SLEEPER_S && (!sleeper || s / 3600 > sleeper.v!)) sleeper = { of: l.name, v: s / 3600 };
   }
@@ -403,6 +408,7 @@ effect(() => {
     if (!raw || !w || gamesLoaded.peek() !== g) return;
     const t = readToday(raw);
     if (w.twins.size) foldTwins(t, w.twins);
+    if (w.branches.size) foldBranches(t, w.branches, (id) => linesById(w).get(id)?.stops);
     let best: Detail | null = null, pearl: Detail | null = null;
     for (const { l, st } of runningLines(w)) {
       const d = t.get(l.id);

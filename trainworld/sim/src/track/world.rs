@@ -877,6 +877,16 @@ impl TrackWorld {
                 inv = Op::Batch(vec![inv2, inv]);
             }
         }
+        // line branches: before the twins, so a branch's twin is made from (or goes with) the branch
+        // as it now is. Every player edit is checked; only a restore (undo, redo, a refused edit's
+        // rollback), whose recorded inverse already holds what this did, comes here unchecked.
+        let ops = if rerouted { self.branch_ops() } else { vec![] };
+        if !ops.is_empty() {
+            if let Ok((inv2, t2, der2)) = self.apply_and_derive(Op::Batch(ops)) {
+                merge_derived(&mut t, &mut der, t2, der2);
+                inv = Op::Batch(vec![inv2, inv]);
+            }
+        }
         // T-3333: lines run on both pairs follow the edit in it, as the reroutes do
         let ops = if rerouted { self.twin_ops() } else { vec![] };
         if !ops.is_empty() {
@@ -886,6 +896,34 @@ impl TrackWorld {
             }
         }
         Ok((inv, t, der))
+    }
+
+    /// Line branches: ops giving each branch its head's look and its trains' kind and timings, so the
+    /// player sees one line; its stops, trains and the rest stay its own. A branch no head can hold
+    /// (`Network::bad_branch`, a deleted head among them) goes, before a new line takes the head's id.
+    fn branch_ops(&self) -> Vec<Op> {
+        let net = &self.net;
+        if net.line_branch.iter().all(Option::is_none) {
+            return vec![];
+        }
+        let mut ops = vec![];
+        for l in 0..net.line_count() as u32 {
+            let Some(h) = net.line_branch_of(l) else { continue };
+            if net.bad_branch(l) {
+                ops.push(Op::Line { id: l, data: None });
+                continue;
+            }
+            let (Some(d), Some(hd)) = (net.line_data(l), net.line_data(h)) else { continue };
+            let want = LineData {
+                name: hd.name, symbol: hd.symbol, colour: hd.colour, cars: hd.cars, fast: hd.fast, limit: hd.limit,
+                dwell_s: hd.dwell_s, turnaround_s: hd.turnaround_s, group: hd.group, group_name: hd.group_name, group_look: hd.group_look,
+                ..d.clone()
+            };
+            if want != d {
+                ops.push(Op::Line { id: l, data: Some(want) });
+            }
+        }
+        ops
     }
 
     /// T-3333: ops keeping each line run on both pairs of quad track in step with its hidden twin
