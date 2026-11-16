@@ -1007,6 +1007,10 @@ pub fn decode_read(bytes: &[u8]) -> Result<(Network, usize), String> {
             let head = r.u()? as usize;
             if i < n_lines && head < n_lines { net.line_branch[i] = Some(head as u32); }
         }
+        // a relation no edit leaves (a hand-edited save) is dropped, all against the block as read;
+        // the line stays, as a line of its own
+        let bad: Vec<usize> = (0..net.line_count()).filter(|&l| net.bad_branch(l as u32)).collect();
+        for l in bad { net.line_branch[l] = None; }
     }
     for l in manual {
         fold_manual(&mut net, l);

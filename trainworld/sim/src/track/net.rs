@@ -975,6 +975,14 @@ impl Network {
         (0..self.line_count() as u32).filter(|&l| self.line_ok(l) && self.line_branch_of(l) == Some(head)).collect()
     }
 
+    /// Line branches: `l` branches from a line no branch can follow (itself, a line gone, a bus or
+    /// ferry line, or another branch, which would chain heads), or is a bus or ferry line itself.
+    pub fn bad_branch(&self, l: u32) -> bool {
+        let Some(h) = self.line_branch_of(l) else { return false };
+        let rail = |x: u32| self.line_ok(x) && self.line_bus[x as usize].is_none() && self.line_ferry[x as usize].is_none();
+        h == l || !rail(l) || !rail(h) || self.line_branch_of(h).is_some()
+    }
+
     pub fn line_ok(&self, l: u32) -> bool {
         self.line_alive.get(l as usize).copied().unwrap_or(false)
     }

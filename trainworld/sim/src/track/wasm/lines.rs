@@ -491,7 +491,8 @@ impl TrackApi {
         // the last other line of its group leaves it too (T-1791)
         let n = &self.w.net;
         let g = self.line_group(id);
-        let rest: Vec<u32> = (0..n.line_count() as u32).filter(|&l| g != 0 && l != id && n.line_ok(l) && n.line_group[l as usize] == g).collect();
+        // line branches: its branches go with it, so they do not count as staying
+        let rest: Vec<u32> = (0..n.line_count() as u32).filter(|&l| g != 0 && l != id && n.line_ok(l) && n.line_group[l as usize] == g && n.line_branch_of(l) != Some(id)).collect();
         if let [other] = rest[..] {
             let mut d = n.line_data(other).unwrap();
             d.group = 0;

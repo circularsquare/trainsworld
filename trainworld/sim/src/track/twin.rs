@@ -295,6 +295,8 @@ pub fn twin_data(parent: u32, p: &LineData, stops: Vec<u32>, path: Vec<u32>, was
     d.group_look = Default::default();
     d.hand = false;
     d.twin = Twin::Of(parent);
+    // line branches: the twin follows its own line, which follows the head
+    d.branch = None;
     if let Some(w) = was {
         d.tph = w.tph;
         if p.auto.is_some() && w.auto.is_some() {
