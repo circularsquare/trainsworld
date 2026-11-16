@@ -560,6 +560,31 @@ impl TrackApi {
         }
         self.run(op)
     }
+    /// Line branches: remove one route of a branched line, the rest staying one line to the player,
+    /// as one undoable edit. Its routes are peers, so removing the head makes its lowest branch the
+    /// head of the others; a line with no branches is refused, as Delete line is what removes it.
+    pub fn remove_branch(&mut self, line: u32) -> u32 {
+        let n = &self.w.net;
+        if n.line_branch_of(line).is_some() {
+            return self.remove_line(line);
+        }
+        let family = n.branches_of(line);
+        let Some(&head) = family.first() else { return self.refuse(Issue::LinePath { line }) };
+        // the family stays in its group, which is listed as one line, so one left alone in it leaves it
+        let g = self.line_group(line);
+        let alone = g != 0 && !(0..n.line_count() as u32).any(|l| l != line && !family.contains(&l) && n.line_ok(l) && n.line_group[l as usize] == g);
+        // one batch with the old head's delete, so no branch is ever left on a line gone
+        let mut ops: Vec<Op> = family.iter().map(|&l| {
+            let mut d = n.line_data(l).unwrap();
+            d.branch = (l != head).then_some(head);
+            if alone {
+                d.group = 0;
+            }
+            Op::Line { id: l, data: Some(d) }
+        }).collect();
+        ops.push(Op::Line { id: line, data: None });
+        self.run(Op::Batch(ops))
+    }
 
     /// Allocate whole trains to the entire line, across both directions.
     /// T-3333: a line run on both pairs takes the whole line's counts, half for each pair.

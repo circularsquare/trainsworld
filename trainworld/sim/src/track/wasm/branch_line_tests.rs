@@ -496,3 +496,71 @@ fn adding_a_trunk_stop_adds_it_to_the_branch() {
     assert_eq!(api.drop_stop(head, 1), 0, "{}", api.issues());
     assert_eq!(api.w.net.line_stops(id), &[a, c, f], "a dropped trunk stop leaves the branch");
 }
+
+/// `two_lines(true)` with a second branch of the head, a later id than the first.
+fn two_branches() -> (TrackApi, u32, [u32; 2]) {
+    let (mut a, head, b1) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let b2 = a.new_line_id();
+    assert_eq!(a.set_line(b2, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "B2".into()), 0, "{}", a.issues());
+    let mut d = a.w.net.line_data(b2).unwrap();
+    d.branch = Some(head);
+    assert_eq!(a.run(Op::Line { id: b2, data: Some(d) }), 0, "{}", a.issues());
+    assert!(b1 < b2);
+    (a, head, [b1, b2])
+}
+
+#[test]
+fn removing_a_branch_keeps_the_head() {
+    let (mut a, head, [b1, b2]) = two_branches();
+    assert_eq!(a.remove_branch(b1), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(head) && !a.w.net.line_ok(b1));
+    assert_eq!(a.w.net.branches_of(head), vec![b2]);
+}
+
+#[test]
+fn removing_the_head_promotes_its_lowest_branch() {
+    let (mut a, head, [b1, b2]) = two_branches();
+    assert_eq!(a.set_train_counts(b1, 2, 2, 2), 0, "{}", a.issues());
+    assert_eq!(a.remove_branch(head), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(head));
+    assert_eq!([a.line_branch_of(b1), a.line_branch_of(b2)], [-1, b1 as i32]);
+    assert_eq!(a.w.net.line_trains[b1 as usize], Some([2, 2, 2]), "the new head keeps its own trains");
+    assert_eq!(identity(&a, b2), identity(&a, b1));
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(head));
+    assert_eq!([a.line_branch_of(head), a.line_branch_of(b1), a.line_branch_of(b2)], [-1, head as i32, head as i32]);
+}
+
+#[test]
+fn removing_the_head_of_one_branch_leaves_a_plain_line_in_its_group() {
+    let (mut a, head, branch) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let other = a.new_line_id();
+    assert_eq!(a.set_line(other, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "Other".into()), 0, "{}", a.issues());
+    let g = a.new_line_group();
+    assert_eq!(a.set_line_group(&[head, other], g), 0, "{}", a.issues());
+    assert_eq!(a.remove_branch(head), 0, "{}", a.issues());
+    assert_eq!(a.line_branch_of(branch), -1);
+    assert_eq!([a.line_group(branch), a.line_group(other)], [g, g], "the family stays in its group");
+}
+
+#[test]
+fn removing_the_head_of_a_group_of_its_family_only_dissolves_it() {
+    let (mut a, head, branch) = two_lines(true);
+    let stops = a.w.net.line_stops(head).to_vec();
+    let other = a.new_line_id();
+    assert_eq!(a.set_line(other, &stops, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0xff0000, "Other".into()), 0, "{}", a.issues());
+    let g = a.new_line_group();
+    assert_eq!(a.set_line_group(&[head, other], g), 0, "{}", a.issues());
+    assert_eq!(a.remove_line(other), 0, "{}", a.issues());
+    assert_eq!(a.remove_branch(head), 0, "{}", a.issues());
+    assert_eq!(a.line_group(branch), 0, "a group of one line is no group");
+}
+
+#[test]
+fn removing_a_branch_of_a_plain_line_is_refused() {
+    let (mut a, head, other) = two_lines(false);
+    assert_eq!(a.remove_branch(head), 1);
+    assert!(a.w.net.line_ok(head) && a.w.net.line_ok(other));
+}
