@@ -13,7 +13,7 @@ import { lineDemand, stationDemand } from "./demand";
 import { places, type Place } from "./placeList";
 import { compass } from "./places";
 import type { LineInput, StationId } from "./types";
-import { listedLines, world } from "./world";
+import { listedLines, servingLines, world } from "./world";
 
 export type SearchHit =
   | {
@@ -127,7 +127,7 @@ export function search(query: string): SearchHit[] {
     }
     const linesAt = new Map<StationId, LineInput[]>();
     if (groups.size) {
-      for (const l of listedLines(w)) for (const s of new Set(l.stops)) {
+      for (const l of servingLines(w)) for (const s of new Set(l.stops)) {
         const at = linesAt.get(s);
         if (at) at.push(l);
         else linesAt.set(s, [l]);

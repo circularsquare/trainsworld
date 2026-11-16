@@ -10,7 +10,7 @@ import { createLine, newBusLine, newFerryLine } from "../game/lineActions";
 import { boatsText, busesText, count, money } from "../game/format";
 import { DEMAND_INDEX, type Demand, type LineInput, type LineStats } from "../game/types";
 import { lineSort, selection, uiScale } from "../game/ui";
-import { branchesOf, listedLines, edit, pairStats, renameLine, stationsById } from "../game/world";
+import { branchesOf, listedLines, edit, pairStats, renameLine, servingLines, stationsById } from "../game/world";
 import { closedGroups, groupName, lineGroups, toggleGroup } from "../game/lineGroups";
 import { byHand, handOrder, setHandOrder } from "../game/handOrder";
 import { GroupPill } from "./GroupPill";
@@ -183,7 +183,7 @@ export function LinesTab() {
   const hand = handOrder.value.lines;
   const key = hand.length ? null : lineSort.value.key, dir = lineSort.value.dir;
   // T-332: only the viewed place unless the world is chosen
-  const sc = scopedLists(w.save.stations, listedLines(w), (k, id) => (k === "line" && (sel?.kind === "line" || sel?.kind === "train") && sel.line === id), key === "near");
+  const sc = scopedLists(w.save.stations, servingLines(w), (k, id) => (k === "line" && (sel?.kind === "line" || sel?.kind === "train") && sel.line === id), key === "near");
   // T-670: on the whole world, a city column once lines start in two or more cities (a line's city is where its first stop is)
   const cityOf = new Map<string, string>();
   if (sc.zone === null) {

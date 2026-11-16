@@ -506,6 +506,19 @@ export const branchesOf = (w: WorldView, head: LineId): LineInput[] => lookup(w,
   for (const l of s.lines) if (l.branchOf) (by.get(l.branchOf) ?? by.set(l.branchOf, []).get(l.branchOf)!).push(l);
   return by;
 }).get(head) ?? noLines;
+/** Line branches: `listedLines` for the views that ask which lines serve a station, a head's stops followed
+ * by those of its branches' it does not stop at itself, so a station past the branch point is the head's
+ * too. The added stops are no route: for the stations served only, never a path or stop order. */
+export const servingLines = (w: WorldView) => lookup(w, "serving", (s) => {
+  const ls = listedLines(w);
+  if (!s.lines.some((l) => l.branchOf)) return ls;
+  return ls.map((l) => {
+    const bs = branchesOf(w, l.id);
+    if (!bs.length) return l;
+    const own = new Set(l.stops);
+    return { ...l, stops: [...l.stops, ...new Set(bs.flatMap((b) => b.stops).filter((x) => !own.has(x)))] };
+  });
+});
 /** The lines that stop at each station, in line order; at a twin's stations, the line it runs for (T-3333),
  * and at a branch's, its head (a branch's twin's, too). */
 export const linesAtMap = (w: WorldView) => lookup(w, "linesAt", (s) => {
