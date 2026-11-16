@@ -1147,6 +1147,15 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   branch, unless it is a branch's first or last stop. `turn_end`, `open_loop`, `order_stops` and
   `sort_stops` do not carry stop changes to branches (a drag reorder or sort of the head leaves
   each branch's trunk in its own order). Copy is not offered on a branch's panel.
+  **Removing a route**: the head and its branches are peers to the player, so
+  `TrackApi.remove_branch(line)` removes any one of them as one undoable edit. A branch goes as
+  `remove_line` takes it. The head goes and its lowest-id branch becomes the head: its link is
+  cleared and every other branch is linked to it, in the same batch as the old head's delete, so
+  `branch_ops` never sees a branch of a line gone. The new head keeps its own stops, path and
+  trains (its look already being the head's). The line stays in its group, unless no line apart
+  from it is left there, when it leaves it as `remove_line` leaves a group of one. A line with no
+  branches is refused (`LinePath`): Delete line removes it. Delete line on a head (`remove_line`)
+  takes its branches with it.
   Saved in a trailing `LBR1` block (architecture.md, the save format; `save::LEVEL` 19): a count,
   then each branch's line index and its head's index. A save without it loads every line
   unbranched, and a relation that does not hold on load (a head out of range, a bus or ferry line, or itself a

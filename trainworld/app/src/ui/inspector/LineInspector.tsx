@@ -749,14 +749,19 @@ function RailLineInspector({ id }: { id: string }) {
       if (a.ok && now && lineDraft.peek().line === l.num) lineDraft.value = { line: l.num, stops: now.stops.map(Number) };
     } finally { stopEditing = false; }
   };
-  // T-2919: no question, since an undo brings the line back (track and stations stay)
-  const remove = () => {
-    void edit({ op: "removeLine", line: l.num }).then(a => {
+  // T-2919: no question, since an undo brings the line back (track and stations stay). Line branches:
+  // a line's routes are peers, so any one goes on its own, leaving the head's panel open, and Delete
+  // line on any of them deletes the whole line, its head taking its branches with it
+  const remove = (branch: boolean) => {
+    const num = branch ? l.num : head?.num ?? l.num;
+    void edit({ op: branch ? "removeBranch" : "removeLine", line: num }).then(a => {
       if (!a.ok) return;
-      if (lineDraft.peek().line === l.num) live.tools?.exit();
+      const draft = lineDraft.peek().line;
+      if (draft === l.num || draft === num) live.tools?.exit();
       const selected = selection.peek();
-      // line branches: a removed branch leaves its head's panel open, the line still being there
-      if (selected?.kind === "line" && selected.line === l.id) selection.value = l.branchOf ? { kind: "line", line: l.branchOf } : null;
+      // the line left was there before the edit, so the panel's world has it
+      const left = branch && a.line !== undefined ? linesByNum(w).get(a.line) : undefined;
+      if (selected?.kind === "line" && selected.line === l.id) selection.value = left ? { kind: "line", line: left.id } : null;
     });
   };
   const copy = async () => {
@@ -1030,7 +1035,8 @@ function RailLineInspector({ id }: { id: string }) {
         <button class={"btn text" + (editingStops ? " on" : "")} data-guide={editingStops ? undefined : "stops"} data-tip={tr(editingStops ? "lineInspector.finishTip" : "lineInspector.editTip")} onClick={() => toggleEditStops(l)}><Icon.pencil /><SwapLabel on={editingStops} off={tr("lineInspector.editStops")} onText={tr("lineInspector.stopEditing")} /></button>
         {/* line branches: a branch's copy would be a sibling branch hidden behind the head's name */}
         {!head && <button class="btn text" onClick={() => void copy()} disabled={copying}>{tr("busInspector.copy")}</button>}
-        <button class="btn text danger" onClick={remove}>{tr(head ? "lineInspector.removeBranch" : "busInspector.deleteYes")}</button>
+        {(head || branches.length > 0) && <button class="btn text danger" onClick={() => remove(true)}>{tr("lineInspector.removeBranch")}</button>}
+        <button class="btn text danger" onClick={() => remove(false)}>{tr("busInspector.deleteYes")}</button>
       </div>
       {editingStops && stopsBlock}
 
