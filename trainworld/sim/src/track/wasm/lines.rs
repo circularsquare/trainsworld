@@ -166,23 +166,50 @@ impl TrackApi {
         if r == 0 { self.w.net.next_line_number = self.w.net.next_line_number.saturating_add(1); }
         r
     }
-    /// Line branches: a new line `id` on `head`'s trunk up to its first stop at `station`, for the
-    /// player to carry on from there; it keeps the head's look, as one line to the player, but like
-    /// a copy starts with no trains, so a gesture never buys a fleet or doubles the trunk's service.
-    /// One undoable edit. Branches hang off one trunk, so a branch, a hidden twin, a bus or
-    /// a ferry line is no head.
-    pub fn add_branch(&mut self, head: u32, id: u32, station: u32) -> u32 {
+    /// Line branches: a new line `id` from `head`'s trunk out to `target`, a station off the head;
+    /// it keeps the head's look, as one line to the player, but like a copy starts with no trains,
+    /// so a gesture never buys a fleet or doubles the trunk's service. One undoable edit. Branches
+    /// hang off one trunk, so a branch, a hidden twin, a bus or a ferry line is no head.
+    pub fn add_branch(&mut self, head: u32, id: u32, target: u32) -> u32 {
         let net = &self.w.net;
         let Some(mut d) = net.line_data(head) else { return self.refuse(Issue::NoSuchLine { line: head }) };
         if d.bus.is_some() || d.ferry.is_some() || d.branch.is_some() || matches!(d.twin, crate::track::twin::Twin::Of(_)) {
             return self.refuse(Issue::LinePath { line: head });
         }
-        // the first visit: a loop's closing stop is its first one again, never the whole lap
-        let at = d.stops.iter().position(|&s| s == station);
-        let Some((i, path)) = at.and_then(|i| Some((i, net.route(&d.stops[..=i])?))) else {
+        // a loop's closing stop is its first one again, never a trunk end of its own
+        let mut s = d.stops.clone();
+        if s.len() >= 3 && s[0] == s[s.len() - 1] {
+            s.pop();
+        }
+        if s.contains(&target) {
             return self.refuse(Issue::LinePath { line: head });
-        };
-        d.stops.truncate(i + 1);
+        }
+        let time = |p: &[u32]| p.iter().map(|&e| net.edge_time[crate::track::net::path_edge(e) as usize]).sum::<f64>();
+        // the trunk is the start of the line up to stop k (then out to the target) or stop k on to
+        // its end (in from the target): whichever leaves the line where its trains need not turn
+        // back, by the shortest run off it, the longer trunk on a tie
+        let mut best: Option<(f64, usize, Vec<u32>, Vec<u32>)> = None;
+        for k in 0..s.len() {
+            for out in [true, false] {
+                let trunk = if out { &s[..=k] } else { &s[k..] };
+                let stops: Vec<u32> = if out { [trunk, &[target]].concat() } else { [&[target], trunk].concat() };
+                let (Some(own), Some(path)) = (net.route(trunk), net.route(&stops)) else { continue };
+                if net.path_reversals(&path).len() > net.path_reversals(&own).len() {
+                    continue;
+                }
+                // a trunk revisiting its first stop routes as a loop on its own, so it may not prefix the path
+                let hop = if out { path.get(own.len()..).unwrap_or_default() } else {
+                    let n = path.iter().position(|&e| net.path_nodes(e).1 == s[k]).map_or(path.len(), |i| i + 1);
+                    &path[..n]
+                };
+                let key = (time(hop), usize::MAX - trunk.len());
+                if best.as_ref().is_none_or(|b| key < (b.0, b.1)) {
+                    best = Some((key.0, key.1, stops, path));
+                }
+            }
+        }
+        let Some((_, _, stops, path)) = best else { return self.refuse(Issue::LinePath { line: head }) };
+        d.stops = stops;
         d.path = path;
         d.branch = Some(head);
         // the head's `hand` stays: a hand-set stop order keeps the trunk as the player laid it

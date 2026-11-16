@@ -1121,10 +1121,18 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
 - **Branches** (line branches): one line whose trains split onto different ends past a shared
   trunk (trunk A, B, C, then D, E and F, G). A branch is a line of its own with a link to its
   head line (`LineData::branch`, the head's index; none for an ordinary line or a head).
-  `TrackApi.add_branch(head, id, station)` makes a branch of the head's stops up to the first
-  visit of `station` (a stop of the head), as one undoable edit; it is refused for a head that is
-  a bus, ferry, branch or twin line and for a station the head does not stop at. The clicks that
-  follow edit the branch's stops like any line's. Like a copy, a new branch starts with no
+  `TrackApi.add_branch(head, id, target)` makes a branch out to `target`, a station the head
+  does not stop at, as one undoable edit. The sim picks where it leaves the line and which side
+  is its trunk: for every stop k of the head (a loop's closing stop left out), the head's stops
+  up to k then the target, and the target then the head's stops from k on; it keeps those whose
+  route turns back no more often than the head's route over the same stops (so its trains never
+  reverse at the junction or on the way to the target), and takes the one whose hop between the
+  junction stop and the target has the least track time, the longer trunk on a tie. So on a line
+  ending X, Y, Z, a spur that joins between X and Y facing back up the line gives the branch
+  target, Y, Z. It is refused (`LinePath`) for a head that is a bus, ferry, branch or twin
+  line, for a target the head stops at, and when no side reaches the target without turning
+  back; `NoSuchLine` for a missing head. The clicks that follow edit the branch's stops like any
+  line's. Like a copy, a new branch starts with no
   trains (counts at 0, or a headway line's headways at none), so the gesture never buys a fleet or
   doubles the trunk's service; it keeps the head's `hand`, so a stop order set by hand stays on
   its trunk.
