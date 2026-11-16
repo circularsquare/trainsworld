@@ -141,7 +141,9 @@ impl TrackApi {
         let Some(mut d) = self.w.net.line_data(source) else { return self.refuse(Issue::NoSuchLine { line: source }) };
         d.name = name;
         d.day = 0;
-        // line branches: a copy of any route stands alone, never a sibling branch
+        // line branches: a copy of any route stands alone, never a sibling branch; a new group goes
+        // on the head, as the branches follow their head's group
+        let owner = d.branch.unwrap_or(source);
         d.branch = None;
         // a bus line's copy is a planned route, paid for on Construct (T-1464)
         if let Some(r) = d.bus.as_mut() {
@@ -159,9 +161,9 @@ impl TrackApi {
         let mut ops = vec![];
         if d.group == 0 {
             d.group = self.new_line_group();
-            let mut s = self.w.net.line_data(source).unwrap();
+            let mut s = self.w.net.line_data(owner).unwrap();
             s.group = d.group;
-            ops.push(Op::Line { id: source, data: Some(s) });
+            ops.push(Op::Line { id: owner, data: Some(s) });
         }
         ops.push(Op::Line { id, data: Some(d) });
         let r = self.run(if ops.len() == 1 { ops.pop().unwrap() } else { Op::Batch(ops) });
