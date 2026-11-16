@@ -22,7 +22,7 @@ impl TrackApi {
         let Some((stops, path)) = edited_stops(&self.w.net, stops, d.hand) else { return self.refuse(Issue::LinePath { line: id }) };
         d.stops = stops;
         d.path = path;
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
     /// T-2895: the line's stops in the order the player gave, which the line then keeps: no later
     /// stop edit puts them in a straighter one. Refused like `set_stops`, and for a bus or ferry line.
@@ -105,7 +105,7 @@ impl TrackApi {
         let Some(mut d) = self.w.net.line_data(id) else { return self.refuse(Issue::NoSuchLine { line: id }) };
         let Some(stops) = stopped_at(&self.w.net, &d, station) else { return self.refuse(Issue::LinePath { line: id }) };
         d.stops = stops;
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
     /// Stops `lo..=hi` out; `lo..=hi` is one interior stop, a start or an end of the line.
     fn drop_stops(&mut self, id: u32, lo: usize, hi: usize) -> u32 {
@@ -113,7 +113,7 @@ impl TrackApi {
         let Some((stops, path)) = dropped(&self.w.net, &d, lo, hi) else { return self.refuse(Issue::LinePath { line: id }) };
         d.stops = stops;
         d.path = path;
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
     /// Rename or recolour a line; its path stays.
     pub fn set_line_look(&mut self, id: u32, name: String, colour: u32) -> u32 {
@@ -295,7 +295,7 @@ impl TrackApi {
         };
         let Some((stops, path)) = edited_stops(&self.w.net, &stops, d.hand) else { return self.refuse(Issue::LinePath { line: id }) };
         (d.stops, d.path) = (stops, path);
-        self.run(Op::Line { id, data: Some(d) })
+        self.run(self.with_branches(id, d))
     }
 
     /// The stations a line passes without stopping (T-646): `[gap, node]` pairs in path order, gap

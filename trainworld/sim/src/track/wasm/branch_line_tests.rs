@@ -392,3 +392,45 @@ fn adding_a_branch_is_one_undo() {
     assert_eq!(a.redo(), 0, "{}", a.issues());
     assert_eq!((a.w.net.line_stops(id), a.line_branch_of(id)), (&[sa, sb][..], head as i32));
 }
+
+// ---- trunk stop edits
+
+#[test]
+fn branch_follow_carries_trunk_edits_only() {
+    use super::branch::branch_follow;
+    let [a, b, c, d, f, x] = [1, 2, 3, 4, 5, 6];
+    let old = [a, b, c, d];
+    assert_eq!(branch_follow(&old, &[a, b, x, c, d], &[a, b, c, f]), Some(vec![a, b, x, c, f]), "insert between");
+    assert_eq!(branch_follow(&old, &[a, b, c, x, d], &[a, b, c, f]), None, "insert beyond the junction");
+    assert_eq!(branch_follow(&old, &[a, c, d], &[a, b, c, f]), Some(vec![a, c, f]), "drop on the trunk");
+    assert_eq!(branch_follow(&old, &[a, b, d], &[a, b, c]), None, "the branch keeps its end");
+}
+
+#[test]
+fn adding_a_trunk_stop_adds_it_to_the_branch() {
+    let mut w = world();
+    let [a, b, x, c, j, d] = [0.0, 3000.0, 4500.0, 6000.0, 7000.0, 10000.0].map(|x| node(&mut w, x, 0.0, 0));
+    let f = node(&mut w, 8400.0, 1500.0, 0);
+    for (p, q) in [(a, b), (b, x), (x, c), (c, j), (j, d)] {
+        edge(&mut w, p, q, &[], 0).unwrap();
+    }
+    edge(&mut w, j, f, &[(7400.0, 0.0)], 0).unwrap();
+    for n in [a, b, x, c, d, f] {
+        station(&mut w, n, 200);
+    }
+    terminals_at_dead_ends(&mut w);
+    let mut api = api(w);
+    let head = new_line(&mut api, &[a, b, c, d]);
+    let id = api.new_line_id();
+    assert_eq!(api.add_branch(head, id, c), 0, "{}", api.issues());
+    assert_eq!(api.add_stop(id, f), 0, "{}", api.issues());
+    assert_eq!(api.add_stop(head, x), 0, "{}", api.issues());
+    assert_eq!(api.w.net.line_stops(head), &[a, b, x, c, d]);
+    assert_eq!(api.w.net.line_stops(id), &[a, b, x, c, f]);
+    assert!(api.w.svc.lines[id as usize].ok);
+    assert_eq!(api.undo(), 0, "{}", api.issues());
+    assert_eq!(api.w.net.line_stops(head), &[a, b, c, d], "one undo puts back both");
+    assert_eq!(api.w.net.line_stops(id), &[a, b, c, f]);
+    assert_eq!(api.drop_stop(head, 1), 0, "{}", api.issues());
+    assert_eq!(api.w.net.line_stops(id), &[a, c, f], "a dropped trunk stop leaves the branch");
+}
