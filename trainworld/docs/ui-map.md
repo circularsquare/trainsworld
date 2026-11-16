@@ -202,6 +202,7 @@ has no hover of its own; the track tool's tag names the class and its factor [T-
   segment's normal, so line and track strokes keep no segment under 8 plane m (`MIN_SEG_M` in
   network.ts, T-2258) unless it is all of its edge: a point closer than that to the last one kept
   is dropped, the edge's last point moving the segment before it.
+  A line and its branches (line branches) share one band on the edges they run the same way, the branch's band following the head's, and a branch eases from that band to its own place where it leaves the trunk (`followFamily` in `map/lineBands.ts`); one running the other way keeps its own band.
   Order on each edge, left to right: of two lines, the one turning more to the left where they
   part, looking ahead in the lower-numbered line's direction, else looking back, else the lower
   number on the left of that line's travel; an edge's order is by how many of the others each line

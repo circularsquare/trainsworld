@@ -429,7 +429,7 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   [T-817], then `LRT1`, the settled rates of the lines with trains to the bit and the lines the
   settle left circling [T-1787], without which a load settles in full, and `LGR1` line groups
   (each grouped line's index and group number, then each named group's number and name) [T-1791],
-  `LGL1` group bullets set by hand (group number, text, colour + 1 or 0) and `LOR1` the Lines and
+  `LBR1` line branches (a count, then each branch's line index and its head's index; line branches), `LGL1` group bullets set by hand (group number, text, colour + 1 or 0) and `LOR1` the Lines and
   Stations tabs' hand order (line indices, then node indices, first first) [T-1813], `LPH1` the
   lines' departure phases [T-1925], `LSP1` the share of a headway line's spare time stood at its last
   stop where not half (count, then per line its index and three f32 bits) [T-2972], `BLD1` the station buildings (count, then per building

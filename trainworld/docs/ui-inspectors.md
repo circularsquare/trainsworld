@@ -271,6 +271,7 @@ purpose filter the purpose drawn is ringed in the bar.
   ellipsis), and a Leave group button at the right (an arrow out of a box, hover "Leave group"),
   there for touch, where dragging rows is not; a bus line's panel has the same row. The row
   starts 6 px below the title, which covers that much of whatever follows it.
+- **Branches** (line branches): a line with branches shows a row of chips under its sub line, "Main line" and one "to {last stop}" for each branch, and a click opens that line's panel. A branch's panel reads "Branch of {line}" under the title, "Counted with {line}" where the riders and money are (they are counted in the head), and Remove branch in place of Delete line (one undo step, the head's panel then opens). Its trains, headway and stops are its own; the head's panel and the lists carry the branches' riders, money, running cost and trains.
 - **Actions** at the top, under the title and the planned or broken notice: Edit stops (hover; while stops are being edited it reads "Stop editing" and shows pressed, the button as wide in both states so the row never wraps differently, T-2525, T-2601), Copy line (duplicates route and settings with no trains, T-1161;
   the copy joins its source's group, making one of the
   two when the source had none, T-1791, and the copy's own panel opens with its stops being edited, T-1894; its name and symbol are the next
