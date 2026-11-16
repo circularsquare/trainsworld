@@ -1148,7 +1148,6 @@
   "lineInspector.branchOf": "Ramal de {line}",
   "lineInspector.branchTo": "Para {stop}",
   "lineInspector.countedWith": "Contabilizado junto com {line}",
-  "lineInspector.mainLine": "Linha principal",
   "lineInspector.removeBranch": "Remover ramal",
   "lineInspector.broken": "A via em que esta linha circulava sumiu",
   "lineInspector.busyTrack": "Espera em via ocupada",

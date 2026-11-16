@@ -114,6 +114,16 @@ function heldFrom(v: Float64Array, vehicle: Vehicle): Held[] {
   return out;
 }
 
+/** Line branches: the stop a chip names for a line, the end that tells it apart from `others` (a head's
+ * branches, or a branch's head). A branch can share its last stop with its head (Shift + click toward a
+ * station off the head), so "last stop" alone would give two chips one label. */
+export const chipEnd = (l: LineInput, others: LineInput[]) => {
+  const last = l.stops[l.stops.length - 1];
+  const used = new Set(others.flatMap((o) => o.stops));
+  const free = [l.stops[0], last].filter((x) => !used.has(x));
+  return free.length === 1 ? free[0] : last;
+};
+
 /** What limits a line per level (T-679, `Limit`); null where nothing does. From the tail of
  * `TrackApi.line_held`. */
 export function limitsFrom(v: Float64Array, vehicle: Vehicle): (Limit | null)[] {
@@ -765,6 +775,7 @@ function RailLineInspector({ id }: { id: string }) {
   // line branches: a head and its branches share one name, so the chips tell them apart by where each ends
   const head = l.branchOf ? linesById(w).get(l.branchOf) : undefined;
   const branches = branchesOf(w, head?.id ?? l.id);
+  const top = head ?? l;
   const nStops = l.stops.length;
   // T-3025: a line turned round a loop is one row per station, its stops being edited or not (T-3109)
   const byId = stationsById(w);
@@ -999,7 +1010,7 @@ function RailLineInspector({ id }: { id: string }) {
       {branches.length > 0 && (
         <div class="line-stop-actions">
           <Segmented<string>
-            options={[[head?.id ?? l.id, tr("lineInspector.mainLine")], ...branches.map((b): [string, string] => [b.id, tr("lineInspector.branchTo", { stop: name.get(b.stops[b.stops.length - 1]) ?? "" })])]}
+            options={[[top.id, tr("lineInspector.branchTo", { stop: name.get(chipEnd(top, branches)) ?? "" })], ...branches.map((b): [string, string] => [b.id, tr("lineInspector.branchTo", { stop: name.get(chipEnd(b, [top])) ?? "" })])]}
             value={l.id}
             onChange={(id) => (selection.value = { kind: "line", line: id })}
           />

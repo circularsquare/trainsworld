@@ -1148,7 +1148,6 @@
   "lineInspector.branchOf": "Branch of {line}",
   "lineInspector.branchTo": "To {stop}",
   "lineInspector.countedWith": "Counted with {line}",
-  "lineInspector.mainLine": "Main line",
   "lineInspector.removeBranch": "Remove branch",
   "lineInspector.broken": "Track this line ran on is gone",
   "lineInspector.busyTrack": "Waiting at busy track",
