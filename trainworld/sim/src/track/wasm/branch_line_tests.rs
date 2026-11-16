@@ -1,4 +1,5 @@
-//! Line branches: the relation on a line and its `LBR1` save block.
+//! Line branches: the relation on a line and its `LBR1` save block, the head edits its branches
+//! follow, `add_branch`, and trunk stop edits carried to the branches.
 
 use super::*;
 use crate::track::tests::{edge, node, station, terminals_at_dead_ends, world};
@@ -287,6 +288,7 @@ fn a_branch_starts_as_the_trunk_up_to_its_stop() {
     assert_eq!(a.w.net.line_stops(id), &[sa, sb, sc]);
     assert_eq!(a.line_branch_of(id), head as i32);
     assert_eq!(identity(&a, id), identity(&a, head));
+    assert_eq!((a.w.net.line_trains[id as usize], a.w.net.line_tph[id as usize]), (Some([0; 3]), [0.0; 3]), "a new branch runs no trains");
     assert_eq!(a.add_stop(id, sf), 0, "{}", a.issues());
     assert_eq!(a.w.net.line_stops(id), &[sa, sb, sc, sf]);
     assert_eq!(a.w.net.line_stops(head), &[sa, sb, sc, sd], "the head keeps its stops");
@@ -330,6 +332,7 @@ fn a_branch_and_its_head_take_turns_on_the_trunk() {
     let id = a.new_line_id();
     assert_eq!(a.add_branch(head, id, sc), 0, "{}", a.issues());
     assert_eq!(a.add_stop(id, ss), 0, "{}", a.issues());
+    assert_eq!(a.set_auto_headway(id, 600, 600, 600), 0, "{}", a.issues());
     for l in [head, id] {
         assert!((a.w.net.line_tph[l as usize][HIGH] - 6.0).abs() < 0.01, "line {l}: {:?}", a.w.net.line_tph[l as usize]);
     }

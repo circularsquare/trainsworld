@@ -2163,7 +2163,8 @@ mod regional_water_tests;
 #[cfg(test)]
 mod quad_edit_tests;
 
-/// Line branches: the relation and its save block.
+/// Line branches: the relation and its save block, what follows the head, adding a branch and
+/// trunk stop edits.
 #[cfg(test)]
 mod branch_line_tests;
 

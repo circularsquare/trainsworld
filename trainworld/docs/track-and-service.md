@@ -1124,7 +1124,10 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   `TrackApi.add_branch(head, id, station)` makes a branch of the head's stops up to the first
   visit of `station` (a stop of the head), as one undoable edit; it is refused for a head that is
   a bus, ferry, branch or twin line and for a station the head does not stop at. The clicks that
-  follow edit the branch's stops like any line's.
+  follow edit the branch's stops like any line's. Like a copy, a new branch starts with no
+  trains (counts at 0, or a headway line's headways at none), so the gesture never buys a fleet or
+  doubles the trunk's service; it keeps the head's `hand`, so a stop order set by hand stays on
+  its trunk.
   **Sync**: after every checked edit `branch_ops` copies the head's name, symbol, colour, cars,
   fast, limit, dwell, turnaround and group fields to each branch, and deletes a branch whose head
   is gone, is a bus or ferry line, or is itself a branch. A branch keeps its own trains and
@@ -1133,8 +1136,9 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   **Trunk edits**: `set_stops`, `add_stop`, `drop_stop`, `end_line_at` and `stop_passed` on the head
   reach its branches in the same edit and undo step: a station put between two head stops that are
   next to each other on a branch goes in there too, and a station taken out is taken out of every
-  branch, unless it is a branch's first or last stop. `turn_end` and `open_loop` do not yet carry
-  stop changes to branches. Copy line on a branch makes a sibling branch of the same head.
+  branch, unless it is a branch's first or last stop. `turn_end`, `open_loop`, `order_stops` and
+  `sort_stops` do not carry stop changes to branches (a drag reorder or sort of the head leaves
+  each branch's trunk in its own order). Copy is not offered on a branch's panel.
   Saved in a trailing `LBR1` block (architecture.md, the save format; `save::LEVEL` 19): a count,
   then each branch's line index and its head's index. A save without it loads every line
   unbranched, and a relation that does not hold on load (a head out of range, a bus or ferry line, or itself a

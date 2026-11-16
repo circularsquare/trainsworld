@@ -167,8 +167,9 @@ impl TrackApi {
         r
     }
     /// Line branches: a new line `id` on `head`'s trunk up to its first stop at `station`, for the
-    /// player to carry on from there; it keeps the head's look and trains, as one line to the
-    /// player. One undoable edit. Branches hang off one trunk, so a branch, a hidden twin, a bus or
+    /// player to carry on from there; it keeps the head's look, as one line to the player, but like
+    /// a copy starts with no trains, so a gesture never buys a fleet or doubles the trunk's service.
+    /// One undoable edit. Branches hang off one trunk, so a branch, a hidden twin, a bus or
     /// a ferry line is no head.
     pub fn add_branch(&mut self, head: u32, id: u32, station: u32) -> u32 {
         let net = &self.w.net;
@@ -184,7 +185,13 @@ impl TrackApi {
         d.stops.truncate(i + 1);
         d.path = path;
         d.branch = Some(head);
-        (d.hand, d.one_way, d.day) = (false, false, 0);
+        // the head's `hand` stays: a hand-set stop order keeps the trunk as the player laid it
+        (d.one_way, d.day) = (false, 0);
+        d.trains = Some([0; 3]);
+        d.tph = [0.0; 3];
+        if d.auto.is_some() {
+            d.auto = Some([0; 3]);
+        }
         self.run(Op::Line { id, data: Some(d) })
     }
 
