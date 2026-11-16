@@ -266,6 +266,8 @@ pub struct LineData {
     /// T-3333: the line runs on both pairs of quad track (`Parent`), or is the hidden twin that runs
     /// the other pair for one (`Of`).
     pub twin: super::twin::Twin,
+    /// Line branches: the head line this one branches from; None for a line that is not a branch.
+    pub branch: Option<u32>,
 }
 
 /// A line group's bullet set by hand (T-1813): its text (empty for the name's own) and its colour
@@ -507,6 +509,8 @@ pub struct Network {
     pub line_limit: Vec<u16>,
     /// T-3333: `LineData::twin`.
     pub line_twin: Vec<super::twin::Twin>,
+    /// Line branches: `LineData::branch`.
+    pub line_branch: Vec<Option<u32>>,
     pub line_name: Vec<String>,
     pub line_symbol: Vec<String>,
     pub next_line_number: u32,
@@ -849,6 +853,7 @@ impl Network {
             line_one_way: vec![],
             line_limit: vec![],
             line_twin: vec![],
+            line_branch: vec![],
             line_name: vec![],
             line_symbol: vec![],
             next_line_number: 1,
@@ -960,6 +965,16 @@ impl Network {
     pub fn edge_ok(&self, e: u32) -> bool {
         self.edge_alive.get(e as usize).copied().unwrap_or(false)
     }
+    /// The head line `l` branches from, if it is a branch.
+    pub fn line_branch_of(&self, l: u32) -> Option<u32> {
+        self.line_branch.get(l as usize).copied().flatten()
+    }
+
+    /// The alive lines that branch from `head`, ascending.
+    pub fn branches_of(&self, head: u32) -> Vec<u32> {
+        (0..self.line_count() as u32).filter(|&l| self.line_ok(l) && self.line_branch_of(l) == Some(head)).collect()
+    }
+
     pub fn line_ok(&self, l: u32) -> bool {
         self.line_alive.get(l as usize).copied().unwrap_or(false)
     }
@@ -1105,6 +1120,7 @@ impl Network {
         self.line_one_way.push(false);
         self.line_limit.push(0);
         self.line_twin.push(Default::default());
+        self.line_branch.push(None);
     }
     fn claim_node(&mut self, id: u32) {
         while self.node_alive.len() <= id as usize {
@@ -1181,6 +1197,7 @@ impl Network {
                 one_way: self.line_one_way[i],
                 limit: self.line_limit[i],
                 twin: self.line_twin[i],
+                branch: self.line_branch[i],
             }
         })
     }
@@ -1671,6 +1688,7 @@ impl Network {
                 self.line_one_way[i] = d.one_way;
                 self.line_limit[i] = d.limit;
                 self.line_twin[i] = if d.bus.is_some() || d.ferry.is_some() { Default::default() } else { d.twin };
+                self.line_branch[i] = if d.bus.is_some() || d.ferry.is_some() { None } else { d.branch };
                 self.line_bus[i] = d.bus;
                 self.line_ferry[i] = d.ferry;
                 self.line_group[i] = d.group;
@@ -1688,6 +1706,7 @@ impl Network {
                 self.line_one_way[i] = false;
                 self.line_limit[i] = 0;
                 self.line_twin[i] = Default::default();
+                self.line_branch[i] = None;
                 self.line_bus[i] = None;
                 self.line_ferry[i] = None;
                 self.line_group[i] = 0;

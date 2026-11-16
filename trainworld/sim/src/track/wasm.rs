@@ -2131,7 +2131,7 @@ impl TrackApi {
         let Some(path) = self.w.net.route(stops) else {
             return self.refuse(Issue::LinePath { line: id });
         };
-        self.run(Op::Line { id, data: Some(LineData { symbol: String::new(), trains: None, auto: None, name, colour, stops: stops.to_vec(), path, tph: [high, medium, low], dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), day: 0, hand: false, one_way: false, limit: 0, twin: Default::default() }) })
+        self.run(Op::Line { id, data: Some(LineData { symbol: String::new(), trains: None, auto: None, name, colour, stops: stops.to_vec(), path, tph: [high, medium, low], dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), branch: None }) })
     }
     pub(crate) fn set_schedule(&mut self, id: u32, high: f32, medium: f32, low: f32) -> u32 {
         self.run(Op::Schedule { id, tph: [high, medium, low] })
@@ -2161,6 +2161,10 @@ mod regional_water_tests;
 
 #[cfg(test)]
 mod quad_edit_tests;
+
+/// Line branches: the relation and its save block.
+#[cfg(test)]
+mod branch_line_tests;
 
 /// T-1615: routes ramp over or under track they would cross flat.
 #[cfg(test)]
