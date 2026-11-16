@@ -497,14 +497,23 @@ export const stationsByNum = (w: WorldView) => lookup(w, "stationNums", (s) => n
 export const linesById = (w: WorldView) => lookup(w, "lines", (s) => new Map(s.lines.map((l) => [l.id, l])));
 export const linesByNum = (w: WorldView) => lookup(w, "lineNums", (s) => new Map(s.lines.map((l) => [l.num, l])));
 /** T-3333: the lines a player sees listed: every line but the hidden twins of lines run on both pairs of
- * quad track (which every sum still counts). */
-export const listedLines = (w: WorldView) => lookup(w, "listed", (s) => (s.lines.some((l) => l.twinOf) ? s.lines.filter((l) => !l.twinOf) : s.lines));
-/** The lines that stop at each station, in line order; at a twin's stations, the line it runs for (T-3333). */
+ * quad track, and (line branches) the branches, which show as their head (every sum still counts both). */
+export const listedLines = (w: WorldView) => lookup(w, "listed", (s) => (s.lines.some((l) => l.twinOf || l.branchOf) ? s.lines.filter((l) => !l.twinOf && !l.branchOf) : s.lines));
+const noLines: LineInput[] = [];
+/** Line branches: the branches of `head`, in line order (none for a line that is no head). */
+export const branchesOf = (w: WorldView, head: LineId): LineInput[] => lookup(w, "branches", (s) => {
+  const by = new Map<LineId, LineInput[]>();
+  for (const l of s.lines) if (l.branchOf) (by.get(l.branchOf) ?? by.set(l.branchOf, []).get(l.branchOf)!).push(l);
+  return by;
+}).get(head) ?? noLines;
+/** The lines that stop at each station, in line order; at a twin's stations, the line it runs for (T-3333),
+ * and at a branch's, its head (a branch's twin's, too). */
 export const linesAtMap = (w: WorldView) => lookup(w, "linesAt", (s) => {
   const at = new Map<string, LineInput[]>();
   const byId = new Map(s.lines.map((l) => [l.id, l]));
   for (const t of s.lines) {
-    const l = t.twinOf ? byId.get(t.twinOf) : t;
+    let l = t.twinOf ? byId.get(t.twinOf) : t;
+    if (l?.branchOf) l = byId.get(l.branchOf);
     if (!l) continue;
     for (const st of new Set(t.stops)) {
       const v = at.get(st) ?? at.set(st, []).get(st)!;

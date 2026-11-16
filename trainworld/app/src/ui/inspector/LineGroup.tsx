@@ -3,7 +3,7 @@
 
 import { groupBullet, groupName, lineGroups } from "../../game/lineGroups";
 import type { LineInput } from "../../game/types";
-import { edit, world } from "../../game/world";
+import { edit, listedLines, world } from "../../game/world";
 import { tRich, t } from "../../i18n";
 import { selection } from "../../game/ui";
 import { Icon } from "../widgets";
@@ -11,7 +11,8 @@ import { GroupPill } from "../GroupPill";
 
 export function LineGroup({ l }: { l: LineInput }) {
   const w = world.value;
-  const ls = l.group && w ? lineGroups(w.save.lines).get(l.group) : undefined;
+  // line branches: a head and its branches alone are one line, no group
+  const ls = l.group && w ? lineGroups(listedLines(w)).get(l.group) : undefined;
   if (!ls) return null;
   const open = () => (selection.value = { kind: "group", group: l.group! });
   // the hover carries the full name where the bullet reads it shorter

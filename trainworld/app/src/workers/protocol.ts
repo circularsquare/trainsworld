@@ -580,6 +580,8 @@ export interface ClockLine {
   pairs?: 1 | 2;
   /** T-3333: a hidden twin, the line it runs the other pair for (`TrackApi::line_twin_of`) */
   twinOf?: number;
+  /** line branches: the head line this one branches from (`TrackApi::line_branch_of`) */
+  branchOf?: number;
   /** T-1464: a bus line's route and stops; absent for a rail line, whose `path` this replaces
    * (a bus line's `path` is empty, its `stops` its `bus.stops`' ids) */
   bus?: ClockBus;
