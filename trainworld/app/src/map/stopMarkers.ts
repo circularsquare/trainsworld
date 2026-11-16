@@ -206,10 +206,8 @@ export class StopMarkers {
       // a held finger makes one too: its own long press has dealt with it
       if (touchInput.peek()) return;
       const id = this.pick(e.point.x, e.point.y);
-      if (id === null) return;
-      // line branches: Shift + right click branches at any stop, loop stops too; a plain one keeps its loop meaning
-      if (e.originalEvent.shiftKey && this.canBranch(id)) return this.branchAt(id);
-      this.loopAt(id, e.point.x, e.point.y);
+      // line branches: a Shift right click is the branch's (pressDown), never a loop's
+      if (id !== null && !e.originalEvent.shiftKey) this.loopAt(id, e.point.x, e.point.y);
     });
     const box = map.getContainer();
     box.addEventListener("pointerdown", (e) => this.pressDown(e), true);
@@ -535,9 +533,17 @@ export class StopMarkers {
   }
 
   private pressDown(e: PointerEvent) {
-    if (e.pointerType !== "touch" || !this.line || !e.isPrimary) return this.pressEnd();
+    if (!this.line) return this.pressEnd();
     const r = this.map.getContainer().getBoundingClientRect();
     const x = e.clientX - r.left, y = e.clientY - r.top;
+    // line branches: read at the press, as Firefox shows its own menu for a Shift right click and may send the page
+    // no contextmenu; that handler ignores Shift, so a browser that sends both branches once
+    if (e.pointerType !== "touch" && e.button === 2 && e.shiftKey) {
+      const id = this.pick(x, y);
+      if (id !== null && this.canBranch(id)) this.branchAt(id);
+      return;
+    }
+    if (e.pointerType !== "touch" || !e.isPrimary) return this.pressEnd();
     const id = this.pick(x, y);
     this.pressEnd();
     if (id === null) return;
