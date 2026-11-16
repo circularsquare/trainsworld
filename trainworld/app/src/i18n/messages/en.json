@@ -2016,7 +2016,7 @@
   "stopMarkers.rightOpen": "Right click to open loop",
   "stopMarkers.rightLoopBack": "Right click to loop back here",
   "stopMarkers.rightStopLooping": "Right click to stop looping back here",
-  "stopMarkers.shiftBranch": "Shift click to branch the line here",
+  "stopMarkers.shiftBranch": "Shift-click to branch the line here",
   "stopMarkers.noBranch": "Can't branch to here",
   "stopMarkers.noLoop": "Can't loop back here",
   "stopMarkers.add": "Click to add a stop",

@@ -393,7 +393,15 @@ tag over a point states what these do there. Loops are described under each tool
 On touch each right click has a way that needs no hold. A finger held 500 ms on a point (moving up to 8 px; the lift
 adds nothing) does its right click in the bus tool, the ferry tool and the stop markers. The Loop button in the tool's
 bar (shown with two points or more, and for train and tram stops) makes the next tap a right click, which covers
-close, loop back, open and stop looping back. Beside it the Branch button (train and tram stops, not on a branch) makes the next tap on a station off the line a Shift + click (a tap on one of its stops only turns the button off). A Shift + click on a station that is not a stop of an edited rail line that is not a branch makes a branch out to it: the sim picks the stop where it leaves the line and which end of the line it shares, so its trains never reverse at the junction, and the branch ends at the clicked station; its stop editing takes over from the head's, so the clicks that follow carry the branch on. Where no such way out exists the station's tag says "Can't branch to here" for 4 s. A Shift + click on a stop of the line is a plain click, and a right click only ever loops. The panel follows to the branch. The branch takes the head's look and starts with no trains (track-and-service.md "Branches"). The touch bar's Back button takes back the last point, which deletes the
+close, loop back, open and stop looping back. Beside it the Branch button (train and tram stops, not on a branch)
+makes the next tap on a station off the line a Shift + click (a tap on one of its stops only turns the button off). A
+Shift + click on a station that is not a stop of an edited rail line that is not a branch makes a branch out to it:
+the sim picks the stop where it leaves the line and which end of the line it shares, so its trains never reverse at
+the junction, and the branch ends at the clicked station; its stop editing takes over from the head's, so the clicks
+that follow carry the branch on. Where no such way out exists the station's tag says "Can't branch to here" for 4 s. A
+Shift + click on a stop of the line is a plain click, and a right click only ever loops. The panel follows to the
+branch. The branch takes the head's look and starts with no trains (track-and-service.md "Branches"). The touch bar's
+Back button takes back the last point, which deletes the
 last or a lone point.
 
 ## Drawing a bus line

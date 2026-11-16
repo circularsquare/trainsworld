@@ -2051,7 +2051,7 @@
   "stopMarkers.rightLoopBack": "Right click to loop back here",
   "stopMarkers.rightOpen": "Right click to open loop",
   "stopMarkers.rightStopLooping": "Right click to stop looping back here",
-  "stopMarkers.shiftBranch": "Shift click to branch the line here",
+  "stopMarkers.shiftBranch": "Shift-click to branch the line here",
   "stopMarkers.station": "Station",
   "stopMarkers.thatStation": "That station",
   "terrain.flat": "Flat",

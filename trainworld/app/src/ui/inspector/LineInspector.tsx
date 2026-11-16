@@ -1016,7 +1016,7 @@ function RailLineInspector({ id }: { id: string }) {
                 <button aria-current={on ? "true" : undefined} onClick={() => (selection.value = { kind: "line", line: r.id })}>
                   <span class="route-bar" style={{ background: on ? shown : r.colour }} />
                   <span class="grow">{rs?.loop ? tr("lineInspector.routeLoop", { from }) : tr("lineInspector.routeEnds", { from, to: name.get(r.stops[r.stops.length - 1]) ?? "" })}</span>
-                  <span class="val muted">{tr("lineInspector.routeStops", { count: r.stops.length - (rs?.loop ? 1 : 0) })}</span>
+                  <span class="val muted">{tr("lineInspector.routeStops", { count: (rs && turnedLine(r.stops, rs)?.rows.length) ?? r.stops.length - (rs?.loop ? 1 : 0) })}</span>
                   <span class="val route-trains" data-tip={vehiclesText(vehicleOf(st), n)}>{n}{st.tram ? <Icon.tram /> : <Icon.train />}</span>
                 </button>
               </li>
