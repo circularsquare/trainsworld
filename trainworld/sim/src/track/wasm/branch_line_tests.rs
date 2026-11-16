@@ -231,12 +231,12 @@ fn api(w: TrackWorld) -> TrackApi {
 /// Stations A - B - C - D along x, and F on a spur leaving the track past C toward D:
 /// `[A, B, C, D, F]`.
 fn open_layout() -> (TrackApi, [u32; 5]) {
-    spur_layout(7000.0, 1.0)
+    spur_layout(7000.0, 1.0, false)
 }
 
 /// Stations A - B - C - D along x, and F on a spur leaving the track at `jx` facing toward D
-/// (`lean` 1) or toward A (-1): `[A, B, C, D, F]`.
-fn spur_layout(jx: f64, lean: f64) -> (TrackApi, [u32; 5]) {
+/// (`lean` 1) or toward A (-1): `[A, B, C, D, F]`. A `bare_d` D is a track end, no station.
+fn spur_layout(jx: f64, lean: f64, bare_d: bool) -> (TrackApi, [u32; 5]) {
     let mut w = world();
     let mut xs = vec![0.0, 3000.0, 6000.0, jx, 10000.0];
     xs.sort_by(f64::total_cmp);
@@ -249,7 +249,9 @@ fn spur_layout(jx: f64, lean: f64) -> (TrackApi, [u32; 5]) {
     }
     edge(&mut w, j, f, &[(jx + 400.0 * lean, 0.0)], 0).unwrap();
     for n in [a, b, c, d, f] {
-        station(&mut w, n, 200);
+        if !(bare_d && n == d) {
+            station(&mut w, n, 200);
+        }
     }
     terminals_at_dead_ends(&mut w);
     (api(w), [a, b, c, d, f])
@@ -258,21 +260,34 @@ fn spur_layout(jx: f64, lean: f64) -> (TrackApi, [u32; 5]) {
 /// A ring of stations A - B - C - D round anticlockwise, and S on a spur leaving it past C:
 /// `[A, B, C, D, S]`.
 fn ring_layout() -> (TrackApi, [u32; 5]) {
+    spur_ring(225.0, 1.0)
+}
+
+/// A ring of stations A - B - C - D round anticlockwise at 0, 90, 180 and 270 degrees, and S on a
+/// spur leaving it at `jdeg` facing anticlockwise (`lean` 1) or clockwise (-1): `[A, B, C, D, S]`.
+fn spur_ring(jdeg: f64, lean: f64) -> (TrackApi, [u32; 5]) {
     let mut w = world();
     let r = 3000.0;
     let at = |deg: f64, k: f64| (k * deg.to_radians().cos(), k * deg.to_radians().sin());
-    let degs = [0.0, 90.0, 180.0, 225.0, 270.0, 360.0];
+    let mut degs = vec![0.0, 90.0, 180.0, 270.0, jdeg];
+    degs.sort_by(f64::total_cmp);
+    let j = degs.iter().position(|&g| g == jdeg).unwrap();
+    degs.push(360.0);
     let ns: Vec<u32> = degs[..5].iter().map(|&g| { let (x, y) = at(g, r); node(&mut w, x, y, 0) }).collect();
     for i in 0..5 {
         let half = (degs[i + 1] - degs[i]) / 2.0;
         edge(&mut w, ns[i], ns[(i + 1) % 5], &[at(degs[i] + half, r / half.to_radians().cos())], 0).unwrap();
     }
     // the spur leaves J along the ring and bends out of it
-    let (jx, jy) = at(225.0, r);
-    let (t, o) = (at(-45.0, 1.0), at(225.0, 1.0));
+    let (jx, jy) = at(jdeg, r);
+    let (t, o) = (at(jdeg + 90.0 * lean, 1.0), at(jdeg, 1.0));
     let s = node(&mut w, jx + 1400.0 * t.0 + 1500.0 * o.0, jy + 1400.0 * t.1 + 1500.0 * o.1, 0);
-    edge(&mut w, ns[3], s, &[(jx + 400.0 * t.0, jy + 400.0 * t.1)], 0).unwrap();
-    let stations = [ns[0], ns[1], ns[2], ns[4], s];
+    edge(&mut w, ns[j], s, &[(jx + 400.0 * t.0, jy + 400.0 * t.1)], 0).unwrap();
+    let mut stations = [0; 5];
+    for (k, &n) in ns.iter().filter(|&&n| n != ns[j]).enumerate() {
+        stations[k] = n;
+    }
+    stations[4] = s;
     for n in stations {
         station(&mut w, n, 200);
     }
@@ -306,7 +321,7 @@ fn branch_to(a: &mut TrackApi, head: u32, target: u32) -> u32 {
 #[test]
 fn a_branch_reaches_off_the_end_of_the_line() {
     // the spur joins between B and C facing A, so its trains run on to the end of the line
-    let (mut a, [sa, sb, sc, sd, ss]) = spur_layout(4500.0, -1.0);
+    let (mut a, [sa, sb, sc, sd, ss]) = spur_layout(4500.0, -1.0, false);
     let head = new_line(&mut a, &[sa, sb, sc, sd]);
     let id = branch_to(&mut a, head, ss);
     assert_eq!(a.w.net.line_stops(id), &[ss, sc, sd]);
@@ -335,6 +350,19 @@ fn a_circle_takes_a_spur() {
     assert_eq!(a.w.net.line_stops(id), &[sa, sb, sc, ss]);
     assert_eq!(a.line_loop(head), 1);
     assert!(a.w.svc.lines[head as usize].ok);
+}
+
+#[test]
+fn a_circle_branch_leaves_out_the_closing_stop() {
+    // the spur joins between D and the lap's closing A, its trains running on round from A: the
+    // longest trunk that leaves no turn back would be the whole lap back to A
+    let (mut a, [sa, sb, sc, sd, ss]) = spur_ring(315.0, -1.0);
+    let head = new_line(&mut a, &[sa, sb, sc, sd]);
+    assert_eq!(a.set_stops(head, &[sa, sb, sc, sd, sa]), 0, "{}", a.issues());
+    assert_eq!(a.line_loop(head), 1);
+    let id = branch_to(&mut a, head, ss);
+    assert_eq!(a.w.net.line_stops(id), &[ss, sa, sb, sc, sd]);
+    assert_eq!(a.line_loop(head), 1);
 }
 
 /// The times a line's first run leaves its stop `k`, in the hour from 08:00 of day 1.
@@ -405,8 +433,10 @@ fn a_branch_to_a_stop_of_the_line_is_refused() {
 
 #[test]
 fn a_branch_that_would_reverse_is_refused() {
-    // the spur joins past B facing A: a train from A or B reaches it only by turning back
-    let (mut a, [sa, sb, _, _, ss]) = spur_layout(4500.0, -1.0);
+    // the spur joins past B facing A: a train from A or B reaches it only by turning back at the
+    // bare end D, which routes but is a reversal
+    let (mut a, [sa, sb, _, sd, ss]) = spur_layout(4500.0, -1.0, true);
+    assert!(a.w.net.bare_end(sd));
     let head = new_line(&mut a, &[sa, sb]);
     let n = live_lines(&a);
     let id = a.new_line_id();

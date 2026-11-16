@@ -197,10 +197,12 @@ impl TrackApi {
                 if net.path_reversals(&path).len() > net.path_reversals(&own).len() {
                     continue;
                 }
-                // a trunk revisiting its first stop routes as a loop on its own, so it may not prefix the path
-                let hop = if out { path.get(own.len()..).unwrap_or_default() } else {
-                    let n = path.iter().position(|&e| net.path_nodes(e).1 == s[k]).map_or(path.len(), |i| i + 1);
-                    &path[..n]
+                // found from the junction, not `own`'s length: a trunk revisiting its first stop routes
+                // as a loop on its own, so `own` need not prefix the path
+                let hop = if out {
+                    &path[path.iter().rposition(|&e| net.path_nodes(e).1 == s[k]).map_or(0, |i| i + 1)..]
+                } else {
+                    &path[..path.iter().position(|&e| net.path_nodes(e).1 == s[k]).map_or(path.len(), |i| i + 1)]
                 };
                 let key = (time(hop), usize::MAX - trunk.len());
                 if best.as_ref().is_none_or(|b| key < (b.0, b.1)) {
