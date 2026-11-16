@@ -1,7 +1,7 @@
 // Tool hints/messages at the map's bottom left; confirmations in a centered modal.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { ask, lineDraft, loopTap, selection, tool } from "../game/ui";
+import { ask, branchTap, lineDraft, loopTap, selection, tool } from "../game/ui";
 import { linesByNum, notice, stationsById, world } from "../game/world";
 import { cancelLink, linking } from "../game/links";
 import { live } from "../map/live";
@@ -82,8 +82,9 @@ function Notice() {
   const touch = touchInput.value;
   const draftLine = tl === "line" && draft.line !== null && world.value ? linesByNum(world.value).get(draft.line) : undefined;
   // T-3118: with the Loop button on, what the next tap does
-  const looping = loopTap.value;
-  const hint = looping ? t("toolNotes.loopTap", { what: tl === "bus" ? "point" : tl === "ferry" ? "port" : "stop" }) // i18n-ignore (select values)
+  const looping = loopTap.value, branching = branchTap.value;
+  const hint = branching ? t("toolNotes.branchHint")
+    : looping ? t("toolNotes.loopTap", { what: tl === "bus" ? "point" : tl === "ferry" ? "port" : "stop" }) // i18n-ignore (select values)
     : draftLine && world.value?.lineStats[draftLine.id]?.bus ? t("toolNotes.busHandHint", { touch })
     : tl === "line" && draft.stops.length === 1 ? t("toolNotes.lineNext", { touch })
     : tl === "trip" && sel?.kind === "trip" && !sel.to ? t("toolNotes.tripEnd", { touch })
@@ -109,7 +110,11 @@ function Notice() {
   const sq = mode !== "select" && <span class="mode-sq" style={{ background: clickColour(mode) }} />;
   // T-3118: on touch a Loop button stands in for the right click (a held finger works too)
   const loopButton = (on: boolean) => touch && on && (
-    <button class={"btn text" + (looping ? " on" : "")} aria-pressed={looping} onClick={() => (loopTap.value = !looping)}>{t("toolNotes.loop")}</button>
+    <button class={"btn text" + (looping ? " on" : "")} aria-pressed={looping} onClick={() => { branchTap.value = false; loopTap.value = !looping; }}>{t("toolNotes.loop")}</button>
+  );
+  // line branches: a Branch button beside it stands in for the Shift right click
+  const branchButton = (on: boolean) => touch && on && (
+    <button class={"btn text" + (branching ? " on" : "")} aria-pressed={branching} onClick={() => { loopTap.value = false; branchTap.value = !branching; }}>{t("toolNotes.branch")}</button>
   );
   return (
     <div id="tool-notes">
@@ -153,6 +158,7 @@ function Notice() {
           <span>{sq}{t("toolNotes.editing", { name: editing.name, stops: editing.stops.length })}</span>
           <span class="bus-acts">
             {loopButton(editing.stops.length >= 2 && !world.value?.lineStats[editing.id]?.bus)}
+            {branchButton(editing.stops.length >= 2 && !editing.branchOf && !world.value?.lineStats[editing.id]?.bus)}
             <button class="btn text" onClick={() => live.tools?.exit()}>{t("toolNotes.done")}</button>
           </span>
         </p>

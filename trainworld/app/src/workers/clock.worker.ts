@@ -3673,8 +3673,9 @@ function savedShapes(): Pick<SaveHeader, "shapes"> {
 
 /** T-3319: a new line takes no shape left by a deleted line whose id it reuses; a copy takes its source's. */
 function newLineShape(op: EditOp, line: number) {
-  if (op.op !== "addLine" && op.op !== "addBusLine" && op.op !== "addFerryLine" && op.op !== "copyLine") return;
-  const id = String(line), from = op.op === "copyLine" ? lineShapes.get(String(op.line)) : undefined;
+  if (op.op !== "addLine" && op.op !== "addBusLine" && op.op !== "addFerryLine" && op.op !== "copyLine" && op.op !== "addBranch") return;
+  // line branches: a branch wears its head's shape, as it does its look
+  const id = String(line), from = op.op === "copyLine" || op.op === "addBranch" ? lineShapes.get(String(op.line)) : undefined;
   if (from === lineShapes.get(id)) return;
   if (from) lineShapes.set(id, from);
   else lineShapes.delete(id);
@@ -3831,6 +3832,10 @@ function applyInner(op: EditOp): Applied {
       const symbol = tail && !op.name?.trim() && tail.length <= 5 && !symbols.has(tail.toLowerCase()) ? tail : cloneSymbol(a.line_symbol(op.line) || letterOf(from), symbols);
       if (r === 0) a.set_line_badge(id, name, colour, symbol);
       return { r, line: id };
+    }
+    case "addBranch": {
+      const id = a.new_line_id();
+      return { r: a.add_branch(op.line, id, op.station), line: id };
     }
     case "setStops": {
       const set = () => a.set_stops(op.line, new Uint32Array(op.stops));

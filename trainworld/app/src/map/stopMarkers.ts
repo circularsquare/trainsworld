@@ -18,7 +18,7 @@ import { t } from "../i18n";
 import { effect } from "@preact/signals";
 import type { Map as MlMap } from "maplibre-gl";
 import type { LineInput, WorldView } from "../game/types";
-import { lineDraft, loopTap, newLine, stopEditing } from "../game/ui";
+import { branchTap, lineDraft, loopTap, newLine, stopEditing } from "../game/ui";
 import { world } from "../game/world";
 import { halfFill } from "./halfDot";
 import { headingOnScreen } from "./stopHeading";
@@ -189,7 +189,7 @@ export class StopMarkers {
   /** the tap a long press leaves behind is not a click on the marker */
   private swallow = false;
 
-  constructor(private map: MlMap, private overlay: Overlay, private toggle: (station: number) => void, private loop: (station: number, tier: StopTier) => void) {
+  constructor(private map: MlMap, private overlay: Overlay, private toggle: (station: number) => void, private loop: (station: number, tier: StopTier | "branch") => void) {
     this.gap = new GapFlash(map, overlay);
     this.box = document.createElement("div");
     this.box.className = "stop-marks";
@@ -206,7 +206,10 @@ export class StopMarkers {
       // a held finger makes one too: its own long press has dealt with it
       if (touchInput.peek()) return;
       const id = this.pick(e.point.x, e.point.y);
-      if (id !== null) this.loopAt(id, e.point.x, e.point.y);
+      if (id === null) return;
+      // line branches: Shift + right click branches at any stop, loop stops too; a plain one keeps its loop meaning
+      if (e.originalEvent.shiftKey && this.canBranch(id)) return this.branchAt(id);
+      this.loopAt(id, e.point.x, e.point.y);
     });
     const box = map.getContainer();
     box.addEventListener("pointerdown", (e) => this.pressDown(e), true);
@@ -431,12 +434,13 @@ export class StopMarkers {
   /** What hovering a marker says: a stop's click, then its right click where that does something (T-3109). */
   private words(id: string): string[] {
     const name = this.names.get(id) ?? t("stopMarkers.station");
+    const branch = this.canBranch(id) ? [t("stopMarkers.shiftBranch")] : [];
     switch (this.tierOf(id)) {
-      case "on": return [name, t("stopMarkers.remove"), ...(this.closedLine() ? [t("stopMarkers.rightOpen")] : [])];
-      case "close": return [name, t("stopMarkers.remove"), t("stopMarkers.rightClose")];
-      case "open": return [name, t("stopMarkers.remove"), t("stopMarkers.rightOpen")];
-      case "turn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightLoopBack")];
-      case "unturn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightStopLooping")];
+      case "on": return [name, t("stopMarkers.remove"), ...(this.closedLine() ? [t("stopMarkers.rightOpen")] : []), ...branch];
+      case "close": return [name, t("stopMarkers.remove"), t("stopMarkers.rightClose"), ...branch];
+      case "open": return [name, t("stopMarkers.remove"), t("stopMarkers.rightOpen"), ...branch];
+      case "turn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightLoopBack"), ...branch];
+      case "unturn": return [name, t("stopMarkers.remove"), t("stopMarkers.rightStopLooping"), ...branch];
       case "route": return [name, t("stopMarkers.add")];
       case "reroute": return [name, t("stopMarkers.addReroute")];
       case "reverse": {
@@ -480,6 +484,11 @@ export class StopMarkers {
       loopTap.value = false;
       return this.loopAt(id, px, py);
     }
+    // line branches: the touch Branch button was on; a tap off the line's stops only turns it off
+    if (branchTap.peek()) {
+      branchTap.value = false;
+      return this.canBranch(id) ? this.branchAt(id) : this.hideTag();
+    }
     if (this.tierOf(id) === "cut") {
       const name = this.names.get(id) ?? t("stopMarkers.thatStation");
       this.hideTag();
@@ -505,6 +514,18 @@ export class StopMarkers {
     this.reasonFor = id;
     this.showTag([this.names.get(id) ?? t("stopMarkers.station"), t("stopMarkers.noLoop")], px, py, true);
     this.reasonTimer = window.setTimeout(() => this.hideTag(), REASON_MS);
+  }
+
+  /** Line branches: station `id` is a stop of the line being edited, and that line can have branches (a bus or
+   * ferry line has no markers here; a branch is no head). */
+  private canBranch(id: string): boolean {
+    const tier = this.tierOf(id);
+    return !!this.line && !this.line.branchOf && (tier === "on" || LOOP_TIERS.has(tier));
+  }
+
+  private branchAt(id: string) {
+    this.hideTag();
+    this.loop(Number(id), "branch");
   }
 
   /** the line being edited is a loop: its last stop is its first */

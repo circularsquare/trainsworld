@@ -136,6 +136,8 @@ export type EditOp =
    * when more than half its route's km is high-speed track, ordinary otherwise */
   | { op: "addLine"; stops: NodeId[]; name: string; colour: string; autoFast?: boolean }
   | { op: "copyLine"; line: number; name?: string }
+  /** line branches: a branch of `line` made on its stops up to the first at `station` (`TrackApi::add_branch`), answered with its `line`; refused with "LinePath" */
+  | { op: "addBranch"; line: number; station: NodeId }
   | { op: "setStops"; line: number; stops: NodeId[]; autoFast?: boolean }
   /** T-648: the station put in where the line tool's search fits it best (`TrackApi::insert_stop`),
    * then set as `setStops`; refused with "InsertStop" when no track joins it in */

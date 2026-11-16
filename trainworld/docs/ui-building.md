@@ -383,6 +383,7 @@ tag over a point states what these do there. Loops are described under each tool
 | Right click, the first point | Close the loop and save | Close into a circle if it offers one | Nothing |
 | Right click, a point of a ring | Open the ring there | Open the ring there | none |
 | Right click, a point of a route that loops back | Stop looping back | Stop looping back (a turned line) | none |
+| Shift + right click, a stop | none | Branch the line there (line branches; not on a branch): its stops up to that one, then the clicks carry the branch on | none |
 | Right click, empty ground | Take back the last point | Nothing | Nothing |
 | Double click | Empty ground only: save; a double click on a point does its click once | Nothing special | Nothing special |
 | Enter, the Save button | Save | Leave the tool | Leave the tool |
@@ -392,7 +393,7 @@ tag over a point states what these do there. Loops are described under each tool
 On touch each right click has a way that needs no hold. A finger held 500 ms on a point (moving up to 8 px; the lift
 adds nothing) does its right click in the bus tool, the ferry tool and the stop markers. The Loop button in the tool's
 bar (shown with two points or more, and for train and tram stops) makes the next tap a right click, which covers
-close, loop back, open and stop looping back. The touch bar's Back button takes back the last point, which deletes the
+close, loop back, open and stop looping back. Beside it the Branch button (train and tram stops, not on a branch) makes the next tap a Shift + right click. The touch bar's Back button takes back the last point, which deletes the
 last or a lone point.
 
 ## Drawing a bus line
