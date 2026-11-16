@@ -159,7 +159,7 @@ export type EditOp =
    * name, colour or symbol over one still on its way (T-1812); `letter` is the symbol set by hand, "" for none */
   | { op: "lineLook"; line: number; name?: string; colour?: string; letter?: string }
   | { op: "removeLine"; line: number }
-  /** line branches: one route of a branched line removed (`TrackApi::remove_branch`), the head's lowest branch made the head when it is the head, answered with the head's `line` after it; refused with "LinePath" for a line with no branches */
+  /** line branches: one route of a branched line removed (`TrackApi::remove_branch`), when the line removed is the head, one of its branches becomes the head; answered with the head's `line` after it; refused with "LinePath" for a line with no branches */
   | { op: "removeBranch"; line: number }
   /** a line's train length in cars, 0 for the most its shortest platform fits (T-733) */
   | { op: "lineCars"; line: number; cars: number }

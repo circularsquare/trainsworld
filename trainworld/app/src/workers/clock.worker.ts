@@ -3889,11 +3889,12 @@ function applyInner(op: EditOp): Applied {
     case "removeLine":
       return { r: a.remove_line(op.line) };
     case "removeBranch": {
-      // the head after it: a branch's own, else the head's lowest branch, which `remove_branch` promotes
-      let head = a.line_branch_of(op.line);
-      const promote = head < 0, info = a.lines_info();
-      if (promote) for (let i = 0; i < info.length; i += 22) if (a.line_branch_of(info[i]) === op.line && (head < 0 || info[i] < head)) head = info[i];
+      // a removed head's branches are candidates for the new head; the sim picked one, so ask it which
+      const own = a.line_branch_of(op.line), promote = own < 0, info = a.lines_info();
+      const kin: number[] = [];
+      if (promote) for (let i = 0; i < info.length; i += 22) if (a.line_branch_of(info[i]) === op.line) kin.push(info[i]);
       const r = a.remove_branch(op.line);
+      const head = promote ? kin.find(id => a.line_branch_of(id) < 0) ?? -1 : own;
       // the promoted head wears the shape the line wore, as its branches do
       if (r === 0 && promote) wearShape(String(head), lineShapes.get(String(op.line)));
       return { r, line: head };

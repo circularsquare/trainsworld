@@ -1033,8 +1033,7 @@ function RailLineInspector({ id }: { id: string }) {
 
       <div class="line-stop-actions">
         <button class={"btn text" + (editingStops ? " on" : "")} data-guide={editingStops ? undefined : "stops"} data-tip={tr(editingStops ? "lineInspector.finishTip" : "lineInspector.editTip")} onClick={() => toggleEditStops(l)}><Icon.pencil /><SwapLabel on={editingStops} off={tr("lineInspector.editStops")} onText={tr("lineInspector.stopEditing")} /></button>
-        {/* line branches: a branch's copy would be a sibling branch hidden behind the head's name */}
-        {!head && <button class="btn text" onClick={() => void copy()} disabled={copying}>{tr("busInspector.copy")}</button>}
+        <button class="btn text" onClick={() => void copy()} disabled={copying}>{tr("busInspector.copy")}</button>
         {(head || branches.length > 0) && <button class="btn text danger" onClick={() => remove(true)}>{tr("lineInspector.removeBranch")}</button>}
         <button class="btn text danger" onClick={() => remove(false)}>{tr("busInspector.deleteYes")}</button>
       </div>

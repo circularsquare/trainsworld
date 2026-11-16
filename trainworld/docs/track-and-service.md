@@ -1146,7 +1146,7 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   next to each other on a branch goes in there too, and a station taken out is taken out of every
   branch, unless it is a branch's first or last stop. `turn_end`, `open_loop`, `order_stops` and
   `sort_stops` do not carry stop changes to branches (a drag reorder or sort of the head leaves
-  each branch's trunk in its own order). Copy is not offered on a branch's panel.
+  each branch's trunk in its own order). Copy on any route makes a separate line with that route's stops.
   **Removing a route**: the head and its branches are peers to the player, so
   `TrackApi.remove_branch(line)` removes any one of them as one undoable edit. A branch goes as
   `remove_line` takes it. The head goes and its lowest-id branch becomes the head: its link is
