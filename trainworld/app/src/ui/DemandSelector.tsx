@@ -1,8 +1,12 @@
 import { activeCity, cityById, viewedZone } from "../game/cities";
 import { cityDemandViews } from "../game/demand";
 import { zoomedOut } from "../map/intercityView";
+import { levelLabel, levelName } from "../game/format";
+import { ALL_LEVEL_BITS, levelBit, levelFocused, normalizeLevelFocus } from "../game/levelFocus";
 import { loadProgress } from "../game/loading";
+import { inkOn, LEVEL_COLOURS } from "../game/palette";
 import { asFilter, FILTER_PURPOSES, purposeColour } from "../game/purposes";
+import { LEVELS, type Level } from "../game/types";
 import { useState } from "preact/hooks";
 import { display, purposeFilter, setDisplay, type MapRow } from "../game/ui";
 import { guideFolding, guideOpened } from "../game/guide";
@@ -22,8 +26,8 @@ import { t, tNumber, type MessageKey } from "../i18n";
 import { tPlace } from "../i18n/places";
 
 /** The map's upper left: the demand buttons with the status tag to their right (T-349), and under
- * them the track display, the station ridership (T-1448, T-1477), the find button (T-1868; with the
- * "Saved only in this browser" dot beside it), what the last edit did (T-2125)
+ * them the track display, level focus, the station ridership (T-1448, T-1477), the find button
+ * (T-1868; with the "Saved only in this browser" dot beside it), what the last edit did (T-2125)
  * and a passing note (T-2166). */
 export function MapTopLeft() {
   // T-2161: the map's rows say nothing about the network diagram; its own take their place
@@ -35,6 +39,7 @@ export function MapTopLeft() {
       <BusyTag />
     </div>
     <TrackDisplay />
+    <LevelFocus />
     <StationRidership />
     <div class="map-find">
       <Search />
@@ -156,6 +161,30 @@ function TrackDisplay() {
     {!folded("track") && TRACK_OPTIONS.map(([value, label, tip]) =>
       <button type="button" class={`btn${mode === value ? " on" : ""}`} aria-pressed={mode === value} data-tip={t(tip)} data-guide={value === "traffic" ? "traffic" : undefined}
         onClick={() => setDisplay("trackColour", value)}>{t(label)}</button>)}
+  </div>;
+}
+
+/** The levels the map highlights, independently of the colours chosen in TrackDisplay. A click
+ * toggles one, a double click makes it the only one. The last highlighted level stays on. */
+function LevelFocus() {
+  const mask = display.value.levelFocus;
+  const all = (mask & ALL_LEVEL_BITS) === ALL_LEVEL_BITS;
+  const toggle = (level: Level) => {
+    const current = display.peek().levelFocus;
+    setDisplay("levelFocus", normalizeLevelFocus((current ^ levelBit(level)) || current));
+  };
+  return <div class="demand-selector level-focus" role="group" aria-label={t("demandSelector.levelFocusGroup")}>
+    <span class="hint-cell" aria-hidden="true" data-tip={t("demandSelector.levelFocusIntro")}><Icon.layers /></span>
+    {LEVELS.map((level) => {
+      const focused = levelFocused(mask, level);
+      const last = focused && mask === levelBit(level);
+      return <button type="button" class={`btn lv${focused ? " on" : ""}`} style={{ "--lc": LEVEL_COLOURS[level], "--lk": inkOn(LEVEL_COLOURS[level]) }}
+        aria-label={t("demandSelector.levelFocusLevel", { name: levelName(level), label: levelLabel(level) })} aria-pressed={focused}
+        data-tip={t("demandSelector.levelFocusTip", { name: levelName(level), label: levelLabel(level), focused, last })}
+        onClick={() => toggle(level)} onDblClick={(e) => { e.preventDefault(); e.stopPropagation(); setDisplay("levelFocus", levelBit(level)); }}>{levelLabel(level)}</button>;
+    })}
+    <button type="button" class={`btn level-focus-all${all ? " on" : ""}`} aria-pressed={all}
+      data-tip={t("demandSelector.levelFocusAllTip")} onClick={() => setDisplay("levelFocus", ALL_LEVEL_BITS)}>{t("demandSelector.levelFocusAll")}</button>
   </div>;
 }
 

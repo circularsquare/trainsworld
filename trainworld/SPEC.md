@@ -331,7 +331,9 @@ Detail: [docs/architecture.md](docs/architecture.md) 7; file layout in `docs/cod
 
 A pastel style in Zen Maru Gothic, light or dark (Settings, Theme) with three colours each [T-039].
 Panels take CSS tokens (`ui/style.css`); the map's light and dark colours (basemap, line casing, map
-ink) are one table, `game/shades.ts`, whose basemap palette is warm paper land, soft teal water and sage parks [T-676]. The network takes the line colours, the same in both themes. One dock on the left holds the icon tabs (Build, Lines, Stations, Finances, Cities), the
+ink) are one table, `game/shades.ts`, whose basemap palette is warm paper land, soft teal water and sage parks [T-676]. The network takes the line colours, the same in both themes. The map's **level focus**
+highlights chosen elevations -3 to +3 from a row under the track display; levels left out draw at 30%
+of full strength and are no snap or join target while drawing, and the basemap stays whole. One dock on the left holds the icon tabs (Build, Lines, Stations, Finances, Cities), the
 saved games button and the Settings gear, with the inspector under them, whose top edge never
 moves. The top bar holds the mode split (the goal number) of the city in view, or zoomed far out the world's train trips a day ("11.8M trips/day", T-1440), the cash, the local time and date beside or over
 a moving sky and a band in the demand level's colours (T-861), pause and three speeds. **Panels show what can change**: labels, numbers and states,

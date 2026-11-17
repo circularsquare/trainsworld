@@ -2,6 +2,7 @@
 // outline, trains and the position probe, with the constants they and the renderer share.
 
 import { BOAT_CARS, BUS_CARS, CRUSH_PER_CAR, RATED_PER_CAR, SEATS_PER_CAR } from "../game/boarding";
+import { FOCUS_DIM } from "../game/levelFocus";
 import { PROFIT_STOPS, rgb, SPEED_STOPS } from "../game/palette";
 import { PSI_PER_UNIT } from "./geo";
 import { BAND_M_RANGE, BAND_RANGE, BAND_SHARE } from "./lineBands";
@@ -121,6 +122,7 @@ uniform vec3 u_level_colours[7];
 uniform vec3 u_track;
 uniform vec3 u_bad;
 uniform vec3 u_sel;
+uniform int u_level_focus;   // Layer focus: bit mask of the highlighted levels (-3..+3), see levelFocus.ts
 uniform vec2 u_bp;           // blueprint track (T-322): its middle's width and each rail's (px)
 uniform vec3 u_bp_mid;       // its middle, light blue
 uniform vec3 u_bp_rail;      // its two rails, dark blue
@@ -331,6 +333,12 @@ void main() {
   // that do not run (faded) stay see-through.
   bool bp = blueprint && !placement;
   v_alpha = (!placement && !bp && (flags & 2) != 0 ? 0.55 : 1.0) * faint * (u_kind == 1 && !sel ? u_dim : 1.0);
+  // Layer focus: a stroke whose two ends are both off the focused levels draws dim, casing and colour
+  // alike; a ramp with either end focused stays whole.
+  float fq0 = floor(a_level / 256.0);
+  int fl0 = clamp(int(round(fq0 / 32.0 - 4.0)), -3, 3);
+  int fl1 = clamp(int(round((a_level - fq0 * 256.0) / 32.0 - 4.0)), -3, 3);
+  if ((u_level_focus & (1 << (fl0 + 3))) == 0 && (u_level_focus & (1 << (fl1 + 3))) == 0) v_alpha *= ${FOCUS_DIM.toFixed(3)};
   // the height at this end (levelCode in network.ts), its colour blended between the whole levels either side
   float lq0 = floor(a_level / 256.0);
   float lh = clamp(3.0 - ((along < 0.5 ? lq0 : a_level - lq0 * 256.0) / 32.0 - 4.0), 0.0, 6.0);
@@ -463,7 +471,9 @@ uniform highp int u_layer; // 0 the dark shape, 1 the white inside the rim, 2 ri
 uniform highp int u_room; // 1: the waiting rooms joined to the boxes instead (T-1416)
 uniform highp int u_bld;  // T-2219: 1 only stations in no station building, 2 only those in one, 0 all
 uniform float u_pixel;
+uniform int u_level_focus; // Layer focus: bit mask of the highlighted levels (-3..+3)
 in vec3 a_st;
+in float a_level;        // the station's elevation level -3..+3, for the level focus
 in vec2 a_axis;          // half the platform along its track at its middle, local units
 in vec4 a_shape;         // the platform's middle from the node (xy), half the turn along it (z, not read), half its true width (w), local units
 in float a_sel;          // 1 drawn selected
@@ -512,6 +522,9 @@ void main() {
   // 2: double track with passing tracks (T-2249)
   v_lane = (flags & 16) != 0 ? ((flags & ${ST_PASSING}) != 0 ? 2.0 : 1.0) : 0.0;
   v_alpha = (flags & 8) != 0 ? 0.3 : (flags & 2) != 0 ? 0.6 : 1.0; // 8: a blueprint switched off (T-333)
+  // Layer focus: a station off the focused levels draws dim, boxes, dots, platforms, crowds and rims alike
+  int lvSt = clamp(int(round(a_level)), -3, 3);
+  if ((u_level_focus & (1 << (lvSt + 3))) == 0) v_alpha *= ${FOCUS_DIM.toFixed(3)};
   vec2 half_vp = u_viewport * 0.5;
   vec2 corner = vec2(float(gl_VertexID & 1) * 2.0 - 1.0, gl_VertexID < 2 ? -1.0 : 1.0);
   bool boxes = u_boxes > 0.5;
@@ -783,6 +796,9 @@ void main() {
     float yout = v_lane > 1.5 && v_lane < 2.5 && u_pass_in > 0.0 ? max(u_pass_in, yin + 1.0) : 1e9;
     float ap = inner * clamp(p.y - yin + 0.5, 0.0, 1.0) * clamp(yout - p.y + 0.5, 0.0, 1.0) * clamp(cr.x * reach - abs(p.x) + 0.5, 0.0, 1.0);
     float am = inner * clamp(0.5 - p.y - yin, 0.0, 1.0) * clamp(yout + p.y + 0.5, 0.0, 1.0) * clamp(cr.y * reach - abs(p.x) + 0.5, 0.0, 1.0);
+    // Layer focus: the waiting riders dim with their station's level (this layer alone did not read v_alpha)
+    ap *= v_alpha;
+    am *= v_alpha;
     o = vec4((cr.z > 0.5 ? u_bad : u_crowd_rgb) * ap + (cr.w > 0.5 ? u_bad : u_crowd_rgb) * am, ap + am);
   }
 }`;
@@ -931,6 +947,8 @@ uniform float u_bands;             // px a band's shift of one line width is dra
 uniform float u_bands_m;           // and of a metre to its ribbon's middle (T-2132)
 uniform vec2 u_passing;            // T-2233: px from the centre line to a passing station's outer track, 1 drawn there
 uniform float u_keep;              // T-3297: 1 where trains keep right of their travel, -1 left
+uniform highp sampler2D u_levels;  // R32F per sample: its height as 1/32 level from -4 (network.ts levelCode)
+uniform int u_level_focus;         // Layer focus: bit mask of the highlighted levels (-3..+3)
 out float v_alpha;
 in vec2 a_load;               // this trip's first load in u_loads or -1, seconds to its last stop
 in vec4 a_stand;              // its stand at the terminal (T-1785): from, until - epoch (s), the next
@@ -1114,6 +1132,12 @@ void main() {
   vec3 lc = texelFetch(u_line_colours, ivec2(line % ${LINES_W}, line / ${LINES_W}), 0).rgb;
   v_color = lc * 0.48;
   v_alpha = selectedLine(line) ? 1.0 : u_dim;
+  // Layer focus: a train at a level off the focus draws dim; the selected line's trains stay whole
+  if (!selectedLine(line)) {
+    int li = int(L.x + clamp(floor(clamp(d, 0.0, L.z) / max(L.w, 1e-3) + 0.5), 0.0, max(L.y - 1.0, 0.0)));
+    int lvTr = clamp(int(round(texelFetch(u_levels, tc(li, ${TEX_W}), 0).x / 32.0 - 4.0)), -3, 3);
+    if ((u_level_focus & (1 << (lvTr + 3))) == 0) v_alpha *= ${FOCUS_DIM.toFixed(3)};
+  }
   // How full it is (T-084): the stretch it runs, from the sample ahead of it on its way.
   int run = (int(a_trip.x + 0.5) / 3) % 2;
   float i = floor(clamp(d, 0.0, L.z) / L.w) + (g_run == 0 ? 1.0 : 0.0);

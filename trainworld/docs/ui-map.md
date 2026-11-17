@@ -354,6 +354,23 @@ has no hover of its own; the track tool's tag names the class and its factor [T-
   has no figure (no vehicles, the game loading) and on a ferry's landing strokes; a planned one keeps its
   blueprint look.
 
+### Level focus
+
+- **Level focus** [the map row under the track display]: seven buttons, one per elevation -3 to +3, in
+  the Elevation view's colours (`LEVEL_COLOURS`), and **All levels**. A click toggles a level; a double
+  click highlights that level alone; at least one level always stays highlighted. The choice is
+  remembered per browser (`DisplaySettings.levelFocus`, a bit mask, `game/levelFocus.ts`) and defaults
+  to every level.
+  Levels left out are not hidden: track, line strokes, stations (boxes, dots, platforms, crowds, waiting
+  rooms), station names and ridership circles, stop markers, trains, grade marks and one-way chevrons all
+  draw at 30% of full opacity (`FOCUS_DIM`), so the shape of the network stays visible. The basemap is
+  never dimmed. Capacity tags stay at full strength: their data holds a demand level, not an elevation,
+  so there is no honest level to read; bus and ferry route ribbons, station buildings and car parks
+  stay too, their draw data carrying no track elevation. A hover tag for a dimmed stretch dims with it.
+  While the track or station tool is in hand, track and nodes on levels left out are not snap or join
+  targets (a ramp counts when either end is highlighted), so track can be drawn under or over track at
+  another level without the pointer joining it. Picking and the other tools still see every level.
+
 ### Blueprint track, line colours and marks
 
 - **Blueprint track** [T-311, T-322, T-331, T-333] is drawn solid and opaque as two rails in every

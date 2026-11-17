@@ -10,6 +10,7 @@ import { effect } from "@preact/signals";
 import type { Map as MlMap } from "maplibre-gl";
 import { complexes } from "../game/complexView";
 import { demandView, type DemandView } from "../game/demand";
+import { FOCUS_DIM, levelFocused } from "../game/levelFocus";
 import { mixOklab } from "../game/palette";
 import { stationUse, useFigure } from "../game/stationUse";
 import type { WorldView } from "../game/types";
@@ -59,6 +60,8 @@ export interface Circle {
   /** its busiest station's id and name */
   station: string;
   name: string;
+  /** Layer focus: the elevation levels of its built member stations, to dim it with theirs */
+  levels: number[];
 }
 
 let circleKey: unknown[] = [];
@@ -72,6 +75,7 @@ export function circleList(net: NonNullable<Overlay["renderer"]["net"]>, w: Worl
   circleKey = key;
   const index = new Map(net.stationIds.map((id, i) => [id, i]));
   const names = new Map(w.save.stations.map((s) => [s.id, s.name]));
+  const stationLevels = new Map(w.save.stations.map((s) => [s.id, s.level]));
   const built = new Set(w.save.stations.filter((s) => s.built).map((s) => s.id));
   const cx = complexes.peek();
   const split = stationUse.peek()?.at;
@@ -82,8 +86,11 @@ export function circleList(net: NonNullable<Overlay["renderer"]["net"]>, w: Worl
     const k0 = cx.of.get(s.id);
     const members = k0 !== undefined ? cx.members[k0].filter((m) => built.has(m)) : [s.id];
     let riders = 0, transfers = 0, known = false, top = s.id, topV = -1;
+    const levels: number[] = [];
     for (const m of members) {
       seen.add(m);
+      const level = stationLevels.get(m);
+      if (level !== undefined) levels.push(level);
       const v = useFigure(dv, mode, m);
       if (v === undefined) continue;
       riders += v;
@@ -101,7 +108,7 @@ export function circleList(net: NonNullable<Overlay["renderer"]["net"]>, w: Worl
       k++;
     }
     if (!k) continue;
-    out.push({ x: x / k, y: y / k, riders, transfers: mode === "transfers" ? riders : transfers, station: top, name: names.get(top) ?? t("stationCircles.station") });
+    out.push({ x: x / k, y: y / k, riders, transfers: mode === "transfers" ? riders : transfers, station: top, name: names.get(top) ?? t("stationCircles.station"), levels });
   }
   circles = out.sort((a, b) => b.riders - a.riders);
   return circles;
@@ -113,7 +120,7 @@ function modeNow(): StationUseMode {
 }
 
 /** The circles on screen at the last draw, CSS px, smallest last. */
-interface Placed { c: Circle; x: number; y: number; r: number }
+interface Placed { c: Circle; x: number; y: number; r: number; dim: boolean }
 
 export class StationCircles {
   readonly canvas: HTMLCanvasElement;
@@ -143,6 +150,7 @@ export class StationCircles {
       stopEditing.value;
       void display.value.stationUse;
       void display.value.stationCircleSize;
+      void display.value.levelFocus; // Layer focus: dim the levels left out
       this.invalidate();
     });
   }
@@ -167,15 +175,17 @@ export class StationCircles {
     const net = this.overlay.renderer.net, w = world.peek(), dv = demandView.peek(), mode = modeNow(), zoom = this.map.getZoom();
     if (!net || !w || !dv || mode === "none" || zoom < STATIONS_ZOOM || !this.overlay.cam) return;
     const R = stationHaloRadius(zoom) * display.peek().stationCircleSize, at: [number, number] = [NaN, NaN];
+    const mask = display.peek().levelFocus;
     for (const c of circleList(net, w, dv, mode)) {
       this.overlay.toScreenInto(c.x, c.y, at);
       const r = R * stationScale(c.riders);
       if (!(r > 0) || Number.isNaN(at[0]) || at[0] < -r || at[1] < -r || at[0] > this.cssW + r || at[1] > this.cssH + r) continue;
-      this.placed.push({ c, x: at[0], y: at[1], r });
+      const dim = c.levels.length > 0 && !c.levels.some((level) => levelFocused(mask, level)); // Layer focus
+      this.placed.push({ c, x: at[0], y: at[1], r, dim });
     }
     g.setTransform(k, 0, 0, k, 0, 0);
     const col = circleColours();
-    for (const p of this.placed) drawCircle(g, p.x, p.y, p.r, p.c.transfers / p.c.riders, col);
+    for (const p of this.placed) drawCircle(g, p.x, p.y, p.r, p.c.transfers / p.c.riders, col, p.dim);
   }
 
   /** The circle under a point (CSS px in the map) as last drawn: of those it is inside, the one whose
@@ -198,20 +208,20 @@ export const stationCircles: { now: StationCircles | null } = { now: null };
 /** A circle of radius `r` at (x, y), `t` of its riders transfers: one disc in the colour for that
  * share, with a thin faint edge over an even fainter casing of the land, so it holds against the
  * bubbles beneath. */
-function drawCircle(g: CanvasRenderingContext2D, x: number, y: number, r: number, t: number, col: (typeof CIRCLE_COLOURS)["light"]) {
-  const colour = circleColour(t, col);
+function drawCircle(g: CanvasRenderingContext2D, x: number, y: number, r: number, t: number, col: (typeof CIRCLE_COLOURS)["light"], dim = false) {
+  const colour = circleColour(t, col), f = dim ? FOCUS_DIM : 1;
   g.beginPath();
   g.arc(x, y, r, 0, FULL);
-  g.globalAlpha = col.fill;
+  g.globalAlpha = col.fill * f;
   g.fillStyle = colour;
   g.fill();
   g.beginPath();
   g.arc(x, y, Math.max(0.5, r - 0.5), 0, FULL);
-  g.globalAlpha = 0.3;
+  g.globalAlpha = 0.3 * f;
   g.strokeStyle = col.casing;
   g.lineWidth = 2.5;
   g.stroke();
-  g.globalAlpha = 0.5;
+  g.globalAlpha = 0.5 * f;
   g.strokeStyle = colour;
   g.lineWidth = 1;
   g.stroke();

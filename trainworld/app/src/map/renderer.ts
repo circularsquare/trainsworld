@@ -11,6 +11,7 @@
 // re-uploaded. Phase tables change only on edits.
 
 import { BAD_RED, LEVEL_COLOURS, rgbf } from "../game/palette";
+import { display } from "../game/ui";
 import { ANNEX_ROOM, stationAnnexes, stationCoords, PASS_GAP_PX, PASS_TRACK_M, ST_BUFFER, ST_BUILDING, ST_ONE, ST_ONE_NEG, ST_PASSING, ST_ROOM, ST_TERMINAL, TERMINAL_CAP, BOX_WIDTH_ZOOM, boxHalfPxAtBoxZoom, BRIDGE_HALF_PX, bridgeShape, connectorHalfPx, dotRing, spanningPairs, insideStation, PLATFORM_POINTS, platformPoints, SEL_GLOW_PX, SEL_OUTLINE_PX, shapePoints, STATION_BOX_ZOOM, STATIONS_ZOOM, TRAINS_ZOOM, stationRadii, stationReachPx, stationRing, stationShape, type Project, type StationShape, type StationStyle } from "./stationGeometry";
 import { shadeColours } from "../game/shades";
 import { readBoardHour, trainStands, type BoardHour, type CrowdedStretch } from "../game/boarding";
@@ -203,7 +204,7 @@ interface StrokeVao {
   res?: { del: () => void }[];
 }
 
-type TexName = "phases" | "meta" | "samples" | "lines" | "colours" | "fill" | "cars" | "stretch" | "stationLine" | "lane";
+type TexName = "phases" | "meta" | "samples" | "sampleLevel" | "lines" | "colours" | "fill" | "cars" | "stretch" | "stationLine" | "lane";
 
 /** `a_wmul` for `n` plain segments: width 1, no Traffic view band shift (T-1799) */
 function plainWmul(n: number): Float32Array {
@@ -339,7 +340,7 @@ export class NetworkRenderer {
   private profitTex: WebGLTexture | null = null;
   private profitN = 0;
   private profitData: Float32Array | null = null;
-  private tex: Record<TexName, WebGLTexture | null> = { phases: null, meta: null, samples: null, lines: null, colours: null, fill: null, cars: null, stretch: null, stationLine: null, lane: null };
+  private tex: Record<TexName, WebGLTexture | null> = { phases: null, meta: null, samples: null, sampleLevel: null, lines: null, colours: null, fill: null, cars: null, stretch: null, stationLine: null, lane: null };
   /** The boarding account's hour the trip buffer holds (T-164), or null before demand has riders. */
   board: BoardHour | null = null;
   private crowds = new PlatformCrowds(0);
@@ -711,8 +712,8 @@ export class NetworkRenderer {
     this.hasStencil = (gl.getParameter(gl.STENCIL_BITS) ?? 0) > 0;
     // (Firefox with fingerprinting resistance says 2048 for both, under many a window's canvas)
     this.cacheMax = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) ?? 0, gl.getParameter(gl.MAX_TEXTURE_SIZE) ?? 0);
-    this.strokeU = uniforms(gl, this.strokeProg, [...PROJECT_UNIFORMS, "u_viewport", "u_width", "u_casing", "u_casing_rgb", "u_cap", "u_kind", "u_sel_line", "u_sel_n", "u_sel_set", "u_sel_edge", "u_hot", "u_hide", "u_only_sel", "u_bp_part", "u_lanes", "u_lane_mode", "u_pass_off","u_dim", "u_by_level", "u_by_speed", "u_by_profit", "u_profit", "u_profit_n", "u_level_colours", "u_track", "u_bad", "u_sel", "u_bp", "u_bp_mid", "u_bp_rail", "u_bp_off_mid", "u_bp_off_rail", "u_bp_off_fade", "u_line_colours", "u_full_pass", "u_full_px", "u_full_out", "u_full_dash", "u_full_rgb", "u_full_inside", "u_ghost", "u_ghost_layer", "u_ghost_rgb", "u_ghost_min", "u_hsr", "u_wire", "u_band", "u_band_traffic", "u_band_gap", "u_band_m", "u_mute"]);
-    this.stationU = uniforms(gl, this.stationProg, [...PROJECT_UNIFORMS, "u_viewport", "u_radius", "u_ring", "u_ink", "u_line", "u_boxes", "u_fixed", "u_pass_half", "u_pass_in", "u_pass", "u_layer", "u_pixel", "u_bad", "u_crowd_rgb", "u_tint", "u_mask", "u_stline", "u_lanes", "u_hot_st", "u_hot_n", "u_room", "u_bld", "u_one"]);
+    this.strokeU = uniforms(gl, this.strokeProg, [...PROJECT_UNIFORMS, "u_viewport", "u_width", "u_casing", "u_casing_rgb", "u_cap", "u_kind", "u_sel_line", "u_sel_n", "u_sel_set", "u_sel_edge", "u_hot", "u_hide", "u_only_sel", "u_bp_part", "u_lanes", "u_lane_mode", "u_pass_off","u_dim", "u_by_level", "u_by_speed", "u_by_profit", "u_profit", "u_profit_n", "u_level_colours", "u_track", "u_bad", "u_sel", "u_bp", "u_bp_mid", "u_bp_rail", "u_bp_off_mid", "u_bp_off_rail", "u_bp_off_fade", "u_line_colours", "u_full_pass", "u_full_px", "u_full_out", "u_full_dash", "u_full_rgb", "u_full_inside", "u_ghost", "u_ghost_layer", "u_ghost_rgb", "u_ghost_min", "u_hsr", "u_wire", "u_band", "u_band_traffic", "u_band_gap", "u_band_m", "u_mute", "u_level_focus"]);
+    this.stationU = uniforms(gl, this.stationProg, [...PROJECT_UNIFORMS, "u_viewport", "u_radius", "u_ring", "u_ink", "u_line", "u_boxes", "u_fixed", "u_pass_half", "u_pass_in", "u_pass", "u_layer", "u_pixel", "u_bad", "u_crowd_rgb", "u_tint", "u_mask", "u_stline", "u_lanes", "u_hot_st", "u_hot_n", "u_room", "u_bld", "u_one", "u_level_focus"]);
     this.bridgeProg = compile(gl, BRIDGE_VS, STATION_FS);
     this.bridgeU = uniforms(gl, this.bridgeProg, [...PROJECT_UNIFORMS, "u_viewport", "u_ring", "u_bridge", "u_pass", "u_layer", "u_ink", "u_bad", "u_crowd_rgb", "u_mask", "u_hot_st", "u_hot_n"]);
     // T-3192: the stations' u_stline, which a bridge never reads, on the stations' unit rather than one an integer texture may hold
@@ -721,7 +722,7 @@ export class NetworkRenderer {
     this.selProg = compile(gl, SEL_VS, SEL_FS);
     this.selU = uniforms(gl, this.selProg, ["u_bbox", "u_css", "u_shapes", "u_count", "u_dpr", "u_height", "u_ink", "u_outline", "u_glow"]);
     this.selTex = this.texture(this.selData, "rgba32f", SEL_MAX * SEL_STRIDE, []);
-    this.trainU = uniforms(gl, this.trainProg, [...PROJECT_UNIFORMS, "u_viewport", "u_time", "u_px_per_unit", "u_min_px", "u_phases", "u_meta", "u_samples", "u_lines", "u_back_base", "u_line_colours", "u_fill", "u_bad", "u_detail", "u_dpr", "u_cars", "u_loads", "u_stretch", "u_sel_line", "u_sel_n", "u_sel_set", "u_dim", "u_sel_trip", "u_pass", "u_ink", "u_band", "u_psi0", "u_lane_tex", "u_lane", "u_hollow", "u_bands", "u_bands_m", "u_passing", "u_keep"]);
+    this.trainU = uniforms(gl, this.trainProg, [...PROJECT_UNIFORMS, "u_viewport", "u_time", "u_px_per_unit", "u_min_px", "u_phases", "u_meta", "u_samples", "u_lines", "u_back_base", "u_line_colours", "u_fill", "u_bad", "u_detail", "u_dpr", "u_cars", "u_loads", "u_stretch", "u_sel_line", "u_sel_n", "u_sel_set", "u_dim", "u_sel_trip", "u_pass", "u_ink", "u_band", "u_psi0", "u_lane_tex", "u_lane", "u_hollow", "u_bands", "u_bands_m", "u_passing", "u_keep", "u_levels", "u_level_focus"]);
     this.timer = new GpuTimer(gl);
     this.tripBuf = gl.createBuffer();
     this.endBuf = gl.createBuffer();
@@ -1265,6 +1266,8 @@ export class NetworkRenderer {
     put("phases", "phases", () => [n.phases.length ? n.phases : new Float32Array(4), "rgba32f", TEX_W]);
     put("meta", "meta", () => [n.meta.length ? n.meta : new Float32Array(4), "rgba32f", TEX_W]);
     put("samples", "samples", () => [n.samples.length ? n.samples : new Float32Array(2), "rg32f", TEX_W]);
+    // Layer focus: each train sample's level, for the level focus
+    put("sampleLevel", "sampleLevel", () => [n.sampleLevel?.length ? n.sampleLevel : new Float32Array(Math.max(1, n.samples.length / 2)).fill(128), "r32f", TEX_W]);
     // the Traffic view's bands were the last network's
     const hadTraffic = this.trafficBands !== null;
     this.trafficBands = null;
@@ -1299,6 +1302,8 @@ export class NetworkRenderer {
     this.res.push({ del: () => gl.deleteVertexArray(sv) });
     gl.bindVertexArray(this.stationVao);
     this.attrib(this.stationProg, "a_st", this.buffer(n.stations.length ? n.stations : new Float32Array(3)), 3, gl.FLOAT, 1);
+    // Layer focus: each station's elevation level, for the level focus
+    this.attrib(this.stationProg, "a_level", this.buffer(n.stationLevel?.length ? n.stationLevel : new Float32Array(Math.max(1, n.stationCount))), 1, gl.FLOAT, 1);
     this.attrib(this.stationProg, "a_axis", this.buffer(n.stationAxis?.length ? n.stationAxis : new Float32Array(Math.max(1,n.stationCount)*2)),2,gl.FLOAT,1);
     this.stationShapeBuf = this.buffer(n.stationShape?.length ? n.stationShape : new Float32Array(Math.max(1, n.stationCount) * 4));
     // each platform's track line (T-254), or the arc of its shape where the buffers have none
@@ -1664,7 +1669,7 @@ export class NetworkRenderer {
     const cache = this.strokeCache && !this.gl.isContextLost() && Math.max(vp[0], vp[1]) <= this.cacheMax ? (view ? (this.snapCache ??= new StrokeCache(gl, 2)) : (this.mainCache ??= new StrokeCache(gl, 2))) : null;
     const buses = !view && this.buses.any;
     if (!view) this.busesShown = buses;
-    const redraw = !cache || cache.stale(vp[0], vp[1], [zoom, dpr, ...lc.m, ...lc.globe, ...lc.plane, ...lc.at, k, opt.byLevel ? 1 : 0, opt.bySpeed ? 1 : 0, opt.byProfit ? 1 : 0, opt.selLine, (opt.selLines ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), opt.selEdge, opt.hotLine ?? -1, opt.hotEdge ?? -1, (opt.hotBuses ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), this.hide[0], this.hide[1], opt.dimOthers ?? 1, opt.flatMarks !== false ? 1 : 0, opt.rampMarks !== false ? 1 : 0, buses ? this.buses.version : -1, through ? 1 : 0, this.uploads, this.strokeCull ? 1 : 0, this.strokeLod ? 1 : 0, this.strokeGather ? 1 : 0, this.lineBands ? 1 : 0], shadeColours());
+    const redraw = !cache || cache.stale(vp[0], vp[1], [zoom, dpr, ...lc.m, ...lc.globe, ...lc.plane, ...lc.at, k, opt.byLevel ? 1 : 0, opt.bySpeed ? 1 : 0, opt.byProfit ? 1 : 0, display.value.levelFocus, opt.selLine, (opt.selLines ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), opt.selEdge, opt.hotLine ?? -1, opt.hotEdge ?? -1, (opt.hotBuses ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), this.hide[0], this.hide[1], opt.dimOthers ?? 1, opt.flatMarks !== false ? 1 : 0, opt.rampMarks !== false ? 1 : 0, buses ? this.buses.version : -1, through ? 1 : 0, this.uploads, this.strokeCull ? 1 : 0, this.strokeLod ? 1 : 0, this.strokeGather ? 1 : 0, this.lineBands ? 1 : 0], shadeColours());
     this.quiet = true;
     if (cache && redraw) cache.begin(0);
     // the complexes' car parks under everything else (T-1528)
@@ -1689,6 +1694,7 @@ export class NetworkRenderer {
     const mute = MUTE && (opt.dimOthers ?? 1) < 1 ? MUTE : null;
     gl.uniform1f(u.u_dim, mute ? 1 : opt.dimOthers ?? 1);
     gl.uniform2f(u.u_mute, mute?.[0] ?? 0, mute?.[1] ?? 0);
+    gl.uniform1i(u.u_level_focus, display.value.levelFocus);
     gl.uniform1i(u.u_by_level, opt.byLevel ? 1 : 0);
     gl.uniform1i(u.u_by_speed, opt.bySpeed ? 1 : 0);
     gl.uniform1i(u.u_by_profit, opt.byProfit && this.profitTex ? 1 : 0);
@@ -1871,9 +1877,9 @@ export class NetworkRenderer {
     this.marks.draw(lc, vp, zoom, dpr, this.levelColours, opt.flatMarks !== false, opt.rampMarks !== false);
     // T-2991: one-way loops' chevrons on the Line view's strokes (the Traffic view's bands move apart)
     if (!opt.byLevel && !opt.bySpeed && !opt.byProfit && !this.trafficWidths)
-      this.oneWay.draw(lc, vp, zoom, dpr, { wLine, band: bandOn, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: mute ? opt.selLine : -1 });
-    this.oneWayTrack.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
-    if (this.preview) this.oneWayGhost.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
+      this.oneWay.draw(lc, vp, zoom, dpr, { wLine, band: bandOn, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: mute ? opt.selLine : -1, focus: display.value.levelFocus });
+    this.oneWayTrack.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk), focus: display.value.levelFocus });
+    if (this.preview) this.oneWayGhost.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk), focus: display.value.levelFocus });
     }
     if (cache) {
       if (redraw) {
@@ -1918,6 +1924,7 @@ export class NetworkRenderer {
       gl.uniform3fv(su.u_crowd_rgb, CROWD_RGB);
       gl.uniform1f(su.u_line, wLine);
       gl.uniform3f(su.u_lanes, lanes.gap * dpr, lanes.t, lanes.narrow);
+      gl.uniform1i(su.u_level_focus, display.value.levelFocus);
       gl.uniform1f(su.u_boxes, boxes ? 1 : 0);
       const hotSt = (opt.hotStations ?? []).filter((i) => i >= 0 && i < n.stationCount);
       this.hotList.fill(-1);
@@ -2144,6 +2151,10 @@ export class NetworkRenderer {
       gl.activeTexture(gl.TEXTURE10);
       gl.bindTexture(gl.TEXTURE_2D, this.tex.lane);
       gl.uniform1i(this.trainU.u_lane_tex, 10);
+      gl.activeTexture(gl.TEXTURE13);
+      gl.bindTexture(gl.TEXTURE_2D, this.tex.sampleLevel);
+      gl.uniform1i(this.trainU.u_levels, 13);
+      gl.uniform1i(this.trainU.u_level_focus, display.value.levelFocus);
       // on its own track close in (T-658): the shift at full parting, how far parted
       gl.uniform2f(this.trainU.u_lane, lanes.gap * dpr * 0.5, lanes.t);
       // on its line's band (T-1799)

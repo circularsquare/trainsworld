@@ -38,6 +38,8 @@ export const Icon = {
   // T-1851: the map's track display row and station ridership row icons: the track with a yellow line
   // along its lower right, the interchange under a big blue station circle centred on its crossing (colors in style.css)
   trackDisplay: () => <svg viewBox="0 0 16 16"><path d="M2.5 10.5l8-8M5.5 13.5l8-8M3 9l4 4M6 6l4 4M9 3l4 4" /><path class="yline" d="M8 15l7-7" /></svg>,
+  // the map's level focus row: three stacked layers
+  layers: () => <svg viewBox="0 0 16 16"><path d="M8 1.5L14.5 5 8 8.5 1.5 5zM1.5 8L8 11.5 14.5 8M1.5 11L8 14.5 14.5 11" /></svg>,
   stationDisplay: () => <svg viewBox="0 0 16 16"><path d="M4.5 1.5h3v7h7v3h-7v3h-3v-3h-3v-3h3z" /><circle class="udot" cx="6" cy="10" r="4.6" /></svg>,
   // a selected demand bubble (T-1137): the ramp's middle purple in the map ink's outline (style.css)
   bubble: () => <svg viewBox="0 0 16 16"><circle class="bubble" cx="8" cy="8" r="5.5" /></svg>,

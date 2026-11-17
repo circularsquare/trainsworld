@@ -643,6 +643,9 @@ export interface ClockRender {
   phases: Float32Array;
   meta: Float32Array;
   samples: Float32Array;
+  /** per sample of `samples`: its height as 1/32 levels from -4 (`(z / 8 + 4) * 32`, 0..255), for
+   * the level focus; absent: every sample at ground (128) */
+  sampleLevel?: Float32Array;
   lineTable: Float32Array;
 }
 

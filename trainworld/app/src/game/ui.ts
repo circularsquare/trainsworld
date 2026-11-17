@@ -13,6 +13,7 @@ import type { PurposeFilter } from "./purposes";
 import { LEVELS, type BubbleEnd, type Level, type Selection } from "./types";
 import { isLineShape, MODE_SHAPES, type LineShape } from "./lineShape";
 import type { Vehicle } from "./vehicle";
+import { ALL_LEVEL_BITS, normalizeLevelFocus } from "./levelFocus";
 
 export type Tab = "build" | "lines" | "stations" | "money" | "cities" | "settings";
 /** Tabs a remembered choice can name. */
@@ -103,6 +104,9 @@ export interface DisplaySettings {
   satellite: boolean;
   /** T-1248: the drawn width of lines and track as a multiple of their own, 0.5-2 */
   lineWidth: number;
+  /** Layer focus: the elevation levels the map highlights, one bit per level -3..+3
+   * (game/levelFocus.ts). Levels left out draw dim and are no snap target. */
+  levelFocus: number;
   /** T-1249: the basemap's contrast, 0-1: below 1 everything but water and the land is mixed that
    * much less toward the land colour (map/basemap.ts, map/realNetwork.ts) */
   basemapContrast: number;
@@ -162,6 +166,7 @@ const DEFAULT_DISPLAY: DisplaySettings = {
   projection: "flat",
   satellite: false,
   lineWidth: 1,
+  levelFocus: ALL_LEVEL_BITS,
   basemapContrast: 1,
   hillshade: false,
   rotateMap: false,
@@ -245,7 +250,7 @@ const storedShapes = (migratedDisplay.modeShapes ?? {}) as Partial<Record<Vehicl
 const modeShapes = Object.fromEntries(Object.entries(MODE_SHAPES).map(([m, s]) => [m, isLineShape(storedShapes[m as Vehicle]) ? storedShapes[m as Vehicle] : s])) as Record<Vehicle, LineShape>;
 // T-3329: Map detail is gone, High for everyone; a stored Low is dropped
 delete (migratedDisplay as Record<string, unknown>).lighterMap;
-export const display = signal<DisplaySettings>({ ...DEFAULT_DISPLAY, ...migratedDisplay, modeShapes, trackColour, ...(VIDEO ? VIDEO_DISPLAY : {}) });
+export const display = signal<DisplaySettings>({ ...DEFAULT_DISPLAY, ...migratedDisplay, modeShapes, trackColour, levelFocus: normalizeLevelFocus(migratedDisplay.levelFocus), ...(VIDEO ? VIDEO_DISPLAY : {}) });
 /** T-2867: the player chose to play without intercity trips after running out of memory: this tab, across its
  * reloads, and gone with it (one bad evening should not take them away for good) */
 const MARKET_DROPPED = "tw-no-intercity";

@@ -466,6 +466,13 @@ effect(() => {
   if (w && !SYNTH) capacity.set(w, level);
 });
 effect(() => capacity.setVisible(display.value.capacity && !SYNTH));
+// Layer focus: levels left out of the focus dim their station names and stop markers, without a world rebuild.
+// (The ridership circles read the same signal in map/stationCircles.ts.)
+effect(() => {
+  const mask = display.value.levelFocus;
+  labels.setLevelFocus(mask);
+  tools.stops?.setLevelFocus(mask);
+});
 // T-819, T-1125: in the traffic view, lines on track at capacity at the level in force, and those whose trains usually run full, get a red outline
 effect(() => {
   const w = world.value, traffic = display.value.trackColour === "traffic" && display.value.fullMarks; // T-1152's switch

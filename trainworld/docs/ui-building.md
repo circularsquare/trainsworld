@@ -360,6 +360,10 @@ Track is drawn through points, double and quad alike [T-418, T-422, T-423]. The 
 - Nothing outside the track tool reads its settings [T-3153]: the delete and select tools, drag edits and the station tool
   pick and describe any track whatever type, count, level, ramp or speed the track bar holds (only the track tool
   filters its snap to tram or rail, and only its tag and issue wording follow the type).
+- **Layer focus** ([ui-map.md](ui-map.md) "Level focus"): while the track or station tool is in hand,
+  nodes and track pieces on elevations left out of the focus are not snap or join targets. The
+  delete and select tools, drag edits and picking still read every level. At least one level is always
+  focused, so the default (all levels) changes nothing.
 - A segment is one piece (each pair's on quad); the delete tool, Construct and the track
   inspector act on one piece [T-244].
 

@@ -1664,6 +1664,8 @@ const lineDrawn = new Map<number, Float32Array>();
  * changes, so a move re-expresses them without asking the track model */
 const edgeMerc = new Map<number, Float64Array>();
 const lineMerc = new Map<number, Float64Array>();
+/** per line: its first run's height per sample, as `levelCode` packs it (1/32 level from -4) */
+const lineLevel = new Map<number, Float32Array>();
 /** mercator points (`stride` numbers each, x and y first) in the anchor's local units */
 function localOf(m: Float64Array, stride: number): Float32Array {
   const a = anchor(), ax = a.merc[0], ay = a.merc[1], d = new Float32Array(m.length);
@@ -1674,11 +1676,15 @@ function localOf(m: Float64Array, stride: number): Float32Array {
   }
   return d;
 }
+/** A height in metres as `network.ts` `levelCode`'s whole-level unit: `(z / 8 + 4) * 32`, 0..255.
+ * The train shader divides by 32 and subtracts 4 to recover its level. */
+const sampleLevelCode = (z: number) => Math.max(0, Math.min(255, Math.round((z / 8 + 4) * 32)));
 function forget(all = false) {
   if (all) {
     edgeDrawn.clear();
     edgeSpeedDrawn.clear();
     lineDrawn.clear();
+    lineLevel.clear();
     edgeMerc.clear();
     lineMerc.clear();
     backDrawn.clear();
@@ -1690,7 +1696,7 @@ function forget(all = false) {
   }
   const edges = api!.dirty_edges();
   for (const e of edges) { edgeDrawn.delete(e); edgeSpeedDrawn.delete(e); edgeMerc.delete(e); platformLines.forgetEdge(e); }
-  for (const l of api!.dirty_lines()) { lineDrawn.delete(l); lineMerc.delete(l); backDrawn.delete(l); }
+  for (const l of api!.dirty_lines()) { lineDrawn.delete(l); lineLevel.delete(l); lineMerc.delete(l); backDrawn.delete(l); }
   // (a way back is not on the edges' lines: any track edit may move one)
   if (edges.length) backDrawn.clear();
 }
@@ -1748,37 +1754,75 @@ function drawnEdge(a: TrackApi, id: number): Float32Array {
 }
 /** a line's first run, sampled, in local units (x, y each), made and kept if not yet */
 function drawnLine(a: TrackApi, id: number): Float32Array {
-  let d = lineDrawn.get(id);
-  if (!d) {
-    let m = lineMerc.get(id);
-    if (!m) {
-      const p = a.run_polyline(id, 0, SAMPLE_STEP);
-      m = new Float64Array(p.length);
-      for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
-      lineMerc.set(id, m);
+  ensureLine(a, id);
+  return lineDrawn.get(id)!;
+}
+/** its samples' level codes, parallel to `drawnLine` */
+function drawnLineLevels(a: TrackApi, id: number): Float32Array {
+  ensureLine(a, id);
+  return lineLevel.get(id)!;
+}
+function ensureLine(a: TrackApi, id: number) {
+  let d = lineDrawn.get(id), lv = lineLevel.get(id);
+  if (d && lv) return;
+  let m = lineMerc.get(id);
+  if (!m) {
+    const p = a.run_polyline3(id, 0, SAMPLE_STEP);
+    m = new Float64Array(p.length);
+    for (let k = 0; k < p.length; k += 3) {
+      const [mx, my] = toMerc01(...packLngLat(p[k], p[k + 1]));
+      m[k] = mx;
+      m[k + 1] = my;
+      m[k + 2] = p[k + 2];
     }
-    d = localOf(m, 2);
-    lineDrawn.set(id, d);
+    lineMerc.set(id, m);
   }
-  return d;
+  const local = localOf(m, 3), n = local.length / 3;
+  d = new Float32Array(n * 2);
+  lv = new Float32Array(n);
+  for (let k = 0; k < n; k++) {
+    d[k * 2] = local[k * 3];
+    d[k * 2 + 1] = local[k * 3 + 1];
+    lv[k] = sampleLevelCode(local[k * 3 + 2]);
+  }
+  lineDrawn.set(id, d);
+  lineLevel.set(id, lv);
 }
 /** T-3250: a line's return run, sampled as `drawnLine`, where it takes its own way back (`back`, its
  * path; kept while that is unchanged) */
-const backDrawn = new Map<number, { key: string; merc: Float64Array; at: Anchor | null; d: Float32Array | null }>();
-function drawnBack(a: TrackApi, id: number, back: readonly number[]): Float32Array {
+const backDrawn = new Map<number, { key: string; merc: Float64Array; at: Anchor | null; d: Float32Array | null; level: Float32Array | null }>();
+function ensureBack(a: TrackApi, id: number, back: readonly number[]) {
   const key = back.join();
   let c = backDrawn.get(id);
   if (!c || c.key !== key) {
-    const p = a.run_polyline(id, 1, SAMPLE_STEP);
+    const p = a.run_polyline3(id, 1, SAMPLE_STEP);
     const m = new Float64Array(p.length);
-    for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
-    backDrawn.set(id, (c = { key, merc: m, at: null, d: null }));
+    for (let k = 0; k < p.length; k += 3) {
+      const [mx, my] = toMerc01(...packLngLat(p[k], p[k + 1]));
+      m[k] = mx;
+      m[k + 1] = my;
+      m[k + 2] = p[k + 2];
+    }
+    backDrawn.set(id, (c = { key, merc: m, at: null, d: null, level: null }));
   }
-  if (!c.d || c.at !== anchor()) {
-    c.d = localOf(c.merc, 2);
+  if (!c.d || !c.level || c.at !== anchor()) {
+    const local = localOf(c.merc, 3), n = local.length / 3;
+    c.d = new Float32Array(n * 2);
+    c.level = new Float32Array(n);
+    for (let k = 0; k < n; k++) {
+      c.d[k * 2] = local[k * 3];
+      c.d[k * 2 + 1] = local[k * 3 + 1];
+      c.level[k] = sampleLevelCode(local[k * 3 + 2]);
+    }
     c.at = anchor();
   }
-  return c.d;
+  return c;
+}
+function drawnBack(a: TrackApi, id: number, back: readonly number[]): Float32Array {
+  return ensureBack(a, id, back).d!;
+}
+function drawnBackLevels(a: TrackApi, id: number, back: readonly number[]): Float32Array {
+  return ensureBack(a, id, back).level!;
 }
 
 function buildState(): ClockState {
@@ -1822,11 +1866,13 @@ function buildState(): ClockState {
   const backs = lines.filter((l) => l.ok && l.back?.length && l.id < nLines);
   const lineTable = new Float32Array(Math.max(1, nLines) * (backs.length ? 8 : 4));
   const runs: Float32Array[] = [];
+  const runLevels: Float32Array[] = [];
   let nSamples = 0;
   for (const l of lines) {
     if (!l.ok) continue;
     const d = drawnLine(a, l.id);
     runs.push(d);
+    runLevels.push(drawnLineLevels(a, l.id));
     lineTable.set([nSamples, d.length / 2, l.lengthM, SAMPLE_STEP], l.id * 4);
     nSamples += d.length / 2;
   }
@@ -1834,11 +1880,14 @@ function buildState(): ClockState {
     const d = drawnBack(a, l.id, l.back!);
     if (d.length < 4) continue;
     runs.push(d);
+    runLevels.push(drawnBackLevels(a, l.id, l.back!));
     lineTable.set([nSamples, d.length / 2, meta[(l.id * 6 + 3) * 4 + 3] || l.lengthM, SAMPLE_STEP], (nLines + l.id) * 4);
     nSamples += d.length / 2;
   }
   const samples = new Float32Array(nSamples * 2);
+  const sampleLevel = new Float32Array(nSamples).fill(128);
   runs.reduce((o, d) => (samples.set(d, o), o + d.length), 0);
+  runLevels.reduce((o, d) => (sampleLevel.set(d, o), o + d.length), 0);
   const markers = [0, 1, 2].map((lev) => {
     const m = a.markers(lev);
     const out: ClockState["markers"][number] = [];
@@ -1892,6 +1941,7 @@ function buildState(): ClockState {
       phases,
       meta,
       samples,
+      sampleLevel,
       lineTable,
     },
     money: moneyState(),
@@ -3009,7 +3059,7 @@ function postDiagram() {
  * from scratch and compares (the client compares the merged state too); otherwise changes only */
 let patchMode = "1";
 /** the network's typed arrays that, when as last posted, are left out of the message (`NetPatch.same`) */
-const SAME_FIELDS = ["phases", "meta", "samples", "lineTable", "lineCars", "lineColours", "sampleLane", "sampleBand", "samplePass", "passing", "corridor", "sampleStretch", "sampleStroke", "stations", "stationAxis", "stationShape", "stationLine", "stationLength", "stationLinkIdx", "stationLinks", "lots", "junctions", "marks"] as const;
+const SAME_FIELDS = ["phases", "meta", "samples", "sampleLevel", "lineTable", "lineCars", "lineColours", "sampleLane", "sampleBand", "samplePass", "passing", "corridor", "sampleStretch", "sampleStroke", "stations", "stationLevel", "stationAxis", "stationShape", "stationLine", "stationLength", "stationLinkIdx", "stationLinks", "lots", "junctions", "marks"] as const;
 type SameField = (typeof SAME_FIELDS)[number];
 /** What the client holds: the last network posted (its serial, draw anchor, a copy of each
  * `SAME_FIELDS` array and its edges' points) and the rows of the last state, by id. Cleared to post
@@ -4734,6 +4784,7 @@ async function handleMessage(msg: ToClock) {
       shiftWas = shiftFrom ? new Map(edgeDrawn) : new Map();
       edgeDrawn.clear();
       lineDrawn.clear();
+      lineLevel.clear();
       posted.net = null;
       sender.forget();
       sendState();
