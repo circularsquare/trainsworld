@@ -1401,14 +1401,21 @@ impl Service {
         (e, path_dir(p), if path_dir(p) == 0 { d } else { net.edge_len[e as usize] - d })
     }
 
-    /// World position of a run's offset.
-    pub fn position(&self, net: &Network, line: u32, run: usize, s: f64) -> (f64, f64) {
+    /// World position of a run's offset, with the height above the datum. Bus and ferry routes run
+    /// on the ground (z = 0); rail keeps the track geometry's height, for the renderer's level focus.
+    pub fn position3(&self, net: &Network, line: u32, run: usize, s: f64) -> (f64, f64, f64) {
         if let (Some(pts), Some(plan)) = (net.route_points(line), self.lines[line as usize].bus.as_ref()) {
             let road = if run == 0 { s } else { plan.len - s };
-            return super::bus::at_road(pts, &plan.cum, road);
+            let (x, y) = super::bus::at_road(pts, &plan.cum, road);
+            return (x, y, 0.0);
         }
         let (e, _, d) = self.segment_at(net, line, run, s);
-        let (x, y, _) = geom::pos_at(net.edge_pieces(e), d);
+        geom::pos_at(net.edge_pieces(e), d)
+    }
+
+    /// World position of a run's offset.
+    pub fn position(&self, net: &Network, line: u32, run: usize, s: f64) -> (f64, f64) {
+        let (x, y, _) = self.position3(net, line, run, s);
         (x, y)
     }
 }

@@ -14,6 +14,7 @@ import { demandView, lineLoadsFor, type DemandView } from "../game/demand";
 import { purposeName, type PurposeFilter } from "../game/purposes";
 import { DEMAND_INDEX, type LineInput, type WorldView } from "../game/types";
 import { ask, display, isBuildTool, purposeFilter, selection, shownDay, shownDayPhrase, tool } from "../game/ui";
+import { FOCUS_DIM, levelFocused } from "../game/levelFocus";
 import { world } from "../game/world";
 import { hoverAt } from "./demandHover";
 import { restHolds } from "./hoverRest";
@@ -152,7 +153,7 @@ function busRows(ov: Overlay, w: WorldView, line: number, px: number, py: number
  * demand circle, what they stand for (T-194, networkTips.ts); for a crossing, junction, ramp or
  * portal mark, its name (T-629). Nothing for a junction without a mark, nor for the station
  * circles while a build tool has the demand views beneath the network. */
-export function trackTip(ov: Overlay, px: number, py: number, zoom = 12, out?: { hot?: Partial<Hot> }): TipLine[] | null {
+export function trackTip(ov: Overlay, px: number, py: number, zoom = 12, out?: { hot?: Partial<Hot>; dim?: boolean }): TipLine[] | null {
   const n = ov.renderer.net;
   if (!n || !ov.camMatrix) return null;
   const d = display.peek();
@@ -219,7 +220,10 @@ export function trackTip(ov: Overlay, px: number, py: number, zoom = 12, out?: {
     let [i] = sel?.kind === "line" && (!(bandPx > 0) || sel.line === hit.line) ? topSeg(ov, L.seg, L.count, px, py, slop, B, bandPx, (j) => String(L.colour[j]) === sel.line, wide, widePx) : [-1];
     if (i < 0) [i] = topSeg(ov, L.seg, L.count, px, py, slop, B, bandPx, (j) => String(L.colour[j]) === hit.line, wide, widePx);
     if (i < 0) return null;
-    if (out) out.hot = { line: L.colour[i] };
+    if (out) {
+      out.hot = { line: L.colour[i] };
+      out.dim = dimEdge(w, L.edge[i]); // Layer focus
+    }
     // T-473: the track under the line says its elevation and speed too; T-2387: the other lines on it
     // are left out, as they read as part of the hovered line
     return [...lineTip(n, w, demandView.peek(), d.trackColour === "traffic", i, ov.renderer.fullStretch(L.colour[i], L.stretch ? L.stretch[i] : -1)), ...trackFacts(ov, L.edge[i], px, py, slop)];
@@ -227,7 +231,10 @@ export function trackTip(ov: Overlay, px: number, py: number, zoom = 12, out?: {
   if (hit.kind !== "track") return null;
   const facts = trackFacts(ov, hit.edge, px, py, slop);
   if (!facts.length) return null;
-  if (out) out.hot = { edge: hit.edge };
+  if (out) {
+    out.hot = { edge: hit.edge };
+    out.dim = dimEdge(w, hit.edge); // Layer focus
+  }
   // T-473: always the elevation, speed and lines on it, whatever the track display; no lines row
   // where none runs (T-526). Track under a bundle of lines loses to the lines, except at its edges.
   const on = linesOn(w, hit.edge);
@@ -282,6 +289,14 @@ function edgeVehicles(w: WorldView | null, edge: number): "trams" | "trains" {
 function linesOn(w: WorldView | null, edge: number): LineInput[] {
   const e = w?.edges.find((x) => x.id === edge);
   return e ? w!.save.lines.filter((l) => e.lines.includes(l.id)) : [];
+}
+
+/** Layer focus: a track stretch draws dim when no level it spans is focused; its tag is dimmed with it. */
+function dimEdge(w: WorldView | null, edge: number): boolean {
+  const e = w?.edges.find((x) => x.id === edge);
+  if (!e) return false;
+  const mask = display.peek().levelFocus;
+  return !levelFocused(mask, e.levelMin) && !levelFocused(mask, e.levelMax);
 }
 
 /** T-2218: a station building's floor: its name, and that it has no station inside when so. */
@@ -354,7 +369,7 @@ export function startTrackHover(map: MlMap, ov: Overlay) {
   /** The tag's lines at the pointer, or null where something above the track is, or a tool
    * without it is on (the stop editor and the trip tool). Lights what it names with the select
    * tool only: a build tool's ghost is what matters there (T-730). */
-  const tipAt = (px: number, py: number): TipLine[] | null => {
+  const tipAt = (px: number, py: number): { lines: TipLine[]; dim: boolean } | null => {
     const t = tool.peek();
     if (ask.peek()) return null;
     if (t === "select") {
@@ -364,18 +379,20 @@ export function startTrackHover(map: MlMap, ov: Overlay) {
     } else if (!isBuildTool(t)) return null;
     if (t === "bus" && live.tools?.bus.onHandle) return null; // its own tag says what the point does (T-1514)
     if (t === "ferry" || t === "building") return null; // its own tag says what a click there does (T-2194, T-2218)
-    const out: { hot?: Partial<Hot> } = {};
-    const lines = trackTip(ov, px, py, map.getZoom(), out);
+    const out: { hot?: Partial<Hot>; dim?: boolean } = {};
+    const lines = trackTip(ov, px, py, map.getZoom(), out) ?? hiddenRealmTip(map, px, py); // T-1151
     setPointerNet(lines && t === "select" ? out.hot ?? null : null);
-    return lines ?? hiddenRealmTip(map, px, py); // T-1151
+    return lines ? { lines, dim: !!out.dim } : null;
   };
-  const show = (lines: TipLine[], px: number, py: number) => {
+  const show = (lines: TipLine[], px: number, py: number, dim: boolean) => {
     const key = lines.map((s) => (typeof s === "string" ? s : s.outerHTML)).join("\n");
     if (key !== last) {
       tagLines(tag, lines);
       last = key;
     }
     tag.style.display = "";
+    // Layer focus: a tag for a layer the focus leaves out is drawn with it
+    tag.style.opacity = dim ? String(FOCUS_DIM) : "";
     // a build tool's own tag is below right of the pointer, so this one goes above
     tag.style.transform = isBuildTool(tool.peek())
       ? `translate(${Math.round(px + TAG_OFFSET_PX)}px, ${Math.round(py - 10)}px) translateY(-100%)`
@@ -384,8 +401,8 @@ export function startTrackHover(map: MlMap, ov: Overlay) {
   };
   const update = () => {
     if (!at) return hide();
-    const t = tipAt(at[0], at[1]);
-    if (t) show(t, at[0], at[1]);
+    const tip = tipAt(at[0], at[1]);
+    if (tip) show(tip.lines, at[0], at[1], tip.dim);
     else hide();
   };
 

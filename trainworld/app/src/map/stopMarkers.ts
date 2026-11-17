@@ -18,7 +18,8 @@ import { t } from "../i18n";
 import { effect } from "@preact/signals";
 import type { Map as MlMap } from "maplibre-gl";
 import type { LineInput, WorldView } from "../game/types";
-import { lineDraft, loopTap, newLine, stopEditing } from "../game/ui";
+import { display, lineDraft, loopTap, newLine, stopEditing } from "../game/ui";
+import { ALL_LEVEL_BITS, FOCUS_DIM, levelFocused } from "../game/levelFocus";
 import { world } from "../game/world";
 import { halfFill } from "./halfDot";
 import { headingOnScreen } from "./stopHeading";
@@ -148,6 +149,8 @@ interface Mark {
   shown: boolean;
   /** T-3111: the chevron beside a one-way stop, made when first needed */
   chev?: HTMLElement;
+  /** Layer focus: drawn dim, its station's level left out of the focus */
+  dim?: boolean;
 }
 
 /** In the order a click prefers when markers overlap: the stops, then the ones that can be added. */
@@ -159,6 +162,9 @@ export class StopMarkers {
   private marks = new Map<string, Mark>();
   private tiers = new Map<string, StopTier>();
   private names = new Map<string, string>();
+  /** Layer focus: each station's elevation, and the focused levels, to dim the markers left out */
+  private levels = new Map<string, number>();
+  private levelMask: number = ALL_LEVEL_BITS;
   private line: LineInput | null = null;
   private colour = "#888";
   /** T-3041: the stops of a turned line served one way, with the stops either side of them on the walk */
@@ -256,6 +262,9 @@ export class StopMarkers {
       this.oneWay = new Map(Object.entries(w.lineStats[this.line.id]?.oneWayAt ?? {}));
       this.box.style.setProperty("--c", this.colour);
       this.names = new Map(w.save.stations.map((s) => [s.id, s.name]));
+      this.levels = new Map(w.save.stations.map((s) => [s.id, s.level]));
+      this.levelMask = display.peek().levelFocus;
+      this.applyFocus();
       // After an edit to the same line the worker's last tiers stand until its new answer, with only
       // the stops changed; the estimate disagrees with them past the line's ends, and showing it in
       // between made markers change and change back (T-648).
@@ -283,6 +292,26 @@ export class StopMarkers {
       requestAnimationFrame(() => this.place());
       this.overlay.invalidate();
     });
+  }
+
+  /** Layer focus: levels left out of the focus dim their stations' markers; no world rebuild is needed. */
+  setLevelFocus(mask: number) {
+    this.levelMask = mask;
+    this.applyFocus();
+  }
+
+  private applyFocus() {
+    for (const [id, m] of this.marks) this.focusMark(id, m);
+  }
+
+  private focusMark(id: string, m: Mark) {
+    const level = this.levels.get(id);
+    // no station level known: leave it full rather than dim it on a guess
+    const dim = level !== undefined && !levelFocused(this.levelMask, level);
+    if (m.dim !== dim) {
+      m.dim = dim;
+      m.el.style.opacity = dim ? String(FOCUS_DIM) : "";
+    }
   }
 
   private tierOf(id: string): StopTier {
@@ -360,6 +389,7 @@ export class StopMarkers {
         m = { el, cls: "", x: 0, y: 0, d: 0, shown: false };
         this.marks.set(id, m);
         this.box.appendChild(el);
+        this.focusMark(id, m); // Layer focus
       }
       // a stop that closes, opens or turns a loop is drawn as the stop it is
       const stop = tier === "on" || tier === "close" || tier === "open" || tier === "turn" || tier === "unturn";

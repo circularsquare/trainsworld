@@ -33,7 +33,8 @@ import { activeCity, getWorldFrame, worldFrameEpoch } from "../game/cities";
 import { cellModes, cityCells, demandView } from "../game/demand";
 import { settleNewLineColour } from "../game/lineColour";
 import { metresBetween } from "../game/walks";
-import { ask, autoRamp, buildLevel, buildPlatform, buildTramPlatform, designSpeed, flyoverSpeed, highSpeed, keepPlacing, lineDraft, newLine, quadTrack, selection, singleTrack, besideOn, snapping, snapRoads, snapStreets, stationOnTram, stationOneTrack, tool, tramTrack } from "../game/ui";
+import { ask, autoRamp, buildLevel, buildPlatform, buildTramPlatform, designSpeed, display, flyoverSpeed, highSpeed, keepPlacing, lineDraft, newLine, quadTrack, selection, singleTrack, besideOn, snapping, snapRoads, snapStreets, stationOnTram, stationOneTrack, tool, tramTrack } from "../game/ui";
+import { levelFocused } from "../game/levelFocus";
 import { describeRemovable, removeThing, stationStub, stationTrim, type Removable } from "../game/remove";
 import { loadPlacesAt } from "../game/placeList";
 import { newStationName, trackDirection, warmStreetNames } from "./stationNames";
@@ -402,6 +403,8 @@ export class Tools {
     const station = tool.peek() === "station";
     if (station) this.alts = [];
     if (!w || !n || (this.freeClick && tool.peek() === "track")) return { kind: "free", lx: fx, ly: fy };
+    // Layer focus: track and station placement snap only to focused levels; delete and hover see all
+    const focus = station || tool.peek() === "track", mask = display.peek().levelFocus;
     const edgePx = station ? SNAP_EDGE_PX : TRACK_EDGE_PX;
     // T-3162: single track picked beside double track drawn as two tracks: each of the two is a branch point across
     // its whole drawn width, so the pair's outer edge is the reach there
@@ -422,6 +425,7 @@ export class Tools {
     const nearEdges = at ? edgesNear(n, at[0], at[1], laneReach * at[2]) : null;
     for (const node of nodes ? nearNodes ?? w.nodes.values() : []) {
       if (node.bus || node.port) continue; // a bus stop or a port (T-2194) is no track to build on (T-1464)
+      if (focus && !levelFocused(mask, node.level)) continue; // Layer focus: no joining to a level left out
       if (fam !== null && (node.kind ?? 0) >= 2 !== fam) continue;
       const [lx, ly] = toLocal(node.lng, node.lat);
       const [x, y] = this.screen(lx, ly);
@@ -437,6 +441,7 @@ export class Tools {
       for (const [node, { edge, fromA }] of this.doubleEnds(w).loose) {
         const pts = n.edgePts.get(edge), nd = w.nodes.get(node);
         if (!pts || !nd || pts.length < 6) continue;
+        if (focus && !levelFocused(mask, nd.level)) continue; // Layer focus
         const [lx, ly] = toLocal(nd.lng, nd.lat), [x, y] = this.screen(lx, ly);
         const k = fromA ? 3 : pts.length - 6;
         const [x1, y1] = this.screen(pts[k], pts[k + 1]);
@@ -456,6 +461,7 @@ export class Tools {
     const near: { d: number; hit: Snap }[] = [];
     for (const { edge, pts, ks } of nearEdges ?? [...n.edgePts].map(([edge, pts]) => ({ edge, pts, ks: null }))) {
       if (tramOf && tramOf.has(edge) !== fam) continue;
+      if (focus && !this.edgeFocused(w, edge, mask)) continue; // Layer focus: no joining to a level left out
       const er = doubleIds?.has(edge) ? laneReach : edgePx;
       let eb = er * er, eh: Snap | null = null;
       for (let j = 0, k = ks ? ks[0] : 0; ks ? j < ks.length : k + 5 < pts.length; j++, k = ks ? ks[j] : k + 3) {
@@ -582,6 +588,23 @@ export class Tools {
     return this.tramEdges.set;
   }
 
+  private edgeLevels: { edges: unknown; min: Map<number, number>; max: Map<number, number> } | null = null;
+  /** the world's edges' lowest and highest elevation, kept while its edges are the same */
+  private edgeLevelsOf(w: NonNullable<ReturnType<typeof world.peek>>) {
+    if (this.edgeLevels?.edges !== w.edges) {
+      const min = new Map<number, number>(), max = new Map<number, number>();
+      for (const e of w.edges) (min.set(e.id, e.levelMin), max.set(e.id, e.levelMax));
+      this.edgeLevels = { edges: w.edges, min, max };
+    }
+    return this.edgeLevels;
+  }
+
+  /** Layer focus: whether an edge is a snap target under the level focus; a ramp is one if either end is. */
+  private edgeFocused(w: NonNullable<ReturnType<typeof world.peek>>, edge: number, mask: number): boolean {
+    const lv = this.edgeLevelsOf(w), min = lv.min.get(edge), max = lv.max.get(edge);
+    return min === undefined || max === undefined || levelFocused(mask, min) || levelFocused(mask, max);
+  }
+
   /** whether a station spot is on tram track (T-2926) */
   private tramSpot(s: Snap | null | undefined): boolean {
     const w = world.peek();
@@ -603,8 +626,11 @@ export class Tools {
     if (!besideOn.peek() || !n || !at || this.freeClick) return null;
     let best = BESIDE_PX * BESIDE_PX, hit: { edge: number; lx: number; ly: number } | null = null;
     const w = world.peek(), tramOf = w ? this.tramEdgeSet(w) : null, fam = tramTrack.peek();
+    // Layer focus: track beside an unfocused level is no place to start
+    const mask = display.peek().levelFocus;
     for (const { edge, pts, ks } of edgesNear(n, at[0], at[1], BESIDE_PX * at[2]) ?? []) {
       if (tramOf && tramOf.has(edge) !== fam) continue;
+      if (w && !this.edgeFocused(w, edge, mask)) continue;
       for (let j = 0, k = ks ? ks[0] : 0; ks ? j < ks.length : k + 5 < pts.length; j++, k = ks ? ks[j] : k + 3) {
         const [x0, y0] = this.screen(pts[k], pts[k + 1]);
         const [x1, y1] = this.screen(pts[k + 3], pts[k + 4]);

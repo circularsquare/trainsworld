@@ -1017,7 +1017,7 @@ rect.now { fill-opacity: .45; }
   color: var(--text); font-size: 13px; }
 @container map-column (max-width: 1350px) { .demand-stopped-note { top: 46px; } }
 @container map-column (max-width: 1000px) { .demand-stopped-note { top: 80px; } }
-@container map-column (max-width: 680px) { .demand-stopped-note { top: 148px; } }
+@container map-column (max-width: 680px) { .demand-stopped-note { top: 180px; } }
 /* T-2802: low on the map and clear of the tutorial's card; taps go through the words, only the close button takes them */
 .no-market-note { position: absolute; left: 8px; right: 8px; bottom: 26px; z-index: 5; zoom: var(--ui, 1); display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 4px 4px 4px 10px; background: var(--bg); border: 1px solid var(--accent); color: var(--text); font-size: 13px; pointer-events: none; }
@@ -1042,6 +1042,17 @@ rect.now { fill-opacity: .45; }
 /* T-1448: the icon cell is a button folding its row down to it */
 .demand-selector button.hint-cell { padding: 0; font: inherit; cursor: pointer; }
 .demand-selector button.hint-cell:hover { background: var(--shade); }
+/* Level focus keeps all seven levels in reach. On touch the targets grow and the existing flex
+   wrapping puts the All levels reset on a second line when the map is narrow. */
+.level-focus .level-focus-all { white-space: nowrap; }
+/* a level left out recedes; only the highlighted ones keep their full tint and ring */
+.level-focus .btn.lv:not(.on) { opacity: .55; }
+.level-focus .btn.lv:not(.on):hover { opacity: .85; }
+@media (pointer: coarse) {
+  .level-focus .hint-cell { width: calc(36px / var(--ui, 1)); height: calc(36px / var(--ui, 1)); }
+  .level-focus .btn { height: calc(36px / var(--ui, 1)); }
+  .level-focus .btn.lv { min-width: calc(36px / var(--ui, 1)); }
+}
 /* T-158: one trip purpose on the map; a swatch in its purpose colour while one is chosen */
 .purpose-filter { display: flex; align-items: center; gap: 5px; height: 28px; margin-left: 6px;
   padding: 0 0 0 6px; border: 1px solid var(--rule); background: var(--bg); font-size: 12px; }
@@ -1243,7 +1254,7 @@ button.save-add:hover { color: var(--text); }
 .blueprint-bar .btn.lv { min-width: 27px; }
 @container map-column (max-width: 1350px) { .blueprint-bar, .tool-bar { top: 46px; } }
 @container map-column (max-width: 1000px) { .blueprint-bar, .tool-bar { top: 80px; } }
-@container map-column (max-width: 680px) { .blueprint-bar, .tool-bar { top: 148px; } }
+@container map-column (max-width: 680px) { .blueprint-bar, .tool-bar { top: 180px; } }
 /* T-2282: the track and station tools' bars in the selection bar's box and place; the track bar's two
    rows, the level buttons as the Build tab had them */
 /* T-2600: the bars' text at the map controls' 12 px, the level numbers bigger (T-2522 had all at 14) */
@@ -1863,7 +1874,7 @@ button.save-add:hover { color: var(--text); }
   .sky-status { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; margin-top: 4px; }
   .sky-status .status-tag { width: max-content; max-width: calc(100cqw - 20px); }
   #map:has(.sky-status .status-tag) .guide { top: 66px; }
-  .blueprint-bar { top: 178px; }
+  .blueprint-bar { top: 210px; }
 }
 /* T-1868: with no room for the picture beside the demand row, the purpose filter goes first */
 @container map-column (max-width: 460px) {

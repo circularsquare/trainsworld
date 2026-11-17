@@ -8,6 +8,7 @@
 
 import type { Strokes } from "./network";
 import { kAtY } from "./geo";
+import { FOCUS_DIM } from "../game/levelFocus";
 import { BAND_M_RANGE, BAND_RANGE, BAND_STRIDE } from "./lineBands";
 import { compileOptional, PROJECT_GLSL, PROJECT_UNIFORMS, setCamera, uniforms, type LocalCamera } from "./gl";
 
@@ -32,8 +33,9 @@ export function oneWayEvery(mPx: number, dpr: number, spread = 1): number {
 /** Per chevron: x, y, its direction (a unit vector in local units), its band's shift left (line
  * widths) and its ribbon's middle (m) as `Strokes.band` gives them, `1 - its width share`, the line,
  * its place in the line's marks, the ground metres to the line's nearest stop, its width share
- * (a tram's line is narrower). */
-export const CHEVRON_STRIDE = 11;
+ * (a tram's line is narrower), and the source stroke's packed height (`Strokes.level`, for the
+ * level focus). */
+export const CHEVRON_STRIDE = 12;
 
 /** A one-way train line's chevrons, from its strokes (`edgeUses`: how often its path runs each
  * edge; `stops`: its stops' places, local units; strokes with a `skipFlags` flag get none),
@@ -57,7 +59,7 @@ export function trainChevrons(s: Strokes, line: number, edgeUses: ReadonlyMap<nu
       for (const p of stops) near = Math.min(near, Math.hypot(p[0] - x, p[1] - y));
       const o = i * BAND_STRIDE, lerp = (a: number, b: number) => a + t * (b - a);
       const shift = B ? lerp(B[o], B[o + 1]) * S * BAND_RANGE : 0, wShare = B ? lerp(B[o + 2], B[o + 3]) * S : 0, mid = B ? lerp(B[o + 4], B[o + 5]) * S * BAND_M_RANGE : 0;
-      out.push(x, y, dx / len, dy / len, shift, mid, wShare, line, m, near / k, width);
+      out.push(x, y, dx / len, dy / len, shift, mid, wShare, line, m, near / k, width, s.level[i]);
     }
   }
 }
@@ -77,7 +79,7 @@ export function oneWayTrackChevrons(s: Strokes, way: 1 | 2, stops: readonly (rea
       const x = x0 + t * dx, y = y0 + t * dy;
       let near = Infinity;
       for (const p of stops) near = Math.min(near, Math.hypot(p[0] - x, p[1] - y));
-      out.push(x, y, sign * dx / len, sign * dy / len, 0, 0, 0, -1, m, near / k, 1);
+      out.push(x, y, sign * dx / len, sign * dy / len, 0, 0, 0, -1, m, near / k, 1, s.level[i]);
     }
   }
 }
@@ -94,16 +96,23 @@ uniform float u_clear;       // device px from a stop a mark keeps clear of
 uniform float u_min;         // device px a line must be wide to carry one
 uniform float u_dpr;
 uniform int u_sel;           // the line kept at full strength while others are muted, -1 none
+uniform int u_level_focus;   // Layer focus: bit mask of the highlighted levels (-3..+3)
 in vec4 a_mark;              // x, y, direction
 in vec4 a_band;              // shift (line widths), ribbon middle (m), 1 - width share, line
-in vec3 a_more;              // its place in its line's marks, metres to the nearest stop, width share
+in vec4 a_more;              // its place in its line's marks, metres to the nearest stop, width share, source level
 out vec2 v_p;
 flat out float v_h;
 flat out float v_t;
+flat out float v_dim;
 void main() {
   float w = u_line * (1.0 - u_band * a_band.z) * a_more.z;
   bool muted = u_sel >= 0 && int(a_band.w + 0.5) != u_sel;
   if (mod(a_more.x, u_every) > 0.5 || a_more.y * u_band_m < u_clear || w < u_min || muted) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // Layer focus: a chevron whose stroke's two ends are both off the focus draws dim, as the stroke does
+  float fq0 = floor(a_more.w / 256.0);
+  int fl0 = clamp(int(round(fq0 / 32.0 - 4.0)), -3, 3);
+  int fl1 = clamp(int(round((a_more.w - fq0 * 256.0) / 32.0 - 4.0)), -3, 3);
+  v_dim = (u_level_focus & (1 << (fl0 + 3))) != 0 || (u_level_focus & (1 << (fl1 + 3))) != 0 ? 1.0 : ${FOCUS_DIM.toFixed(3)};
   vec4 c0 = project(a_mark.xy);
   vec4 c1 = project(a_mark.xy + a_mark.zw);
   vec2 half_vp = u_viewport * 0.5;
@@ -128,6 +137,7 @@ uniform vec3 u_rgb;
 in vec2 v_p;
 flat in float v_h;
 flat in float v_t;
+flat in float v_dim;
 out vec4 o;
 float seg(vec2 p, vec2 a, vec2 b) {
   vec2 pa = p - a, ba = b - a;
@@ -137,7 +147,7 @@ void main() {
   // the point ahead, the arms back at 45 degrees
   vec2 q = vec2(v_p.x, abs(v_p.y));
   float d = seg(q, vec2(0.5 * v_h, 0.0), vec2(-0.5 * v_h, v_h)) - 0.5 * v_t;
-  float a = clamp(0.5 - d, 0.0, 1.0);
+  float a = clamp(0.5 - d, 0.0, 1.0) * v_dim;
   if (a <= 0.0) discard;
   o = vec4(u_rgb * a, a);
 }`;
@@ -152,6 +162,8 @@ export interface ChevronStyle {
   sel: number;
   /** the chevrons' colour, white where absent */
   rgb?: Float32List;
+  /** the focused elevation levels, the bit mask of `levelFocus.ts` */
+  focus: number;
 }
 
 /** The train lines' chevrons, drawn by the renderer over the line strokes. */
@@ -169,7 +181,7 @@ export class OneWayChevrons {
     this.gl = gl;
     this.prog = compileOptional(gl, VS, FS, "one-way chevrons");
     if (!this.prog) return;
-    this.u = uniforms(gl, this.prog, [...PROJECT_UNIFORMS, "u_viewport", "u_line", "u_band", "u_band_m", "u_every", "u_clear", "u_min", "u_dpr", "u_sel", "u_rgb"]);
+    this.u = uniforms(gl, this.prog, [...PROJECT_UNIFORMS, "u_viewport", "u_line", "u_band", "u_band_m", "u_every", "u_clear", "u_min", "u_dpr", "u_sel", "u_rgb", "u_level_focus"]);
     this.vao = gl.createVertexArray();
     this.buf = null;
     this.count = 0;
@@ -190,7 +202,7 @@ export class OneWayChevrons {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
     gl.bufferData(gl.ARRAY_BUFFER, data!, gl.STATIC_DRAW);
     const F = 4, stride = CHEVRON_STRIDE * F;
-    for (const [name, size, at] of [["a_mark", 4, 0], ["a_band", 4, 4], ["a_more", 3, 8]] as const) {
+    for (const [name, size, at] of [["a_mark", 4, 0], ["a_band", 4, 4], ["a_more", 4, 8]] as const) {
       const loc = gl.getAttribLocation(this.prog, name);
       if (loc < 0) continue;
       gl.enableVertexAttribArray(loc);
@@ -221,6 +233,7 @@ export class OneWayChevrons {
     gl.uniform1f(u.u_min, CHEVRON_MIN_PX * dpr);
     gl.uniform1f(u.u_dpr, dpr);
     gl.uniform1i(u.u_sel, s.sel);
+    gl.uniform1i(u.u_level_focus, s.focus);
     gl.uniform3fv(u.u_rgb, s.rgb ?? [1, 1, 1]);
     gl.bindVertexArray(this.vao);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.count);

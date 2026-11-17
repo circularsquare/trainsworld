@@ -116,6 +116,9 @@ export interface NetworkBuffers {
    * room drawn on this box, T-1528; ST_PARK park and ride here; ST_TERMINAL, T-1416; ST_BUFFER a
    * terminal at a track end, T-1527) */
   stations: Float32Array;
+  /** Per station: its elevation level -3..+3, for the level focus (dimming stations off the focused
+   * levels). */
+  stationLevel?: Float32Array;
   /** Per station: half the platform along its track at the platform's middle, local units (T-144). */
   stationAxis?: Float32Array;
   /** Per station, 4 each (T-189, `PlatformShape`): the platform's middle from the node (x, y; away
@@ -150,6 +153,9 @@ export interface NetworkBuffers {
   lineTable: Float32Array;
   /** Actual 20 m cars per train, indexed by line id; absent in old synthetic fixtures. */
   lineCars?: Float32Array;
+  /** per sample of `samples`: its track's height as `levelCode`'s 1/32 levels from -4
+   * (`(z / 8 + 4) * 32`, clamped 0..255), for the train level focus; absent: ground (128). */
+  sampleLevel?: Float32Array;
   /** per sample of `samples`: a line stroke segment of the same stretch of path, -1 if none
    * (T-084: its stretch gives the train's load) */
   sampleStroke?: Int32Array;
@@ -1633,6 +1639,8 @@ export function networkFromState(s: ClockState, cache: NetCache = newNetCache(),
   const passing: number[] = [];
   const nSamples = r.samples.length / 2;
   const samplePass = new Float32Array(passingAt.size ? nSamples : 0).fill(1e9);
+  // the trains' levels along `samples` (the worker's `run_polyline3`), ground where an old fixture has none
+  const sampleLevel = r.sampleLevel?.length === nSamples ? r.sampleLevel : new Float32Array(nSamples).fill(128);
   const sampleStroke = new Int32Array(nSamples).fill(-1);
   const sampleLane = new Float32Array(nSamples).fill(1);
   const sampleBand = new Float32Array(nSamples * 2);
@@ -1801,6 +1809,7 @@ export function networkFromState(s: ClockState, cache: NetCache = newNetCache(),
   for (const e of s.edges) if (onEdge.get(e.id)?.length) lined.add(e.a).add(e.b);
   const st = s.nodes.filter((n) => n.platform > 0);
   const stations = new Float32Array(st.length * 3);
+  const stationLevel = new Float32Array(st.map((n) => n.level));
   const stationAxis = new Float32Array(st.length * 2);
   const stationShape = new Float32Array(st.length * 4);
   const stationLine = new Float32Array(st.length * 2 * PLATFORM_POINTS);
@@ -1987,6 +1996,7 @@ export function networkFromState(s: ClockState, cache: NetCache = newNetCache(),
     lineIds,
     lineColours,
     stations,
+    stationLevel,
     stationAxis,
     stationIds: st.map((n) => String(n.id)),
     stationCount: st.length,
@@ -2005,6 +2015,7 @@ export function networkFromState(s: ClockState, cache: NetCache = newNetCache(),
     lineCars,
     stationShape,
     stationLine,
+    sampleLevel,
     sampleStroke,
     sampleLane,
     sampleBand,

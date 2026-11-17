@@ -14,6 +14,7 @@
 import { t } from "../i18n";
 import { levelLabel } from "../game/format";
 import { BAD_RED, rgbf } from "../game/palette";
+import { FOCUS_DIM } from "../game/levelFocus";
 import { perfOff } from "../perfFlags";
 import { shadeColours } from "../game/shades";
 import { display } from "../game/ui";
@@ -90,6 +91,7 @@ uniform vec3 u_bad;
 uniform float u_dpr;
 uniform float u_quiet;
 uniform vec3 u_level_colours[7];
+uniform int u_level_focus;   // Layer focus: bit mask of the highlighted levels (-3..+3)
 in vec2 v_p;
 flat in vec4 v_m;
 flat in vec2 v_s;
@@ -117,6 +119,9 @@ float quad(vec2 p, vec2 a, vec2 b, vec2 c, vec2 e) {
 void main() {
   int shape = int(v_m.z + 0.5);
   bool blueprint = v_s.x > 0.5;
+  // Layer focus: a mark on a level off the focus draws dim; a crossing's packed tram bits round away
+  int lvM = clamp(int(round(v_s.y)), -3, 3);
+  float focusA = (u_level_focus & (1 << (lvM + 3))) != 0 ? 1.0 : ${FOCUS_DIM.toFixed(3)};
   float r = v_r;
   vec3 ink = blueprint ? u_bp : u_ink;
   if (shape == ${M_RAMP} || shape == ${M_PORTAL}) {
@@ -130,7 +135,7 @@ void main() {
     vec3 lc = u_level_colours[clamp(3 - int(round(v_s.y)), 0, 6)];
     float body = cov(d), edge = cov(abs(d + rim * 0.5) - rim * 0.5), outer = cov(d - halo);
     vec3 col = mix(u_fill, mix(lc, ink, edge), body);
-    float a = outer * (blueprint ? 1.0 : u_quiet);
+    float a = outer * (blueprint ? 1.0 : u_quiet) * focusA;
     o = vec4(col * a, a);
     return;
   }
@@ -168,7 +173,7 @@ void main() {
   }
   ink = shape == ${M_BAD} || shape == ${M_CONVERGE} || shape == ${M_DIVERGE} ? u_bad : u_level_colours[clamp(3 - int(round(v_s.y)), 0, 6)];
   vec3 col = mix(u_fill, ink, max(ring, glyph));
-  float a = cov(d) * (blueprint ? 1.0 : u_quiet);
+  float a = cov(d) * (blueprint ? 1.0 : u_quiet) * focusA;
   o = vec4(col * a, a);
 }`;
 
@@ -192,7 +197,7 @@ export class GradeMarks {
     // again after a lost context (T-953): the old buffers are gone, the renderer uploads anew
     this.built = this.drawing = null;
     this.prog = compileOptional(gl, VS, FS, "grade marks");
-    if (this.prog) this.u = uniforms(gl, this.prog, [...PROJECT_UNIFORMS, "u_viewport", "u_r", "u_ink", "u_bp", "u_fill", "u_bad", "u_dpr", "u_quiet", "u_level_colours", "u_flat", "u_ramps"]);
+    if (this.prog) this.u = uniforms(gl, this.prog, [...PROJECT_UNIFORMS, "u_viewport", "u_r", "u_ink", "u_bp", "u_fill", "u_bad", "u_dpr", "u_quiet", "u_level_colours", "u_flat", "u_ramps", "u_level_focus"]);
   }
 
   private upload(old: Instances | null, data: Float32Array | undefined): Instances | null {
@@ -260,6 +265,7 @@ export class GradeMarks {
     gl.uniform3fv(u.u_level_colours, levelColours);
     gl.uniform1f(u.u_flat, flat ? 1 : 0);
     gl.uniform1f(u.u_ramps, ramps ? 1 : 0);
+    gl.uniform1i(u.u_level_focus, display.value.levelFocus);
     for (const s of [this.built, this.drawing]) {
       if (!s) continue;
       gl.bindVertexArray(s.vao);

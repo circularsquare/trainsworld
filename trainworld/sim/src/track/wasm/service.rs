@@ -108,6 +108,20 @@ impl TrackApi {
             })
             .collect()
     }
+
+    /// A run's path resampled every `step` m, as x, y, z triples: the renderer's per-sample level for
+    /// the level focus. Rail keeps the track's height; a bus or ferry route is at z = 0.
+    pub fn run_polyline3(&self, line: u32, run: usize, step: f64) -> Vec<f64> {
+        let Some(l) = self.w.svc.lines.get(line as usize).filter(|l| l.ok) else { return vec![] };
+        let len = l.runs[run].len;
+        let n = (len / step).ceil() as usize;
+        (0..=n)
+            .flat_map(|i| {
+                let (x, y, z) = self.w.svc.position3(&self.w.net, line, run, (i as f64 * step).min(len));
+                [x, y, z]
+            })
+            .collect()
+    }
     /// T-3346: the departures board. Line `line`'s trains leaving station node `node` in
     /// `[t0, t1)`, game seconds: per departure its run, the stop's index in that run and the time
     /// it leaves (its trip's `draw` plus its profile's `dep` there), sorted by time. A run's last

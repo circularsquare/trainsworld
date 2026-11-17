@@ -5,6 +5,10 @@
 // room between them and the worst delays win. Station names draw over them and never move them.
 // A junction's dot is a link to the junction's inspector, where a flyover can be built (T-080).
 // Hovering a dot says what it means (T-099). The dots sit under the demand views' canvas.
+//
+// Layer focus: layer focus leaves these dots at full strength. Their data carries a demand level, not an
+// elevation, and a dot's anchor can be mid-ramp or over track of another level, so reading a level
+// from the nearest node would dim the wrong layer. Picking still works on every dot.
 
 import { t, tNumber } from "../i18n";
 import { effect } from "@preact/signals";

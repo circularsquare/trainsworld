@@ -14,6 +14,7 @@ import type { FeatureCollection } from "geojson";
 import type { GeoJSONSource, Map as MlMap } from "maplibre-gl";
 import { complexes } from "../game/complexView";
 import { PATCH_MODE } from "../game/patchMode";
+import { ALL_LEVEL_BITS, FOCUS_DIM, levelFocused } from "../game/levelFocus";
 import type { StationId, StationInput, WorldView } from "../game/types";
 import { NameIndex, labelGroups, linesAt, type NameGroup, type NameOp } from "./labelNames";
 import { anchor, toLocal } from "./geo";
@@ -51,6 +52,8 @@ interface Label {
   /** its top left from its station's screen point at the last full placement (T-1621) */
   ox?: number;
   oy?: number;
+  /** Layer focus: drawn dim, because every station it names is off the focused levels */
+  dim?: boolean;
 }
 
 const GAP = 10; // px from the station centre
@@ -67,6 +70,8 @@ export class StationLabels {
   private labels: Label[] = [];
   private visible = true;
   private shown = false;
+  /** Layer focus: the focused elevation levels, one bit each */
+  private levelMask: number = ALL_LEVEL_BITS;
   private shadow: FeatureCollection = { type: "FeatureCollection", features: [] };
   private deferred: WorldView | null = null;
   /** the names to draw, kept up to date from the stations that changed (T-1380); `labels` and the
@@ -165,7 +170,10 @@ export class StationLabels {
       this.place();
     }
     this.bldSeen = bk;
-    if (!plan) return;
+    if (!plan) {
+      this.applyFocus();
+      return;
+    }
     if (PATCH_MODE === "0") plan.full = true;
     // T-1357: many names not drawn before (a game's first network) are built once the network has
     // been painted
@@ -182,7 +190,10 @@ export class StationLabels {
     const patch = this.names.apply(plan, cx);
     if (patch.full) this.rebuild();
     else if (patch.ops.length) this.patch(patch.ops);
-    else return;
+    else {
+      this.applyFocus();
+      return;
+    }
     this.needsPlacement = true;
     if (PATCH_MODE === "check") this.check(w);
     this.place();
@@ -219,6 +230,7 @@ export class StationLabels {
     for (const l of this.labels) this.keepSpare(spare, l);
     this.labels = names.map((g) => this.labelFor(g, spare));
     for (const v of spare.values()) for (const l of v) l.el.remove();
+    this.applyFocus();
     // A stop edit changes a station's lines, mostly not the shadow: MapLibre then keeps its layout
     // instead of tiling and placing every name again (T-648). The features kept then keep their ids,
     // which are those the source holds.
@@ -252,6 +264,7 @@ export class StationLabels {
       entered.push({ at: op.at, text, feature });
     }
     for (const v of spare.values()) for (const l of v) l.el.remove();
+    this.applyFocus();
     left.reverse();
     if (left.length === entered.length && left.every((x, i) => x.at === entered[i].at && x.text === entered[i].text)) {
       // the same features in the same places: the source keeps the ones it has
@@ -281,6 +294,26 @@ export class StationLabels {
       else if (f.properties.name !== g.name || f.geometry.coordinates[0] !== g.lng || f.geometry.coordinates[1] !== g.lat || this.shadowKeys[i] !== shadowText(g, below)) bad = `shadow feature ${i} (${g.name})`; // i18n-ignore
     }
     if (bad) console.error(`T-1380 check: the station names patched from changes differ from a whole build: ${bad}`);
+  }
+
+  /** Layer focus: levels left out of the focus dim their stations' names; no world rebuild is needed. */
+  setLevelFocus(mask: number) {
+    this.levelMask = mask;
+    this.applyFocus();
+  }
+
+  private applyFocus() {
+    for (let i = 0; i < this.labels.length; i++) this.focusLabel(this.labels[i], i);
+  }
+
+  private focusLabel(l: Label, i: number) {
+    const g = this.names.list[i] as unknown as { members?: readonly { s: { level: number } }[] } | undefined;
+    // a name with no station to read a level from is left full, rather than dimmed on a guess
+    const dim = !!g?.members?.length && !g.members.some((m) => levelFocused(this.levelMask, m.s.level));
+    if (l.dim !== dim) {
+      l.dim = dim;
+      l.el.style.opacity = dim ? String(FOCUS_DIM) : "";
+    }
   }
 
   setVisible(on: boolean) {
