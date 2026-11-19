@@ -58,7 +58,7 @@ impl IntercityApi {
     pub(super) fn need_km(&self) -> bool {
         !self.zone_fx.is_empty() || self.m.grouped
     }
-    /// `pair_km`'s column towards `dst`, into `col` by node: each one's expected fare there less the
+    /// `pair_km`'s column towards `dst`, into `col` by originating station: its expected fare there less the
     /// base, perceived minutes: its fare km at the rate plus the curve's extra, times the trip's
     /// km-weighted multiplier (T-1626). `kw`: scratch.
     pub(super) fn fare_col(&self, g: &Graph, st: Strategy, dst: usize, col: &mut Vec<f32>, kw: &mut Vec<f32>, dep: &mut Vec<(u32, f32)>) {
@@ -67,6 +67,8 @@ impl IntercityApi {
         if weighed {
             trip_km_on(g, st, dst, &g.rn_kmw, kw, dep);
         }
+        // The route-node distances were needed to reach the stations; only stations are priced.
+        col.truncate(g.n_st);
         for (i, v) in col.iter_mut().enumerate() {
             let k = *v;
             *v = (self.fare_per_km * k + g.fare_curve.extra(k)) * if weighed { fare_mul_of(k, kw[i]) } else { 1. };
@@ -99,7 +101,7 @@ impl IntercityApi {
     }
     /// T-1373: the zone whose people reach (merged) station `s` with the most weight.
     pub(super) fn station_zone(&self, s: usize) -> Option<usize> {
-        let mut best: Option<(f32, usize)> = None;
+        let mut best: Option<(f64, usize)> = None;
         for (z, list) in self.access.iter().enumerate() {
             for &(st, w) in list {
                 if st == s && best.map_or(true, |b| w > b.0) {
@@ -399,7 +401,9 @@ impl IntercityApi {
         for mm in cw_home.iter_mut().chain(cw_walk.iter_mut()).chain(cw_work.iter_mut()).chain(ew.iter_mut()) {
             at_beta(mm, beta_c, theta);
         }
-        let lists = |maps: Vec<BTreeMap<usize, f32>>, positive: bool| -> Vec<Vec<(usize, f32)>> { maps.into_iter().map(|mm| access_list(mm, positive, &comp, &on_train)).collect() };
+        let lists = |maps: Vec<BTreeMap<usize, f32>>, positive: bool| -> Vec<Vec<LogAccess>> {
+            maps.into_iter().map(|mm| access_list(mm, positive, &comp, &on_train).into_iter().map(log_access).collect()).collect()
+        };
         self.access = lists(weights, false);
         self.access_work = lists(work, false);
         self.access_c = if commuting { lists(cw_home, true) } else { vec![] };

@@ -149,6 +149,14 @@ pub(super) fn access_list(weights: BTreeMap<usize, f32>, positive: bool, comp: &
     v
 }
 
+/// A station and the natural log of its rounded access weight. Shared by all zone
+/// pairs and periods until the next network setup. Zero weight has log -infinity.
+pub(super) type LogAccess = (usize, f64);
+
+pub(super) fn log_access((station, weight): (usize, f32)) -> LogAccess {
+    (station, if weight <= 0. { f64::NEG_INFINITY } else { (weight as f64).ln() })
+}
+
 /// T-409: the pack's own data is shared (`Rc`) by every market `beside` it; the rest is one
 /// network's.
 #[wasm_bindgen]
@@ -162,15 +170,15 @@ pub struct IntercityApi {
     pub(super) served_at: Vec<u32>,
     pub(super) base: Params,
     pub(super) svc: Option<Service>,
-    pub(super) access: Vec<Vec<(usize, f32)>>,
-    pub(super) access_work: Vec<Vec<(usize, f32)>>,
-    pub(super) access_c: Vec<Vec<(usize, f32)>>,
-    pub(super) access_cw: Vec<Vec<(usize, f32)>>,
-    pub(super) access_c_walk: Vec<Vec<(usize, f32)>>,
+    pub(super) access: Vec<Vec<LogAccess>>,
+    pub(super) access_work: Vec<Vec<LogAccess>>,
+    pub(super) access_c: Vec<Vec<LogAccess>>,
+    pub(super) access_cw: Vec<Vec<LogAccess>>,
+    pub(super) access_c_walk: Vec<Vec<LogAccess>>,
     pub(super) cpairs: Vec<CPair>,
     /// T-1175: the activity end's walks of the everyday pairs (attraction-weighted), and the
     /// everyday pairs some station serves
-    pub(super) access_ew: Vec<Vec<(usize, f32)>>,
+    pub(super) access_ew: Vec<Vec<LogAccess>>,
     pub(super) epairs: Vec<EPairOn>,
     pub(super) want: Vec<bool>,
     pub(super) per: Vec<Option<Period>>,

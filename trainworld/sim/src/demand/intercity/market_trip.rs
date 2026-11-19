@@ -350,7 +350,7 @@ impl IntercityApi {
                             // T-1902: the modes but rail as one figure rail is weighed against
                             oc += tg * (alt.drive as f64 - (alt.rest as f64).ln() / bt as f64);
                             let rt = tg * frac;
-                            let cost = |list: &[(usize, f32)], st: u32| list.iter().find(|e| e.0 == st as usize).map_or(0., |e| -(e.1.max(1e-30) as f64).ln() / beta);
+                            let cost = |list: &[LogAccess], st: u32| list.iter().find(|e| e.0 == st as usize).map_or(0., |e| -e.1.max((1e-30_f32 as f64).ln()) / beta);
                             for &(sa, sb, v) in &terms {
                                 let x = rt * v / sum;
                                 let e = by.entry((sa, sb)).or_default();
@@ -376,7 +376,7 @@ impl IntercityApi {
         // walkers rail leaves; its riders join the station pairs
         let pe = commute_params().everyday();
         let (mut e_all, mut e_rail, mut e_walk) = (0f64, 0f64, 0f64);
-        let weigh = |list: &[(usize, f32)], st: u32| list.iter().find(|e| e.0 == st as usize).map_or(0., |e| -(e.1.max(1e-30) as f64).ln() / pe.beta as f64);
+        let weigh = |list: &[LogAccess], st: u32| list.iter().find(|e| e.0 == st as usize).map_or(0., |e| -e.1.max((1e-30_f32 as f64).ln()) / pe.beta as f64);
         for &(i, wz) in &e_hits {
             let pair = &m.everyday[i];
             let k = pair.kind as usize;
@@ -411,7 +411,7 @@ impl IntercityApi {
         let pc = commute_params();
         let legs_sh = (share_out(day as usize, WORK, q) + share_ret(day as usize, WORK, q)) as f64;
         let rail_sh = (TO_WORK[q] + TO_HOME[q]) as f64 * load_factor(day as usize, WORK, q) as f64;
-        let weigh_c = |list: &[(usize, f32)], st: u32| list.iter().find(|e| e.0 == st as usize).map_or(0., |e| -(e.1.max(1e-30) as f64).ln() / pc.beta as f64);
+        let weigh_c = |list: &[LogAccess], st: u32| list.iter().find(|e| e.0 == st as usize).map_or(0., |e| -e.1.max((1e-30_f32 as f64).ln()) / pc.beta as f64);
         let (mut c_all, mut c_rail) = (0f64, 0f64);
         for &(c, wz) in &c_hits {
             let (hz, wg, n) = m.commutes[c];

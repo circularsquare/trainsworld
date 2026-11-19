@@ -890,6 +890,16 @@ fn partial_skims_equal_full_skims_where_searched() {
     let net = common_test_net(&[&[0, 1, 2], &[0, 1, 3]], &[6.0, 6.0], &[2.0, 2.0]);
     let g = build_graph(&net, &p);
     let full = skims(&g, &p);
+    // A market can extend the same graph several times without filling walking
+    // columns. The next local caller gets all of them, including previously searched ones.
+    with_route_skims(&g, &p, &[true, false, false, false], |sk| assert_eq!(sk.walk_slots, 0));
+    with_route_skims(&g, &p, &[false, true, false, false], |sk| assert_eq!(sk.walk_slots, 0));
+    with_skims(&g, &p, &[true; 4], |sk| {
+        assert_eq!(sk.walk, full.walk);
+        assert_eq!(sk.walk_max, full.walk_max);
+        assert_eq!(sk.r, full.r);
+    });
+    clear_skim_cache();
     let s = g.n_st;
     let part = skims_for(&g, &p, &[false, true, false, true]);
     for dst in 0..s {

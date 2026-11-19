@@ -49,7 +49,7 @@ impl IntercityApi {
         let todo = self.want.iter().filter(|&&w| w).count();
         if todo * strategy_bytes(g) <= MARKET_STRATEGY_BYTES || skims_cached(g, p) {
             // the strategies are shared with the local populations on the same service (T-119)
-            return with_skims(g, p, &self.want, |sk| self.pass_on(g, p, q, sk, ix));
+            return with_route_skims(g, p, &self.want, |sk| self.pass_on(g, p, q, sk, ix));
         }
         self.pass_searched(g, p, q, ix)
     }
@@ -417,7 +417,7 @@ impl IntercityApi {
                 }
             }
             // each destination station's route costs and fare km, as the unit's access list has them
-            let cols = |list: &[(usize, f32)], planned: bool| -> Vec<(&[f32], &[f32])> {
+            let cols = |list: &[LogAccess], planned: bool| -> Vec<(&[f32], &[f32])> {
                 list.iter()
                     .map(|&(x, _)| {
                         let k = rs[x] as usize;

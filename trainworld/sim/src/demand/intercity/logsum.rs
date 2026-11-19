@@ -7,7 +7,9 @@ use super::*;
 /// sum of the weights (0: no route).
 #[cfg(test)]
 pub(super) fn rail_logsum(r: &[f32], s: usize, fare: f32, a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, terms: &mut Vec<(u32, u32, f64)>) -> (f32, f64) {
-    rail_logsum_x(r, s, fare, a, b, beta, th, None, terms)
+    let a: Vec<_> = a.iter().copied().map(log_access).collect();
+    let b: Vec<_> = b.iter().copied().map(log_access).collect();
+    rail_logsum_x(r, s, fare, &a, &b, beta, th, None, terms)
 }
 /// T-1286: the fares of trips from one country weighed at a factor of the market's (the player's
 /// fare scale there over its income's), on each station pair's strategy as searched: its expected
@@ -31,7 +33,7 @@ impl FareX<'_> {
 }
 /// `rail_logsum` with the fares weighed at `1 + x.1` (`FareX`).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn rail_logsum_x(r: &[f32], s: usize, fare: f32, a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, x: Option<(&FareX, f32)>, terms: &mut Vec<(u32, u32, f64)>) -> (f32, f64) {
+pub(super) fn rail_logsum_x(r: &[f32], s: usize, fare: f32, a: &[LogAccess], b: &[LogAccess], beta: f32, th: f32, x: Option<(&FareX, f32)>, terms: &mut Vec<(u32, u32, f64)>) -> (f32, f64) {
     rail_logsum_by(a, b, beta, th, terms, |sa, j| {
         let c = r[sa * s + b[j].0];
         match x {
@@ -43,7 +45,7 @@ pub(super) fn rail_logsum_x(r: &[f32], s: usize, fare: f32, a: &[(usize, f32)], 
 /// `rail_logsum_x` on the route costs and fare km towards `b`'s stations as columns: `cols[j]` for
 /// `b[j]`, each by the station the trip starts from (T-1545).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn rail_logsum_cols(cols: &[(&[f32], &[f32])], fare: f32, a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, x: Option<(&FareX, f32)>, terms: &mut Vec<(u32, u32, f64)>) -> (f32, f64) {
+pub(super) fn rail_logsum_cols(cols: &[(&[f32], &[f32])], fare: f32, a: &[LogAccess], b: &[LogAccess], beta: f32, th: f32, x: Option<(&FareX, f32)>, terms: &mut Vec<(u32, u32, f64)>) -> (f32, f64) {
     rail_logsum_by(a, b, beta, th, terms, |sa, j| {
         let (r, km) = cols[j];
         match x {
@@ -79,7 +81,7 @@ impl RailMix {
 /// `rail_logsum_cols` as a `RailMix` at fare factor `1 + d` (none weighed with no `fx`); `fares`:
 /// scratch.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn rail_mix_cols(cols: &[(&[f32], &[f32])], fare: f32, a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, fx: Option<&FareX>, d: f32, terms: &mut Vec<(u32, u32, f64)>, fares: &mut Vec<f32>) -> RailMix {
+pub(super) fn rail_mix_cols(cols: &[(&[f32], &[f32])], fare: f32, a: &[LogAccess], b: &[LogAccess], beta: f32, th: f32, fx: Option<&FareX>, d: f32, terms: &mut Vec<(u32, u32, f64)>, fares: &mut Vec<f32>) -> RailMix {
     rail_mix_by(a, b, beta, th, d, terms, fares, |sa, j| {
         let (r, km) = cols[j];
         let f = fx.map_or(0., |fx| fx.fare_of(km[sa]));
@@ -88,7 +90,7 @@ pub(super) fn rail_mix_cols(cols: &[(&[f32], &[f32])], fare: f32, a: &[(usize, f
 }
 /// `rail_logsum_x` as a `RailMix` (`rail_mix_cols` on a whole table).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn rail_mix_x(r: &[f32], s: usize, fare: f32, a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, fx: Option<&FareX>, d: f32, terms: &mut Vec<(u32, u32, f64)>, fares: &mut Vec<f32>) -> RailMix {
+pub(super) fn rail_mix_x(r: &[f32], s: usize, fare: f32, a: &[LogAccess], b: &[LogAccess], beta: f32, th: f32, fx: Option<&FareX>, d: f32, terms: &mut Vec<(u32, u32, f64)>, fares: &mut Vec<f32>) -> RailMix {
     rail_mix_by(a, b, beta, th, d, terms, fares, |sa, j| {
         let f = fx.map_or(0., |fx| fx.fare(sa, b[j].0, s));
         (r[sa * s + b[j].0] + fare + d * f, f)
@@ -96,26 +98,22 @@ pub(super) fn rail_mix_x(r: &[f32], s: usize, fare: f32, a: &[(usize, f32)], b: 
 }
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-pub(super) fn rail_mix_by(a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, d: f32, terms: &mut Vec<(u32, u32, f64)>, fares: &mut Vec<f32>, cost: impl Fn(usize, usize) -> (f32, f32)) -> RailMix {
+pub(super) fn rail_mix_by(a: &[LogAccess], b: &[LogAccess], beta: f32, th: f32, d: f32, terms: &mut Vec<(u32, u32, f64)>, fares: &mut Vec<f32>, cost: impl Fn(usize, usize) -> (f32, f32)) -> RailMix {
     terms.clear();
     fares.clear();
     let k = (th / beta) as f64;
     let mut top = f64::NEG_INFINITY;
-    let mut lb = [0f64; ACCESS_MAX];
-    for (l, &(_, wb)) in lb.iter_mut().zip(b) {
-        *l = k * (wb as f64).ln();
-    }
     for &(sa, wa) in a {
-        if wa <= 0. {
+        if wa == f64::NEG_INFINITY {
             continue;
         }
-        let la = k * (wa as f64).ln();
+        let la = k * wa;
         for (j, &(sb, wb)) in b.iter().enumerate() {
             let (cost, f) = cost(sa, j);
-            if sa == sb || wb <= 0. || !cost.is_finite() {
+            if sa == sb || wb == f64::NEG_INFINITY || !cost.is_finite() {
                 continue;
             }
-            let lw = la + (if j < ACCESS_MAX { lb[j] } else { k * (wb as f64).ln() }) - (th * cost) as f64;
+            let lw = la + k * wb - (th * cost) as f64;
             top = top.max(lw);
             terms.push((sa as u32, sb as u32, lw));
             fares.push(f);
@@ -140,27 +138,22 @@ pub(super) fn rail_mix_by(a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th:
 /// The logsum of `rail_logsum_x` with each station pair's rail cost, the base fare included, from
 /// `cost(sa, j)` for `b[j]`.
 #[inline(always)]
-pub(super) fn rail_logsum_by(a: &[(usize, f32)], b: &[(usize, f32)], beta: f32, th: f32, terms: &mut Vec<(u32, u32, f64)>, cost: impl Fn(usize, usize) -> f32) -> (f32, f64) {
+pub(super) fn rail_logsum_by(a: &[LogAccess], b: &[LogAccess], beta: f32, th: f32, terms: &mut Vec<(u32, u32, f64)>, cost: impl Fn(usize, usize) -> f32) -> (f32, f64) {
     terms.clear();
     let k = (th / beta) as f64;
     let mut top = f64::NEG_INFINITY;
-    // the egress weights' logs, once a pair rather than once a station pair (T-761)
-    let mut lb = [0f64; ACCESS_MAX];
-    for (l, &(_, wb)) in lb.iter_mut().zip(b) {
-        *l = k * (wb as f64).ln();
-    }
     for &(sa, wa) in a {
-        if wa <= 0. {
+        if wa == f64::NEG_INFINITY {
             continue;
         }
-        let la = k * (wa as f64).ln();
+        let la = k * wa;
         for (j, &(sb, wb)) in b.iter().enumerate() {
             // a rail journey must actually board a train
             let cost = cost(sa, j);
-            if sa == sb || wb <= 0. || !cost.is_finite() {
+            if sa == sb || wb == f64::NEG_INFINITY || !cost.is_finite() {
                 continue;
             }
-            let lw = la + (if j < ACCESS_MAX { lb[j] } else { k * (wb as f64).ln() }) - (th * cost) as f64;
+            let lw = la + k * wb - (th * cost) as f64;
             top = top.max(lw);
             terms.push((sa as u32, sb as u32, lw));
         }

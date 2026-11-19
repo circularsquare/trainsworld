@@ -351,6 +351,9 @@ pub struct Skims {
     /// Per station, the most `walk` from it to any searched destination: what lets the walking
     /// rule pass trips without looking at their station pairs.
     pub walk_max: Vec<u16>,
+    /// The prefix of searched slots with a walking column. The intercity market only
+    /// reads route costs; a later local population fills any outstanding columns.
+    pub walk_slots: usize,
     /// Each destination's slot in the arrays below, `NONE` if it was not searched.
     pub slot: Vec<u32>,
     /// Per searched destination (by slot), kept apart so adding one never moves the rest:
@@ -446,7 +449,7 @@ pub(super) fn accepted(bits: &[u64], g: &Graph, r: usize) -> f32 {
 
 impl Skims {
     pub fn empty(g: &Graph) -> Skims {
-        Skims { s: g.n_st, n: g.n, r: vec![f32::INFINITY; g.n_st * g.n_st], walk: vec![u16::MAX; g.n_st * g.n_st], walk_max: vec![0; g.n_st], slot: vec![NONE; g.n_st], next: vec![], board: vec![], order: vec![], change: vec![], entry: vec![] }
+        Skims { s: g.n_st, n: g.n, r: vec![f32::INFINITY; g.n_st * g.n_st], walk: vec![u16::MAX; g.n_st * g.n_st], walk_max: vec![0; g.n_st], walk_slots: 0, slot: vec![NONE; g.n_st], next: vec![], board: vec![], order: vec![], change: vec![], entry: vec![] }
     }
     /// `r` with the first boarding at the planned wait (T-1430), as the inter-city trips cost it.
     pub fn entry_r(&self) -> std::borrow::Cow<'_, [f32]> {
@@ -490,18 +493,34 @@ pub fn skims_for(g: &Graph, p: &Params, want: &[bool]) -> Skims {
 
 /// Search the destinations marked in `want` that `sk` does not have yet.
 pub fn skims_extend(sk: &mut Skims, g: &Graph, p: &Params, want: &[bool]) {
-    let todo: Vec<usize> = (0..g.n_st).filter(|&d| want.get(d).copied().unwrap_or(false) && sk.slot[d] == NONE).collect();
-    if todo.is_empty() {
+    extend_skims(sk, g, p, want, true);
+}
+
+fn extend_skims(sk: &mut Skims, g: &Graph, p: &Params, want: &[bool], walks: bool) {
+    let s = g.n_st;
+    let todo = (0..s).filter(|&d| want.get(d).copied().unwrap_or(false) && sk.slot[d] == NONE).collect::<Vec<_>>();
+    if !todo.is_empty() {
+        let mut q = DestSearch::new(g, p);
+        for dst in todo {
+            sk.slot[dst] = sk.next.len() as u32;
+            let d = q.run(dst, Some(&mut sk.r));
+            sk.next.push(d.next);
+            sk.board.push(d.board);
+            sk.order.push(d.order);
+            sk.change.push(d.change);
+            sk.entry.push(d.entry);
+        }
+    }
+    if !walks || sk.walk_slots == sk.next.len() {
         return;
     }
-    let mut q = DestSearch::new(g, p);
-    let mut wm = vec![];
-    let mut dep = vec![];
-    for &dst in &todo {
-        sk.slot[dst] = sk.next.len() as u32;
-        let d = q.run(dst, Some(&mut sk.r));
-        walk_column(g, p, d.view(), dst, &mut wm, &mut dep);
-        let s = g.n_st;
+    let (mut wm, mut dep) = (vec![], vec![]);
+    for dst in 0..s {
+        let slot = sk.slot[dst];
+        if slot == NONE || (slot as usize) < sk.walk_slots {
+            continue;
+        }
+        walk_column(g, p, sk.strategy(slot as usize), dst, &mut wm, &mut dep);
         for (a, &m) in wm[..s].iter().enumerate() {
             if m.is_finite() {
                 let w = p.walk_eq_m(m).round().min(u16::MAX as f32 - 1.0) as u16;
@@ -511,12 +530,8 @@ pub fn skims_extend(sk: &mut Skims, g: &Graph, p: &Params, want: &[bool]) {
                 sk.walk[a * s + dst] = u16::MAX;
             }
         }
-        sk.next.push(d.next);
-        sk.board.push(d.board);
-        sk.order.push(d.order);
-        sk.change.push(d.change);
-        sk.entry.push(d.entry);
     }
+    sk.walk_slots = sk.next.len();
 }
 
 /// The real minutes from each node to `dst` under strategy `st` (T-2265), into `wm` (node ids,
@@ -1930,6 +1945,16 @@ thread_local! {
 /// are, so a period can bring a graph per city: `SKIM_TABLES` are kept, and which go is chosen by
 /// what they cost to search again, so the order the populations come in does not decide (T-405).
 pub fn with_skims<R>(g: &Graph, p: &Params, want: &[bool], f: impl FnOnce(&Skims) -> R) -> R {
+    with_cached_skims(g, p, want, true, f)
+}
+
+/// The market uses the same cached route strategies and never reads the real
+/// travel time used by local riders' walking rule.
+pub(crate) fn with_route_skims<R>(g: &Graph, p: &Params, want: &[bool], f: impl FnOnce(&Skims) -> R) -> R {
+    with_cached_skims(g, p, want, false, f)
+}
+
+fn with_cached_skims<R>(g: &Graph, p: &Params, want: &[bool], walks: bool, f: impl FnOnce(&Skims) -> R) -> R {
     SKIM_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         match c.iter().position(|(k, _)| k.same(g, p)) {
@@ -1946,7 +1971,9 @@ pub fn with_skims<R>(g: &Graph, p: &Params, want: &[bool], f: impl FnOnce(&Skims
                     let (i, kept) = c.iter().enumerate().map(|(i, e)| (i, e.1.next.len())).min_by_key(|e| e.1).unwrap();
                     if todo < kept {
                         drop(c);
-                        return f(&skims_for(g, p, want));
+                        let mut sk = Skims::empty(g);
+                        extend_skims(&mut sk, g, p, want, walks);
+                        return f(&sk);
                     }
                     c.remove(i);
                 }
@@ -1954,7 +1981,7 @@ pub fn with_skims<R>(g: &Graph, p: &Params, want: &[bool], f: impl FnOnce(&Skims
             }
         }
         let sk = &mut c.last_mut().unwrap().1;
-        skims_extend(sk, g, p, want);
+        extend_skims(sk, g, p, want, walks);
         f(sk)
     })
 }
