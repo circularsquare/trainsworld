@@ -8,6 +8,7 @@
 import { BUILDING_TOUCH_M, platformTouches } from "../game/buildings";
 import { layoutBuilding, type Rect } from "../game/buildingLayout";
 import { PLATFORM_POINTS, ST_ROOM } from "./stationGeometry";
+import { ShapeGrid } from "./shapeGrid";
 import { roomRect } from "./facilityPlace";
 import { toLocal } from "./geo";
 import type { BuildingInput } from "../game/types";
@@ -58,6 +59,15 @@ export function buildingsDrawn(
   }
   const line = (i: number) => stationLine.subarray(i * 2 * PLATFORM_POINTS, (i + 1) * 2 * PLATFORM_POINTS);
   const seen = new Set<number>();
+  // Query in original station/edge order: overlapping buildings claim platforms in order,
+  // and their track order is part of the interior's cache key.
+  const stationGrid = new ShapeGrid<number>(512), edgeGrid = new ShapeGrid<number>(512);
+  let longest = 0;
+  for (let i = 0; i < st.length; i++) {
+    const x = stations[i * 3], y = stations[i * 3 + 1];
+    stationGrid.add(i, x, y, x, y);
+    longest = Math.max(longest, st[i].platform);
+  }
   // each edge's box, once
   const boxes: { id: number; p: Float32Array; x0: number; y0: number; x1: number; y1: number }[] = [];
   if (inside) for (const [id, p] of edgePts) {
@@ -66,6 +76,7 @@ export function buildingsDrawn(
       a = Math.min(a, p[j]); c = Math.max(c, p[j]);
       b = Math.min(b, p[j + 1]); d = Math.max(d, p[j + 1]);
     }
+    edgeGrid.add(boxes.length, a, b, c, d);
     boxes.push({ id, p, x0: a, y0: b, x1: c, y1: d });
   }
   buildings.forEach((b, k) => {
@@ -86,7 +97,8 @@ export function buildingsDrawn(
     // the platforms and track in and round it
     const pad = 60 * perM;
     const near: number[] = [], members: number[] = [];
-    for (let i = 0; i < st.length; i++) {
+    const reach = longest * perM + pad;
+    for (const i of stationGrid.box(x0 - reach, y0 - reach, x1 + reach, y1 + reach).sort((a, b) => a - b)) {
       const x = stations[i * 3], y = stations[i * 3 + 1], r = st[i].platform * perM + pad;
       if (x < x0 - r || x > x1 + r || y < y0 - r || y > y1 + r) continue;
       near.push(i);
@@ -100,7 +112,8 @@ export function buildingsDrawn(
       return;
     }
     const tracks: { id: number; pts: number[] }[] = [];
-    for (const { id, p, ...e } of boxes) {
+    for (const i of edgeGrid.box(x0 - pad, y0 - pad, x1 + pad, y1 + pad).sort((a, b) => a - b)) {
+      const e = boxes[i], { id, p } = e;
       if (e.x1 < x0 - pad || e.x0 > x1 + pad || e.y1 < y0 - pad || e.y0 > y1 + pad) continue;
       // the pieces of it near the floor, each segment on its own
       for (let j = 0; j + 5 < p.length; j += 3) {
