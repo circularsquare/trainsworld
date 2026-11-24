@@ -933,6 +933,16 @@ order, kept and dropped as the Lines tab's is [T-1813]. Riders follows the rider
   only the setting; "Rename all stations" changes it and binds or unbinds every station (each keeping the
   name it shows), one undo, which leaves the setting as chosen. The map labels every distinct name a complex's stations show. A line group's name
   typed in its title stays even when it equals its first line's name.
+- **Rename stations** [`ui/inspector/RenameStops.tsx`]: in a rail line's panel, while its stops are not being
+  edited, a text button after "Stops" (hover "Rename this line's stations together") turns the stops list into a
+  box per station, in the list's order (north up, a turned line's rows), each filled with the name it shows; a
+  bound station stands for its complex, so the bound stations of one complex share one box. A paste of several
+  lines into a box fills it and the boxes below, one line each (a blank line leaves its box as it is), so a list
+  of names from elsewhere goes in at once. Enter goes to the next box, and on the last box or with Ctrl (Cmd)
+  renames; Escape or Cancel closes it renaming nothing. A changed box is bold, its hover the name it had. "Rename 3
+  stations" (greyed until a box changes) renames each changed one as its own panel would (an unbound station
+  alone, a bound one its complex: `renameStations` in `workers/clockDemand.ts`, `TrackApi.rename_stations`), all
+  as one undo, and says "Renamed 3 stations".
 
 ## The complex map
 
