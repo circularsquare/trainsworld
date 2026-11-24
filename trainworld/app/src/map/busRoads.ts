@@ -1,6 +1,7 @@
 // The roads a bus route follows (T-1465, notes/T-1445.md "Stage 2"). Between two clicked points the
-// route takes the shortest path over the basemap's zoom 14 roads and motorways (`roadGraph.ts`), counting road length
-// as it is and a one-way street only the way it runs; a leg with no such path is refused (T-2451: no road near a point, no path under the detour
+// route takes the quickest path over the basemap's zoom 14 roads and motorways (`roadGraph.ts`), counting road length
+// as it is, a trunk road's or motorway's as the bus's time on it (`FAST_X`, open-source issue 27), and a one-way
+// street only the way it runs; a leg with no such path is refused (T-2451: no road near a point, no path under the detour
 // cap, or too long to search), and the tool keeps it out of a route. The tiles are fetched here,
 // straight from the basemap's own tile server, because the map holds only the zoom it is showing; they
 // are kept decoded, and the graph is built from them as a leg needs.
