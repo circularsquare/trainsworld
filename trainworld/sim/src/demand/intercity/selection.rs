@@ -250,6 +250,47 @@ impl IntercityApi {
             }
         })
     }
+    /// `table_rows` with each row's commute legs a day (`Corridors::commute_of`'s): `f(corridor, a, b, trips,
+    /// commute)`, in the same order. A plain loop over the two sorted lists, for the passes over every row of a
+    /// load (`table_summary`, millions of rows), where the iterator and a search a row cost a tenth (T-4182).
+    pub(super) fn each_table_row(&self, mut f: impl FnMut(usize, usize, usize, f64, f64)) {
+        let cw = &*self.m.cw;
+        let np = self.m.places.len();
+        let commute: &[(u32, f64)] = if cw.commuters > 0. { &cw.commute } else { &[] };
+        // (a: the first place of the corridor last given)
+        let (mut kc, mut kt, mut a) = (0usize, 0usize, 0usize);
+        let mut row = |i: usize, t: f64, c: f64| {
+            if t > 0. || c > 0. {
+                while a + 1 < np && tri(np, a + 1, a + 1) <= i {
+                    a += 1;
+                }
+                f(i, a, a + i - tri(np, a, a), t, c);
+            }
+        };
+        for (k, &w) in cw.has_trips.iter().enumerate() {
+            let mut w = w;
+            while w != 0 {
+                let i = 64 * k + w.trailing_zeros() as usize;
+                w &= w - 1;
+                let t = cw.trips[kt] as f64;
+                kt += 1;
+                while kc < commute.len() && (commute[kc].0 as usize) < i {
+                    row(commute[kc].0 as usize, 0., commute[kc].1);
+                    kc += 1;
+                }
+                let c = if kc < commute.len() && commute[kc].0 as usize == i {
+                    kc += 1;
+                    commute[kc - 1].1
+                } else {
+                    0.
+                };
+                row(i, t, c);
+            }
+        }
+        for &(i, c) in &commute[kc..] {
+            row(i as usize, 0., c);
+        }
+    }
     /// `air`: four numbers per 600 m square holding airport terminals (T-3500): its x, y, its
     /// terminals' weight and the selected part of that weight. Airport trips from across a zone line
     /// end at the terminals, so a zone's share of them is its terminals' share selected, not its
@@ -794,9 +835,11 @@ impl IntercityApi {
         // zone's that reaches it most
         let sign = lean_sign(day as usize);
         let here = if sign == 0. { None } else { self.station_zone(s as usize).map(|z| &m.zones[z]) };
+        // T-4094: a stop of a merged group answers for its share of the group's riders
+        let share = svc.fold.as_ref().map_or(1.0, |f| f.share(station as usize)) as f64;
         for q in 0..PERIODS {
             let Some(per) = self.per(q) else { continue };
-            let f = load_factor(day as usize, LONGER, q) as f64;
+            let f = load_factor(day as usize, LONGER, q) as f64 * share;
             let pat = &self.st_pat;
             if (s as usize) + 1 < pat.off.len() && per.st.len() == pat.col.len() {
                 for i in pat.row(s as usize) {
@@ -842,12 +885,13 @@ impl IntercityApi {
     /// T-3503: the everyday outings across a zone line with another place, by place, in period `q`
     /// (a weekday): for each place with any, its index, then the legs with an end there (both ends
     /// counted, all modes, the same in every part of the market), this network's rail legs, the
-    /// walking legs (the walkers this network's rail takes out) and the walking legs with no rail.
+    /// walking legs (the walkers this network's rail takes out), the walking legs with no rail and (T-2216) the
+    /// legs between two landmasses or two zones' lands (no car, no walking) and this network's rail legs of them.
     /// Empty before the period is solved.
     pub fn everyday_place_legs(&self, q: usize) -> Vec<f64> {
         let Some(s) = self.per(q) else { return vec![] };
         let m = &self.m;
-        let mut by = vec![[0f64; 4]; m.places.len()];
+        let mut by = vec![[0f64; 6]; m.places.len()];
         let ends = |pair: &EPair| (m.zones[pair.h as usize].place, m.gid_place[pair.a as usize] as usize);
         for pair in &m.everyday {
             let (h, a) = ends(pair);
@@ -856,10 +900,14 @@ impl IntercityApi {
             }
             let k = pair.kind as usize;
             let legs = pair.trips as f64 * (OUTWARD[k][q] + RETURN[k][q]) as f64;
+            let apart = m.everyday_apart(pair.h, pair.a);
             for p in [h, a] {
                 by[p][0] += legs;
                 by[p][2] += legs * pair.walk as f64;
                 by[p][3] += legs * pair.walk as f64;
+                if apart {
+                    by[p][4] += legs;
+                }
             }
         }
         for (ei, ep) in self.epairs.iter().enumerate() {
@@ -870,14 +918,18 @@ impl IntercityApi {
             }
             let k = pair.kind as usize;
             let rail = pair.trips as f64 * (OUTWARD[k][q] + RETURN[k][q]) as f64 * s.e_frac.get(ei).copied().unwrap_or(0.) as f64;
+            let apart = m.everyday_apart(pair.h, pair.a);
             for p in [h, a] {
                 by[p][1] += rail;
                 by[p][2] -= rail * pair.walk as f64;
+                if apart {
+                    by[p][5] += rail;
+                }
             }
         }
         let mut out = vec![];
         for (p, v) in by.iter().enumerate().filter(|(_, v)| v[0] > 0.) {
-            out.extend([p as f64, v[0], v[1], v[2].max(0.), v[3]]);
+            out.extend([p as f64, v[0], v[1], v[2].max(0.), v[3], v[4], v[5]]);
         }
         out
     }
@@ -893,7 +945,7 @@ impl IntercityApi {
     }
     pub fn load_of_crush(&self, q: usize) -> Vec<f32> {
         self.per(q).map_or(vec![], |s| {
-            s.avg
+            let v: Vec<f32> = s.avg
                 .seg
                 .iter()
                 .enumerate()
@@ -906,7 +958,12 @@ impl IntercityApi {
                         0.
                     }
                 })
-                .collect()
+                .collect();
+            self.svc().out_load(v)
         })
+    }
+    /// The network solved on; a period's result implies one.
+    pub(crate) fn svc(&self) -> &crate::demand::api::Service {
+        self.svc.as_ref().expect("a solved period has a network")
     }
 }

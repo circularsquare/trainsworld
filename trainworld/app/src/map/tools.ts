@@ -31,7 +31,7 @@ import { activeCity, worldFrameEpoch } from "../game/cities";
 import { demandView } from "../game/demand";
 import { settleNewLineColour } from "../game/lineColour";
 import { metresBetween } from "../game/walks";
-import { ask, autoRamp, buildLevel, buildPlatform, buildTramPlatform, designSpeed, flyoverSpeed, highSpeed, keepPlacing, lineDraft, newLine, quadTrack, selection, singleTrack, besideOn, snapping, snapMode, snapRealTram, snapRoads, snapStreets, stationOnTram, stationOneTrack, tool, tramTrack } from "../game/ui";
+import { ask, autoRamp, buildLevel, buildPlatform, buildTramPlatform, buswayTrack, designSpeed, flyoverSpeed, highSpeed, inClickOrder, keepPlacing, lineDraft, newLine, quadTrack, selection, singleTrack, besideOn, snapping, snapMode, snapRealTram, snapRoads, snapStreets, stationKind, stationOnTram, stationOneTrack, tool, tramTrack } from "../game/ui";
 import { type Removable } from "../game/remove";
 import { loadPlacesAt } from "../game/placeList";
 import { warmStreetNames } from "./stationNames";
@@ -39,7 +39,7 @@ import { loadRealStationsAt } from "./realStations";
 import { pointerLocal } from "./pick";
 import { edgesNear, nodesNear } from "./snapIndex";
 import { hidden, levelHidden } from "./visibility";
-import { afterStopEdits, edit, queueStopEdit, say, stopsQueued, world } from "../game/world";
+import { afterStopEdits, edit, queueStopEdit, say, sendStopEdit, stopsQueued, world } from "../game/world";
 import { hideBusy, showBusy } from "../game/busy";
 import { type RouteEnd } from "../workers/protocol";
 import { gameStamp, onRoadsLanded, type ClockClient, type PreviewAnswer } from "../workers/clockClient";
@@ -48,7 +48,9 @@ import { kAtY, toLngLat, toLocal } from "./geo";
 import { laneState } from "./renderer";
 import { planStopsOf, type Level } from "../game/types";
 import { endHeading } from "./curveCircle";
-import { ghostChevrons, joinedGhost, strokesFromPreview, TAPER_M } from "./network";
+import { ahead, asRun, type Ahead } from "../game/pending";
+import { ghostTangent, LOCAL_PX, sameLine, warmGhostLocal, type TangentSpec } from "./ghostLocal";
+import { ghostChevrons, joinedGhost, strokesFromPreview, TAPER_M, type Strokes } from "./network";
 import { type PlatformShape } from "./stationGeometry";
 import { type Overlay } from "./overlay";
 import { marksLayer } from "./screenPlace";
@@ -65,10 +67,13 @@ import { startBuildingFloors } from "./buildingFloors";
 import { playBuild } from "./buildSound";
 import { perfOff } from "../perfFlags";
 import { guessRow, settleRow } from "../ui/inspector/stopRowGuess";
-import { type LngLatish, SNAP_EDGE_PX, TRACK_NODE_PX, TRACK_EDGE_PX, DEAD_PX, DOT_MIN_PX, HELD_NEAR_PX, HELD_START_PX, BESIDE_PX, OVERLAP_PX, type Snap, type Spot, type Verdict, BESIDE_SPACING_M, LANE_HALF_M, type Placed, MAX_PIECE_KM, WAIT_MS, tooFarText, placedAt } from "./toolParts";
+import { type LngLatish, SNAP_EDGE_PX, TRACK_NODE_PX, TRACK_EDGE_PX, DEAD_PX, DOT_MIN_PX, HELD_NEAR_PX, HELD_START_PX, BESIDE_PX, OVERLAP_PX, type Snap, type Spot, type Verdict, BESIDE_SPACING_M, LANE_HALF_M, type Placed, MAX_PIECE_KM, WAIT_MS, tooFarText, placedAt, standInPts } from "./toolParts";
 import { nearTouch, touchConfirm, touchBack, touchStop, dragHandle, placeTouch } from "./toolTouch";
+import { autoPick } from "./stationAuto";
 import { nameAhead, stationClick, askLegs, placePending, layout } from "./stationTool";
+import { freeCancel, freeStarted } from "./stationFree";
 import { clearDelHover, deleteHover, deleteClick } from "./toolDelete";
+import { clickWaiting, dropClicks, startClickWait, tryClicks, waitClick, waitSpin, type WaitingClick } from "./toolWait";
 import { drawBand, placeMarks } from "./toolMarks";
 
 export class Tools {
@@ -77,6 +82,13 @@ export class Tools {
   chain: Placed[] = [];
   /** a segment's edit in flight: clicks wait for it */
   placing = false;
+  /** T-4214: map clicks waiting for the map to hold every edit sent before them, in order (map/toolWait.ts) */
+  waitingClicks: WaitingClick[] = [];
+  waitTimer = 0;
+  /** T-4214: clicks being carried out whose tool has not finished sending (a station's name looked up first) */
+  clicksOut = 0;
+  /** T-4214: the track run being drawn, numbered from 1: its own segments hold none of its clicks */
+  run = 0;
   /** T-1407: the end node of a segment answered before its state, until `world` has it (-1: none) */
   earlyNode = -1;
   /** T-2404: the points (local x, y, z) of the segments placed early whose state the worker holds
@@ -91,6 +103,30 @@ export class Tools {
   delHover: (Removable & { lx: number; ly: number }) | null = null;
   delAt: [number, number] = [0, 0];
   lastPreview: PreviewAnswer | null = null;
+  /** T-4136: while the pointer has moved on from the spot `lastPreview` answers, the ghost drawn is that answer bent
+   * so its end is at the pointer (`bend`), `from` the answer it was made from */
+  bent: { from: PreviewAnswer; a: PreviewAnswer } | null = null;
+  /** T-4208: from a click's segment being sent until its answer: where the run goes on from (null when it ends at the
+   * click). The ghost is drawn from there meanwhile, never from the start being left, which the worker may take a
+   * second to answer behind a network it is building. */
+  clicked: { onward: { lx: number; ly: number; lng: number; lat: number; dir?: [number, number]; z: number; tangent?: { level: number } } | null } | null = null;
+  /** T-4210: a start whose worker answer differed from the ghost laid on the page (water, a ramp): bent from there on */
+  localOff: Placed | null = null;
+  /** T-4210: the last click's stand-in is the segment as laid (its answer or the page's), not the ghost bent to it */
+  stampExact = false;
+  /** T-4210: the ghost laid on the page for the newest request, to hold its answer against; the last one laid */
+  localFor: { key: string; pts: Float32Array } | null = null;
+  private lastLocal: { st: object; h: Snap; g: ReturnType<typeof ghostTangent> } | null = null;
+  /** the preview the ghost, its marks and its tag show: the bent one while it stands in */
+  get shownPreview(): PreviewAnswer | null {
+    if (this.clicked) return null; // T-4208: no answer yet for the ghost going on from the click
+    return this.bent && this.bent.from === this.lastPreview ? this.bent.a : this.lastPreview;
+  }
+  /** where the ghost starts: the run's start, or from a click until its answer where the run goes on from (null: it
+   * ends there), T-4208 */
+  get ghostStart(): { lng: number; lat: number } | null {
+    return this.clicked ? this.clicked.onward : this.start;
+  }
   /** snapping to the real network (T-727d) */
   readonly real: RealSnap;
   /** snapping tram track to streets (T-2927) */
@@ -107,7 +143,7 @@ export class Tools {
   readonly building: BuildingDraw;
   /** the request `lastPreview` answers, as JSON */
   previewKey = "";
-  /** the newest request asked for; an older one's answer landing late is dropped (T-830) */
+  /** the newest request asked for (T-830: a click takes only the answer for its own spot) */
   wantKey = "";
   /** where the last station of this session was placed (lng, lat), T-312 */
   lastPlaced: [number, number] | null = null;
@@ -150,6 +186,7 @@ export class Tools {
     effect(() => { if (tool.value !== "ferry") this.ferry.clear(); });
     this.building = new BuildingDraw(map, this.box, this.tag, overlay, { exit: () => this.exit() });
     effect(() => { if (tool.value !== "building") this.building.clear(); });
+    effect(() => { if (tool.value === "track") warmGhostLocal(); });
     startBuildingFloors(overlay);
     overlay.afterMapFrame.push(() => this.place());
     // T-1777: a pointer gone off the map leaves no ghost, ring or tag where it was; T-3130: a segment being
@@ -161,8 +198,9 @@ export class Tools {
       clearDelHover(this);
       this.place();
     });
-    effect(() => { buildPlatform.value; buildTramPlatform.value; if (tool.value === "station") this.place(); });
-    effect(() => { if (tool.value === "station") stationOnTram.value = tramTrack.value; }); // T-3015: also when the type changes with the station tool in hand
+    effect(() => { buildPlatform.value; buildTramPlatform.value; stationKind.value; if (tool.value === "station") this.place(); });
+    // T-3999: an open-ground station's first end goes with the tool or the kind
+    effect(() => { if (tool.value !== "station" || (stationKind.value !== "rail" && stationKind.value !== "tram")) freeCancel(this); });
     // the place lists name stations where the tiles have no streets (T-065); the view's zones' are
     // fetched when the station tool is picked, not at startup (T-400)
     // and the real stations of the view's region, which name a station on one (T-3571)
@@ -176,6 +214,15 @@ export class Tools {
       const c = map.getCenter();
       void loadRealStationsAt(c.lng, c.lat);
     });
+    // T-4208: the camera moving under a still pointer (the keys, the zoom buttons, a fly to) left the ghost's end at the
+    // pointer's old place on the map, far off once zoomed: it is taken again at the pointer's screen point. A drag of the
+    // map moves the pointer too, so its screen point is kept up while a button is held (no hover then).
+    addEventListener("mousemove", (e) => {
+      if (!e.buttons || !this.pointer) return;
+      const r = map.getContainer().getBoundingClientRect();
+      [this.pointer.px, this.pointer.py] = [e.clientX - r.left, e.clientY - r.top];
+    }, { capture: true, passive: true });
+    map.on("move", () => this.cameraMoved());
     // T-1778: the snap ring and ghost are in local units, stale once the draw anchor moves: taken again where the pointer rests
     worldFrameEpoch.subscribe(() => {
       const p = this.pointer;
@@ -240,7 +287,8 @@ export class Tools {
     document.body.appendChild(this.touchHost);
     map.getContainer().appendChild(this.handle);
     this.handle.addEventListener("pointerdown", (e) => dragHandle(this, e));
-    Object.assign(touchActions, { confirm: () => void touchConfirm(this), back: () => touchBack(this), stop: () => touchStop(this), drawn: () => placeTouch(this) });
+    Object.assign(touchActions, { confirm: () => { if (!waitClick(this, "confirm", null)) this.carrying(touchConfirm(this)); }, back: () => touchBack(this), stop: () => touchStop(this), drawn: () => placeTouch(this) });
+    startClickWait(this);
     effect(() => {
       tool.value;
       touchInput.value;
@@ -267,7 +315,7 @@ export class Tools {
       const bus = line && w.lineStats[line.id]?.bus;
       // T-2891: a bus line's stops are edited only while it is by hand
       if (!line || (bus && !bus.hand)) {
-        this.exit();
+        this.exitNow();
         return;
       }
       const stops = planStopsOf(line).map(Number);
@@ -305,6 +353,7 @@ export class Tools {
     this.noSnap = on;
     this.streetSwitch();
     const p = this.pointer;
+    if (tool.peek() === "line" && this.busStops?.active && p) this.busStops.hover(p.px, p.py, on); // T-4069
     if (tool.peek() === "track" && p) this.move({ point: { x: p.px, y: p.py }, lngLat: { lng: p.lng, lat: p.lat }, originalEvent: e } as unknown as MapMouseEvent);
   }
 
@@ -354,7 +403,7 @@ export class Tools {
     const nearNodes = at && nodes ? nodesNear(w, at[0], at[1], TRACK_NODE_PX * at[2]) : null;
     const nearEdges = at ? edgesNear(n, at[0], at[1], laneReach * at[2]) : null;
     for (const node of nodes ? nearNodes ?? w.nodes.values() : []) {
-      if (node.bus || node.port) continue; // a bus stop or a port (T-2194) is no track to build on (T-1464)
+      if (node.bus || node.port || node.brtStation) continue; // a bus stop, a port (T-2194) or a BRT station (T-3378) is no track to build on (T-1464)
       if (hidden.levels && levelHidden(node.level)) continue; // T-3560
       const [lx, ly] = toLocal(node.lng, node.lat);
       const [x, y] = this.screen(lx, ly);
@@ -389,8 +438,11 @@ export class Tools {
     const offEdges = hidden.levels ? new Set(w.edges.filter((e) => levelHidden(e.levelMin) && levelHidden(e.levelMax)).map((e) => e.id)) : null;
     // each edge's nearest point within reach, px squared
     const near: { d: number; hit: Snap }[] = [];
+    const tramOnly = station && !this.autoProbe ? stationOnTram.peek() : null, tramOf = station ? this.tramEdgeSet(w) : null;
     for (const { edge, pts, ks } of nearEdges ?? [...n.edgePts].map(([edge, pts]) => ({ edge, pts, ks: null }))) {
       if (offEdges?.has(edge)) continue;
+      // T-4010: a train station goes on train track only and a tram stop on tram track only
+      if (tramOnly !== null && tramOf!.has(edge) !== tramOnly) continue;
       const er = doubleIds?.has(edge) ? laneReach : edgePx;
       let eb = er * er, eh: Snap | null = null;
       for (let j = 0, k = ks ? ks[0] : 0; ks ? j < ks.length : k + 5 < pts.length; j++, k = ks ? ks[j] : k + 3) {
@@ -510,10 +562,16 @@ export class Tools {
     return this.doubleIndex;
   }
 
+  /** T-4105: set while Auto's probe snaps, so the nearest track of either kind answers */
+  autoProbe = false;
+  autoPick(at?: { px: number; py: number; lng: number; lat: number }) {
+    autoPick(this, at);
+  }
+
   tramEdges: { edges: unknown; set: Set<number> } | null = null;
   /** the ids of the world's tram edges (T-2926), kept while its edges are the same */
   tramEdgeSet(w: NonNullable<ReturnType<typeof world.peek>>): Set<number> {
-    if (this.tramEdges?.edges !== w.edges) this.tramEdges = { edges: w.edges, set: new Set(w.edges.filter((e) => e.kind).map((e) => e.id)) };
+    if (this.tramEdges?.edges !== w.edges) this.tramEdges = { edges: w.edges, set: new Set(w.edges.filter((e) => e.kind === 2 || e.kind === 3).map((e) => e.id)) };
     return this.tramEdges.set;
   }
 
@@ -522,12 +580,12 @@ export class Tools {
     const w = world.peek();
     if (!s || !w) return false;
     if (s.kind === "free") return false;
-    return s.kind === "node" ? (w.nodes.get(s.node)?.kind ?? 0) >= 2 : this.tramEdgeSet(w).has(s.edge);
+    return s.kind === "node" ? [2, 3].includes(w.nodes.get(s.node)?.kind ?? 0) : this.tramEdgeSet(w).has(s.edge);
   }
 
   /** the platform length a new station gets at a spot: tram stops have their own (T-2926) */
-  platFor(s: Snap | null | undefined): number {
-    return this.tramSpot(s) ? buildTramPlatform.peek() : buildPlatform.peek();
+  platFor(_s?: Snap | null): number {
+    return stationOnTram.peek() ? buildTramPlatform.peek() : buildPlatform.peek();
   }
 
   /** T-1685: with Snap beside on, open ground within BESIDE_PX of track: the nearest piece, and the
@@ -637,11 +695,12 @@ export class Tools {
     if (t === "bus") return this.bus.move(e);
     if (t === "ferry") return this.ferry.move(e);
     if (t === "building") return this.building.move(e);
-    if (t === "line") (this.busStops?.active ? this.busStops : this.stops)?.hover(e.point.x, e.point.y); // T-233: the toggle markers' tag
     if (e.originalEvent) this.noSnap = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
+    if (t === "line") (this.busStops?.active ? this.busStops.hover(e.point.x, e.point.y, this.noSnap) : this.stops?.hover(e.point.x, e.point.y)); // T-233: the toggle markers' tag
     this.streetSwitch();
     this.ghostSpent = false;
     this.pointer = { px: e.point.x, py: e.point.y, lng: e.lngLat.lng, lat: e.lngLat.lat };
+    if (t === "station") this.autoPick();
     this.hover = t === "line" ? null : this.snap(e.point.x, e.point.y, e.lngLat);
     if (t === "track" && this.hover) this.hover = this.straight(this.hover);
     if (t === "track") this.streetMove(e.point.x, e.point.y);
@@ -649,20 +708,33 @@ export class Tools {
     this.hoverBeside = t === "track" && this.hover?.kind === "free" && !this.snapped && !this.straightOn() ? this.besideAt(e.point.x, e.point.y) : null;
     if (t === "track") this.real.move(e.point.x, e.point.y);
     if (t === "track" && this.held.length) this.releaseNear(e.point.x, e.point.y);
-    if (t === "track" && this.start) this.requestPreview();
+    if (t === "track" && this.clicked) this.drawOnward();
+    else if (t === "track" && this.start) {
+      this.requestPreview();
+      // T-4136: the ghost follows the pointer at once, its checked shape after
+      if (this.lastPreview && this.previewKey !== this.wantKey) this.drawGhost();
+    }
     if (t === "station") nameAhead(this, e.point.x, e.point.y);
     this.place();
   }
 
+  /** A click with a tool: carried out now, or once the map holds every edit sent before it (T-4214). */
   click(e: MapMouseEvent) {
+    if (!waitClick(this, "click", e)) this.clickNow(e);
+  }
+
+  clickNow(e: MapMouseEvent) {
     const t = tool.peek();
     if (t === "track") {
       this.noSnap = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
       this.streetSwitch();
       this.trackClick(e);
-    } else if (t === "station") void stationClick(this, e);
+    } else if (t === "station") {
+      this.autoPick({ px: e.point.x, py: e.point.y, lng: e.lngLat.lng, lat: e.lngLat.lat });
+      this.carrying(stationClick(this, e));
+    }
     else if (t === "line") this.lineClick(e);
-    else if (t === "delete") deleteClick(this, e);
+    else if (t === "delete") this.carrying(deleteClick(this, e));
     else if (t === "bus") this.bus.click(e);
     else if (t === "ferry") this.ferry.click(e);
     else if (t === "building") this.building.click(e);
@@ -674,12 +746,16 @@ export class Tools {
    * on the same spot or the bar's confirm carries out. The first point of a run of track is set at
    * once, as a click sets it; so is a tap on open ground with the station tool (it is refused). */
   tap(e: MapMouseEvent) {
+    if (!waitClick(this, "tap", e)) this.tapNow(e);
+  }
+
+  tapNow(e: MapMouseEvent) {
     const t = tool.peek();
-    if (t === "line") return this.click(e);
+    if (t === "line") return this.clickNow(e);
     if (t === "bus") return this.bus.tap(e);
     if (t === "ferry") return this.ferry.tap(e);
     if (t === "building") return this.building.tap(e);
-    if (this.touchAt && nearTouch(this, e.point.x, e.point.y)) return void touchConfirm(this);
+    if (this.touchAt && nearTouch(this, e.point.x, e.point.y)) return this.carrying(touchConfirm(this));
     const ll = { lng: e.lngLat.lng, lat: e.lngLat.lat };
     if (t === "track") {
       if (this.placing) return;
@@ -694,10 +770,11 @@ export class Tools {
       this.touchAt = ll;
       this.move(e);
     } else if (t === "station") {
-      if (this.snap(e.point.x, e.point.y, e.lngLat).kind === "free") {
+      this.autoPick({ px: e.point.x, py: e.point.y, lng: e.lngLat.lng, lat: e.lngLat.lat });
+      if (stationKind.peek() === "bus" || stationKind.peek() === "port" || freeStarted() || this.snap(e.point.x, e.point.y, e.lngLat).kind === "free") {
         this.touchAt = null;
         this.move(e);
-        void stationClick(this, e);
+        this.carrying(stationClick(this, e));
         return;
       }
       this.touchAt = ll;
@@ -708,6 +785,16 @@ export class Tools {
     }
   }
 
+  /** T-4214: a click is being carried out until `p` settles (its edit sent, or none): the clicks after it wait. */
+  carrying(p: Promise<unknown> | undefined) {
+    if (!p) return;
+    this.clicksOut++;
+    void p.finally(() => {
+      this.clicksOut--;
+      tryClicks(this);
+    });
+  }
+
   /** Keys while a tool is on; true if used. */
   key(e: KeyboardEvent): boolean {
     const t = tool.peek();
@@ -716,7 +803,12 @@ export class Tools {
     if (t === "ferry") return this.ferry.key(e);
     if (t === "building") return this.building.key(e);
     if (e.key === "Escape") {
+      dropClicks(this);
       if (t === "track" && this.start) this.reset();
+      else if (t === "station" && freeStarted()) {
+        freeCancel(this);
+        this.place();
+      }
       else this.exit();
       return true;
     }
@@ -737,8 +829,12 @@ export class Tools {
     return false;
   }
 
-  /** Leave the current tool (back to selecting). */
+  /** Leave the current tool (back to selecting), in its turn after map clicks still waiting (T-4214). */
   exit() {
+    inClickOrder(() => this.exitNow());
+  }
+
+  exitNow() {
     const d = lineDraft.peek();
     if (tool.peek() === "line" && d.line !== null) selection.value = { kind: "line", line: String(d.line) };
     this.reset();
@@ -755,6 +851,7 @@ export class Tools {
     if (this.held.length) this.client.placedNow();
     this.held = [];
     this.start = null;
+    this.clicked = null;
     this.chain = [];
     this.delHover = null;
     this.lastPreview = null;
@@ -785,7 +882,7 @@ export class Tools {
     if (this.held.length && this.nearHeld(e.point.x, e.point.y)) {
       this.held = [];
       this.client.placedNow();
-      void this.heldLanded().then(() => this.trackClick(e));
+      this.carrying(this.heldLanded().then(() => this.trackClick(e)));
       return;
     }
     let s = this.snap(e.point.x, e.point.y, e.lngLat);
@@ -805,6 +902,7 @@ export class Tools {
       const by = !ring && s.kind === "free" && !this.street.isOn ? this.besideAt(e.point.x, e.point.y) : null;
       if (by) s = { kind: "free", lx: by.lx, ly: by.ly };
       this.start = placedAt(this.endOf(s), s.lx, s.ly, ring);
+      this.run++;
       this.start.beside = by?.edge ?? null;
       if (s.kind !== "free" && s.join) this.start.join = s.join;
       this.real.begin(ring);
@@ -831,10 +929,12 @@ export class Tools {
     // T-1811: a segment that joins track (a node, or mid-piece of track or blueprint) ends the run
     // under keep placing; Shift held still carries on from the join
     const chain = e.originalEvent.shiftKey || (keepPlacing.peek() && s.kind === "free");
+    const run = this.run;
     this.placing = true;
     this.waitFrom(true);
     this.endRun = false;
-    let rc: RealClick, sc: StreetClick = null, p: PreviewAnswer | null, a: Awaited<ReturnType<typeof edit>>, by: { edge: number } | null = null;
+    let rc: RealClick, sc: StreetClick = null, p: PreviewAnswer | null, a: Awaited<ReturnType<typeof edit>>, by: { edge: number } | null = null, mark: Ahead | null = null;
+    let ow: NonNullable<Tools["clicked"]>["onward"] = null;
     // T-1001: whatever happens to this click, later clicks are not ignored
     try {
       // T-727d: near real track at both clicks, the real route (waited for if still being found)
@@ -862,32 +962,65 @@ export class Tools {
       p = this.previewKey === JSON.stringify(req) ? this.lastPreview : null;
       // T-1474: heard at the click, not at the worker's answer; not when the ghost already shows a refusal
       if (p?.ok !== false) playBuild("snap");
+      // T-4208: shown placed at the click, the ghost going on from its end; a ghost already refused stays as it is
+      // (a real or street route's ghost is its snap's own, drawn from the start it leaves until the answer)
+      if (p?.ok !== false && !rc && !sc && !this.snapped) {
+        const stamp = this.clickAhead(p, s, chain, s.kind === "free" && !by);
+        mark = stamp ? ahead({ track: [stamp] }) : null;
+        ow = this.clicked?.onward ?? null;
+      }
       // T-1407: answered before its state, so the next ghost is asked at once
-      a = await edit({ op: "route", ...req }, false, true, true);
+      const go = () => asRun(run, () => edit({ op: "route", ...req }, false, true, true));
+      a = await (mark ? mark.send(go) : go());
     } finally {
       this.placing = false;
+      this.clicked = null;
       this.place();
+      // T-4214: a click waiting for this answer goes after the rest of this one (the run's new start)
+      queueMicrotask(() => tryClicks(this));
+    }
+    // T-4208: the stand-in kept at the click goes with a refusal. T-4210: otherwise it stays until the network holding the
+    // segment is drawn (game/pending.ts takes it in that frame, never with an earlier edit's network); a click that beat
+    // its answer, with nothing laid on the page, has it swapped for the worker's own edges now (the ghost as shown was bent)
+    if (mark && !a.ok) mark.drop();
+    if (mark && a.ok && a.early && !this.stampExact && a.held?.length) {
+      mark.set({ track: a.held.map((pts) => strokesFromPreview(pts, false, undefined, true, undefined, singleTrack.peek() ? 0 : 255, highSpeed.peek(), tramTrack.peek())) });
     }
     // T-1407: until the state lands, the ghost just placed stands in for the blueprint it made
     if (a.ok && a.early) {
       // T-2404: its state held while the pointer moves, its edges stand in where no ghost of it can
-      if (p) this.overlay.renderer.keepPreviewAsPlaced();
+      // (the ghost as this very answer drew it, not bent to a pointer that moved on meanwhile)
+      if (mark) { /* the stand-in kept at the click stays (above) */ }
+      else if (p) {
+        this.overlay.renderer.setPreview(p.pts.length >= 6 ? this.ghostStrokes(p) : null);
+        this.bent = null;
+        this.overlay.renderer.keepPreviewAsPlaced();
+      }
       else for (const pts of a.held ?? []) this.overlay.renderer.addPlaced(strokesFromPreview(pts, false, undefined, true, undefined, singleTrack.peek() ? 0 : 255, highSpeed.peek(), tramTrack.peek()));
       if (a.held) this.held.push(...a.held);
       if (a.node !== undefined) this.earlyNode = a.node;
     }
-    if (!a.ok || this.start !== from) return;
+    if (!a.ok || this.start !== from) {
+      // T-4208: a refused click's run goes on from where it was
+      if (mark && this.start === from) {
+        this.requestPreview();
+        this.drawGhost();
+      }
+      return;
+    }
     say(p ? tr("tools.blueprintCost", { distance: distance(p.lengthM), cost: money(p.cost * 1e6) }) : tr("tools.blueprint"));
     if (!chain || this.endRun || a.node === undefined) {
       this.reset();
       return;
     }
     this.chain.push(from);
-    const [ex, ey] = rc && s.kind === "free" ? toLocal(...rc.route.last) : sc && s.kind === "free" ? toLocal(...sc.route.last) : [s.lx, s.ly];
+    const [ex, ey] = this.clickEnd(s, rc, sc);
     this.start = placedAt({ kind: "node", node: a.node }, ex, ey, rc ? rc.route.last : snapping.peek() ? this.real.ring(e.point.x, e.point.y) : null);
     this.start.beside = by?.edge ?? null; // a run beside track carries on beside it
-    const eh = p ? endHeading(p.verts, p.pts, p.arc, toLngLat, toLocal) : null;
-    if (eh) this.start.dir = [eh.ux, eh.uy];
+    // T-4210: the heading (and bare end) the ghost from the click took, so nothing jumps as the answer lands
+    const eh = !ow?.dir && p ? endHeading(p.verts, p.pts, p.arc, toLngLat, toLocal) : null;
+    this.start.dir = ow?.dir ?? (eh ? [eh.ux, eh.uy] : undefined);
+    this.start.tangent = ow?.tangent;
     this.real.begin(this.start.ring);
     this.street.begin([this.start.lng, this.start.lat]);
     this.lastPreview = null;
@@ -899,15 +1032,20 @@ export class Tools {
 
   /** Backspace while chaining: the last segment undone, drawing on from its start again. */
   async takeBackSegment() {
-    // a segment still being placed is not on the undo stack yet
-    if (this.placing) return;
+    // a segment still being placed is not on the undo stack yet, nor a click waiting (T-4214)
+    if (this.placing || this.waitingClicks.length) return;
     const prev = this.chain.pop();
     if (!prev) {
       this.reset();
       return;
     }
+    // (sent before `placing` is set: an undo waits while it is, game/world.ts)
+    const sent = asRun(this.run, () => edit({ op: "undo" }, true));
     this.placing = true;
-    const a = await edit({ op: "undo" }, true).finally(() => (this.placing = false));
+    const a = await sent.finally(() => {
+      this.placing = false;
+      queueMicrotask(() => tryClicks(this));
+    });
     if (!a.ok) return this.reset();
     // the undone segment's held state and early node are gone with it
     if (this.held.length) this.client.placedNow();
@@ -924,7 +1062,7 @@ export class Tools {
 
   routeReq(to: RouteEnd, by: { edge: number } | null = this.hoverBeside, at: Snap | null = this.hover) {
     const beside: { beside?: [number, number] } = by && to.kind === "free" ? { beside: [this.start!.beside ?? 0xffffffff, by.edge] } : {};
-    return { from: this.start!.end, to, pis: [], single: singleTrack.peek(), quad: quadTrack.peek(), through: true, design: designSpeed.peek(), flyover: flyoverSpeed.peek(), hsr: highSpeed.peek(), tram: tramTrack.peek(), ramp: autoRamp.peek() && !tramTrack.peek(), ...beside, ...this.joinReq(at) };
+    return { from: this.start!.end, to, pis: [], single: singleTrack.peek(), quad: quadTrack.peek(), through: true, design: designSpeed.peek(), flyover: flyoverSpeed.peek(), hsr: highSpeed.peek(), tram: tramTrack.peek(), busway: buswayTrack.peek(), ramp: autoRamp.peek() && !tramTrack.peek(), ...beside, ...this.joinReq(at) };
   }
 
   /** T-3137: a single-track route's `RouteAsk.join`, from the start's and `at`'s `Snap.join`; nothing when neither has one */
@@ -966,12 +1104,12 @@ export class Tools {
   realReq(r: RealRoute, at: Snap | null = this.hover) {
     const free = ([lng, lat]: [number, number]): RouteEnd => ({ kind: "free", ...lngLatToPack(lng, lat), level: this.freeLevel() });
     const se = this.start!.end;
-    return { from: se.kind === "free" ? free(r.first) : se, to: at && at.kind !== "free" ? this.endOf(at) : free(r.last), pis: r.pis, single: singleTrack.peek(), quad: quadTrack.peek(), through: true, design: designSpeed.peek(), flyover: flyoverSpeed.peek(), hsr: highSpeed.peek(), tram: tramTrack.peek(), ramp: autoRamp.peek() && !tramTrack.peek(), ...this.joinReq(at) };
+    return { from: se.kind === "free" ? free(r.first) : se, to: at && at.kind !== "free" ? this.endOf(at) : free(r.last), pis: r.pis, single: singleTrack.peek(), quad: quadTrack.peek(), through: true, design: designSpeed.peek(), flyover: flyoverSpeed.peek(), hsr: highSpeed.peek(), tram: tramTrack.peek(), busway: buswayTrack.peek(), ramp: autoRamp.peek() && !tramTrack.peek(), ...this.joinReq(at) };
   }
 
   /** Ask for the ghost of a segment from the start to the pointer; true if asked. */
   requestPreview(): boolean {
-    if (!this.start || this.snapped) return false;
+    if (!this.start || this.snapped || this.clicked) return false;
     const se = this.start.end;
     const nodes = world.peek()?.nodes;
     if (this.earlyNode >= 0 && nodes?.has(this.earlyNode)) this.earlyNode = -1;
@@ -994,6 +1132,8 @@ export class Tools {
     const key = JSON.stringify(req);
     if (!this.wantKey || this.wantKey === this.previewKey) this.waitFrom(false);
     this.wantKey = key;
+    const g = this.startLocal(h);
+    this.localFor = g ? { key, pts: g.a.pts } : null;
     const from = this.start;
     this.client.preview(req, (a) => {
       // T-3260: a ghost from a start on track leaves along its heading (its lead-in or tangent corner)
@@ -1001,9 +1141,142 @@ export class Tools {
         const ux = a.verts[4] - a.verts[0], uy = a.verts[5] - a.verts[1], l = Math.hypot(ux, uy);
         if (l > 1e-9) from.dir = [ux / l, uy / l];
       }
-      if (this.start && !this.snapped && this.wantKey === key) this.showPreview(a, key);
+      // T-4136: an answer for this run is newer than the one shown (one in flight, answered in order), so it is shown
+      // even when the pointer has moved on since it was asked, bent to the pointer until the newest lands (T-830's
+      // click still takes only the answer for its own spot)
+      if (this.start === from && !this.snapped && this.wantKey) this.showPreview(a, key, this.wantKey === key);
     });
+    if (!this.lastPreview) this.drawStandIn(h);
     return true;
+  }
+
+  /** T-4210: the drawing tool's settings for a ghost laid on the page; null for the track it does not lay (quad, tram,
+   * busway) */
+  tangentSpec(): TangentSpec | null {
+    if (quadTrack.peek() || tramTrack.peek() || buswayTrack.peek()) return null;
+    return { level: this.freeLevel(), design: designSpeed.peek(), hsr: highSpeed.peek(), single: singleTrack.peek() };
+  }
+  /** T-4210: the tangent segment from a run's bare end `o` (local units, its heading and level) to open ground `h`, laid
+   * on the page; null where the worker lays another route (a snap, track or a beside spot under the pointer, another
+   * build level) or the code is not loaded yet */
+  localGhost(o: { lx: number; ly: number; dir?: [number, number]; tangent?: { level: number } }, h: Snap | null) {
+    const sp = this.tangentSpec();
+    if (!sp || !o.dir || !o.tangent || o.tangent.level !== sp.level || h?.kind !== "free" || this.snapped || this.real?.active || this.street?.isOn || this.hoverBeside) return null;
+    return ghostTangent(o.lx, o.ly, o.dir, h.lx, h.ly, sp);
+  }
+  /** `localGhost` from the start to `h` (once per pointer spot), unless an answer from this start differed from it */
+  startLocal(h: Snap | null = this.hover) {
+    const st = this.start;
+    if (!st?.tangent || this.localOff === st || !h) return null;
+    const l = this.lastLocal;
+    if (l?.st === st && l.h === h) return l.g;
+    const [lx, ly] = toLocal(st.lng, st.lat);
+    const g = this.localGhost({ lx, ly, dir: st.dir, tangent: st.tangent }, h);
+    this.lastLocal = { st, h, g };
+    return g;
+  }
+  /** T-4210: answer `a`'s figures on the shape laid on the page for the pointer's spot, in place of bending `a` */
+  localAs(a: PreviewAnswer): PreviewAnswer | null {
+    const g = this.startLocal();
+    return g ? { ...g.a, ok: a.ok, cost: a.cost, mult: a.mult, issues: a.issues, ground: a.ground, noFlyover: a.noFlyover } : null;
+  }
+
+  /** T-4143: before the run's first answer there is nothing to bend, and the worker can be busy for seconds (a whole
+   * state after a pan's street speeds land, an hour's trips): the ghost is drawn from what the page has, the start, its
+   * heading if it has one and the pointer, until the checked answer replaces it. A click still waits for its own. */
+  drawStandIn(h: Snap) {
+    const g = this.startLocal(h);
+    if (g) return this.drawLaid(g.a);
+    const st = this.start!, [sx, sy] = toLocal(st.lng, st.lat);
+    this.standIn(sx, sy, h, st.dir ?? this.trackHeading(st, sx, sy, h), this.heightOf(st.end, sx, sy));
+  }
+  /** the stand-in ghost from (sx, sy), leaving along `dir` when given, at height `z` (m), to the pointer's `h` */
+  standIn(sx: number, sy: number, h: Snap, dir: [number, number] | undefined, z: number) {
+    const pts = standInPts(sx, sy, h.lx, h.ly, dir, z, this.heightOf(this.endOf(h), h.lx, h.ly));
+    this.bent = null;
+    this.overlay.renderer.setPreview(strokesFromPreview(pts, false, undefined, true, undefined, singleTrack.peek() ? 0 : 255, highSpeed.peek(), tramTrack.peek()));
+    this.overlay.invalidate();
+  }
+
+  /** T-4210: a ghost laid on the page, drawn as it is (no answer to bend yet) */
+  drawLaid(a: PreviewAnswer) {
+    this.bent = null;
+    this.overlay.renderer.setPreview(this.ghostStrokes(a));
+    this.overlay.invalidate();
+  }
+
+  /** where a click's segment ends (local units): a real or street route's last point on open ground, else the click's snap */
+  clickEnd(s: Snap, rc: RealClick, sc: StreetClick): [number, number] {
+    return rc?.kind === "route" && s.kind === "free" ? toLocal(...rc.route.last) : sc?.kind === "route" && s.kind === "free" ? toLocal(...sc.route.last) : [s.lx, s.ly];
+  }
+  /** T-4208: at a click, the segment's stand-in (T-4210: drawn ahead of the worker by the caller, game/pending.ts, until
+   * the network holding it is drawn): this request's own answer when it is in, else the segment laid on the page for
+   * the click's spot, else the ghost as shown; and the run's onward start set for the ghost until the answer */
+  clickAhead(p: PreviewAnswer | null, s: Snap, chain: boolean, bare: boolean): Strokes | null {
+    const r = this.overlay.renderer;
+    const laid = this.startLocal(s), shown = this.bent?.a ?? this.lastPreview;
+    const q = p ?? laid?.a ?? null;
+    this.stampExact = !!q;
+    const st = q ? (q.pts.length >= 6 ? this.ghostStrokes(q) : null) : r.previewSrc;
+    const stamp = st?.count ? { ...st, marks: undefined, chevrons: undefined } : null;
+    this.bent = null;
+    // the heading the next start takes (segmentClick), so the ghost keeps its shape when the answer lands: the laid
+    // segment's end (the track model's own), else the answer's or the ghost's as shown
+    const eh = laid ? { ux: laid.end[0], uy: laid.end[1] } : (q ?? shown) ? endHeading((q ?? shown)!.verts, (q ?? shown)!.pts, (q ?? shown)!.arc, toLngLat, toLocal) : null;
+    const { lx, ly } = s, [lng, lat] = toLngLat(lx, ly);
+    // the click on open ground is the new segment's bare end, so the next one from it is a tangent route too
+    const sp = bare ? this.tangentSpec() : null;
+    this.clicked = { onward: chain ? { lx, ly, lng, lat, dir: eh ? [eh.ux, eh.uy] : undefined, z: this.heightOf(this.endOf(s), lx, ly), tangent: sp ? { level: sp.level } : undefined } : null };
+    this.drawOnward();
+    this.place();
+    return stamp;
+  }
+  /** T-4208: the ghost while a click's answer is awaited, from the click's end to the pointer; none when the run ends there */
+  drawOnward() {
+    const o = this.clicked?.onward, h = this.hover;
+    if (o && h && !this.endRun && !this.tooFar(h, o)) {
+      const [ax, ay] = this.screen(o.lx, o.ly), [bx, by] = this.screen(h.lx, h.ly);
+      if (Math.hypot(ax - bx, ay - by) >= 3) {
+        const g = this.localGhost(o, h);
+        return g ? this.drawLaid(g.a) : this.standIn(o.lx, o.ly, h, o.dir, o.z);
+      }
+    }
+    this.clearPreview();
+  }
+  /** T-4143: the way track leaves a start on track before any answer says (local units, unit length): along the track
+   * there, toward the pointer; none on open ground */
+  trackHeading(st: Placed, sx: number, sy: number, h: Snap): [number, number] | undefined {
+    const n = this.overlay.renderer.net;
+    if (st.end.kind === "free" || !n) return undefined;
+    let best = 5 * kAtY(sy), dir: [number, number] | undefined;
+    for (const { pts } of edgesNear(n, sx, sy, best) ?? [])
+      for (let k = 0; k + 5 < pts.length; k += 3) {
+        const x0 = pts[k], y0 = pts[k + 1], dx = pts[k + 3] - x0, dy = pts[k + 4] - y0, l2 = dx * dx + dy * dy;
+        if (!l2) continue;
+        const t = Math.max(0, Math.min(1, ((sx - x0) * dx + (sy - y0) * dy) / l2)), d = Math.hypot(x0 + t * dx - sx, y0 + t * dy - sy);
+        if (d >= best) continue;
+        const l = Math.sqrt(l2), sg = dx * (h.lx - sx) + dy * (h.ly - sy) < 0 ? -1 : 1;
+        best = d;
+        dir = [(sg * dx) / l, (sg * dy) / l];
+      }
+    return dir;
+  }
+  /** a route end's height as the page knows it, m: a node's level, the track's height at (lx, ly), the level picked */
+  heightOf(e: RouteEnd, lx: number, ly: number): number {
+    if (e.kind === "node") return (world.peek()?.nodes.get(e.node)?.level ?? this.freeLevel()) * 8;
+    const n = this.overlay.renderer.net;
+    if (e.kind === "edge" && n) {
+      let best = Infinity, z = this.freeLevel() * 8;
+      for (const { edge, pts } of edgesNear(n, lx, ly, kAtY(ly)) ?? []) {
+        if (edge !== e.edge) continue;
+        for (let k = 0; k + 2 < pts.length; k += 3) {
+          const d = Math.hypot(pts[k] - lx, pts[k + 1] - ly);
+          if (d < best) [best, z] = [d, pts[k + 2]];
+        }
+      }
+      return z;
+    }
+    return this.freeLevel() * 8;
   }
 
   /** T-3260: Ctrl held while a segment is drawn on from track: the segment runs straight on from its start.
@@ -1057,6 +1330,15 @@ export class Tools {
     while (node >= 0 && !world.peek()?.nodes.has(node) && performance.now() < until) await new Promise((r) => setTimeout(r, 16));
   }
 
+  /** T-4208: the camera moved: a track or station ghost's end follows the still pointer to the map spot now under it */
+  cameraMoved() {
+    const p = this.pointer, t = tool.peek();
+    if (!p || touchInput.peek() || (t !== "track" && t !== "station") || (!this.hover && !this.hoverBeside)) return;
+    const q = this.map.project([p.lng, p.lat]);
+    if (Math.hypot(q.x - p.px, q.y - p.py) < 0.5) return;
+    this.move({ point: { x: p.px, y: p.py }, lngLat: this.map.unproject([p.px, p.py]) } as MapMouseEvent);
+  }
+
   /** since when the ghost has been behind the pointer, and since when a click has waited (ms) */
   askedAt = 0;
   placingAt = 0;
@@ -1070,28 +1352,80 @@ export class Tools {
   /** T-1039: a click or the ghost has waited on the worker more than WAIT_MS; the tag shows a spinner. */
   waiting(): boolean {
     const now = performance.now();
-    return (this.placing && now - this.placingAt > WAIT_MS) || (!!this.wantKey && this.wantKey !== this.previewKey && now - this.askedAt > WAIT_MS) || !!this.street?.slow || !!this.real?.slow;
+    return (this.placing && now - this.placingAt > WAIT_MS) || (!!this.wantKey && this.wantKey !== this.previewKey && now - this.askedAt > WAIT_MS) || !!this.street?.slow || !!this.real?.slow || clickWaiting(this);
   }
 
   /** Whether a free-drawn piece from the start to `s` would be longer than MAX_PIECE_KM. */
-  tooFar(s: Snap): boolean {
-    if (!this.start) return false;
+  tooFar(s: Snap, from: { lng: number; lat: number } | null = this.start): boolean {
+    if (!from) return false;
     const [lng, lat] = toLngLat(s.lx, s.ly);
-    return metresBetween(this.start.lng, this.start.lat, lng, lat) > MAX_PIECE_KM * 1000;
+    return metresBetween(from.lng, from.lat, lng, lat) > MAX_PIECE_KM * 1000;
   }
 
   clearPreview() {
+    this.bent = null;
     this.overlay.renderer.setPreview(null);
     this.overlay.invalidate();
   }
 
-  showPreview(a: PreviewAnswer, key: string) {
+  /** `newest`: the answer for the newest request (a real or street route's always is); an older one is shown too, and
+   * the wait for the newest counts again from it */
+  showPreview(a: PreviewAnswer, key: string, newest = true) {
+    // T-4210: an answer whose route is not the one laid on the page (water, a ramp, a refusal's) turns that off for the start
+    const lf = this.localFor;
+    if (lf?.key === key && this.start && a.pts.length >= 6 && !sameLine(lf.pts, a.pts, (x, y) => this.screen(x, y), LOCAL_PX)) this.localOff = this.start;
     this.lastPreview = a;
+    this.previewKey = key;
     // a real route's preview (T-727d) answers what the ghost waits for too
-    this.previewKey = this.wantKey = key;
-    this.overlay.renderer.setPreview(a.pts.length >= 6 ? this.ghostStrokes(a) : null);
-    this.overlay.invalidate();
+    if (newest) this.wantKey = key;
+    else this.waitFrom(false);
+    this.drawGhost();
     this.place();
+  }
+
+  /** T-4136: the ghost drawn: the answer held, bent to the pointer while the pointer has moved on from its spot */
+  drawGhost() {
+    const a = this.lastPreview;
+    if (!a || this.clicked) return;
+    const b = this.previewKey !== this.wantKey && !this.snapped ? this.localAs(a) ?? this.bend(a) : null;
+    this.bent = b ? { from: a, a: b } : null;
+    const g = b ?? a;
+    this.overlay.renderer.setPreview(g.pts.length >= 6 ? this.ghostStrokes(g) : null);
+    this.overlay.invalidate();
+  }
+
+  /** T-4136: answer `a` moved so its end is at the pointer's spot: everything in it turned and scaled about the
+   * start, a point by its distance from the start eased from none to all of it when the start has a heading (so the
+   * ghost still leaves along it, and the part near the start stays as checked), all of it from a free start (whose
+   * segment is straight). The figures are the answer's. Null with nothing to move or the pointer on the start. */
+  bend(a: PreviewAnswer): PreviewAnswer | null {
+    const h = this.hover, st = this.start, nv = a.verts.length;
+    if (!h || !st || nv < 8) return null;
+    const [sx, sy] = toLocal(st.lng, st.lat);
+    const qx = a.verts[nv - 4] - sx, qy = a.verts[nv - 3] - sy, q2 = qx * qx + qy * qy;
+    const [ax, ay] = this.screen(sx, sy), [bx, by] = this.screen(h.lx, h.ly);
+    if (q2 < 1e-6 || Math.hypot(ax - bx, ay - by) < 3) return null;
+    // the factor (a complex number) that takes the answer's end to the pointer about the start
+    const px = h.lx - sx, py = h.ly - sy, kr = (px * qx + py * qy) / q2, ki = (py * qx - px * qy) / q2;
+    const reach = Math.sqrt(q2), eased = !!st.dir || st.end.kind !== "free";
+    const moved = <T extends Float32Array | Float64Array>(src: T | undefined, stride: number): T | undefined => {
+      if (!src) return src;
+      const out = src.slice() as T;
+      for (let k = 0; k + 1 < out.length; k += stride) {
+        const dx = out[k] - sx, dy = out[k + 1] - sy;
+        let w = 1;
+        if (eased) {
+          const t = Math.min(1, Math.hypot(dx, dy) / reach);
+          w = t * t * (3 - 2 * t);
+        }
+        out[k] += w * (kr * dx - ki * dy - dx);
+        out[k + 1] += w * (ki * dx + kr * dy - dy);
+      }
+      return out;
+    };
+    const arc = moved(a.arc, 4);
+    if (arc) arc[2] *= Math.hypot(kr, ki);
+    return { ...a, pts: moved(a.pts, 3)!, verts: moved(a.verts, 4)!, arc, marks: moved(a.marks, 3), legs: moved(a.legs, 4), ramps: moved(a.ramps, 3) };
   }
 
   /** A route preview's ghost: single track as one track close in, double and quad as two each (T-658), as the sim
@@ -1150,7 +1484,7 @@ export class Tools {
   // ---------------------------------------------------------------- lines
 
   lineClick(e: MapMouseEvent) {
-    if (this.busStops?.active) return this.busStops.click(e.point.x, e.point.y);
+    if (this.busStops?.active) return this.busStops.click(e.point.x, e.point.y, e.originalEvent.ctrlKey || e.originalEvent.metaKey);
     const n = this.overlay.renderer.net;
     if (!n) return;
     // a toggle marker (T-233, map/stopMarkers.ts) is on top of the station
@@ -1194,7 +1528,9 @@ export class Tools {
       const on = !!line?.stops.includes(String(station));
       if (line && !line.planStops && !(oneWay && on)) guessRow(String(station), on, line.num);
     }
-    void queueStopEdit(() => this.toggle(station, id, game, tier, oneWay)).catch(() => {
+    // T-4114: a plain click goes at once (the worker reads the stops it holds then); a loop's or a shift-click waits its turn
+    const go = () => this.toggle(station, id, game, tier, oneWay);
+    void (!tier && !oneWay ? sendStopEdit(go) : queueStopEdit(go)).catch(() => {
       if (game === gameStamp.peek()) say(tr("tools.stopFailed"), true);
     }).finally(() => {
       if (tier) return;
@@ -1231,18 +1567,13 @@ export class Tools {
     } else if (oneWay) {
       // T-3711: served one way, the way that makes sense (the worker's), or both ways again
       change = { op: "oneWayStop", line: id, station, autoFast: this.autoFast(id) };
-    } else if (!before.includes(station)) {
-      // the worker fits it in among the stops it holds then (T-648), so a queued click never works
-      // from stops an earlier one changed
-      change = { op: "insertStop", line: id, station, autoFast: this.autoFast(id) };
     } else {
-      // taking a stop out, every visit of it: the route between its neighbours is the worker's, as the inspector's
-      // crosses; a loop that loses its first stop closes again on its new first stop (T-3050)
-      const stops = before.filter((s) => s !== station);
-      if (closedLoop && stops.length >= 2 && stops[0] !== stops[stops.length - 1]) stops.push(stops[0]);
-      change = { op: "setStops", line: id, stops, autoFast: this.autoFast(id) };
+      // T-4114: added where the worker fits it among the stops it holds then (T-648), or taken out, every visit of it
+      // (the route between its neighbours the worker's; a loop that loses its first stop closes again on its new
+      // first stop, T-3050): no click works from stops an earlier one changed, so none waits for the one before
+      change = { op: "toggleStop", line: id, station, autoFast: this.autoFast(id) };
     }
-    // T-2766: answered once the world holds it (the next click reads its stops), its network once the clicks stop
+    // T-2766: answered once the world holds it, its network once the clicks stop
     const a = await edit(change, false, false, "rows", game);
     if (!a.ok || game !== gameStamp.peek()) return;
     if (tool.peek() === "line" && lineDraft.peek().line === id) {
@@ -1332,7 +1663,6 @@ export class Tools {
   tangent: SVGSVGElement | null = null;
   /** Move the DOM markers to the camera (after each MapLibre frame and each change). */
   place() {
-    if (tool.peek() === "station" && this.hover && this.hover.kind !== "free") stationOnTram.value = this.tramSpot(this.stationSpot() as Spot | null);
     // on touch the pointer is a tap, a place on the map: its screen point follows the camera
     const p = this.pointer;
     if (p && touchInput.peek()) {
@@ -1342,6 +1672,7 @@ export class Tools {
       if (this.touchAt && tool.peek() === "delete") this.delAt = [s.x, s.y];
     }
     placeMarks(this);
+    waitSpin(this);
     if (this.pendingSt.length) placePending(this);
     placeTouch(this);
     drawBand(this);

@@ -1,7 +1,7 @@
 //! Lines (stops, look, cars, trains, loops) and undo.
 
 use super::*;
-use crate::track::net::Extra;
+use crate::track::net::{Extra, ALIGHT_ONLY};
 
 /// T-2987: the lowest speed limit a rail line can be given, km/h.
 const LINE_LIMIT_MIN: u32 = 40;
@@ -21,7 +21,7 @@ impl TrackApi {
         let Some((stops, path)) = edited_stops(&self.w.net, stops, false, &[]) else {
             return self.no_route(id, stops);
         };
-        let mut d = LineData { rows: 0, x: Default::default(), symbol: String::new(), trains: Some([high, medium, low]), auto: None, name, colour, tph: if stops.len() < 2 { [0.0; 3] } else { [6.0, 3.0, 1.0] }, stops, path, dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], fare_dist: false };
+        let mut d = LineData { rows: 0, x: Default::default(), symbol: String::new(), trains: Some([high, medium, low]), auto: None, name, colour, tph: if stops.len() < 2 { [0.0; 3] } else { [6.0, 3.0, 1.0] }, stops, path, dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], only: vec![], fare_dist: false };
         // T-3542: a line of four or five rows runs its high count at midday and in the afternoon too
         d.x = Extra::of_high(&d);
         self.run(Op::Line { id, data: Some(d) })
@@ -194,6 +194,8 @@ impl TrackApi {
         // a bus line's copy is a planned route, paid for on Construct (T-1464)
         if let Some(r) = d.bus.as_mut() {
             r.built = false;
+            // T-3944: a planned route's BRT is its own, paid with it
+            (r.brt, r.brt_bp) = (r.brt_any(), false);
         }
         if let Some(r) = d.ferry.as_mut() {
             r.built = false;
@@ -340,6 +342,41 @@ impl TrackApi {
     pub fn insert_stop(&self, line: u32, station: u32) -> Vec<f64> {
         best_insert(&self.w.net, line, station, &mut HopMemo::new()).map_or(vec![], |(stops, _)| stops.iter().map(|&s| s as f64).collect())
     }
+    /// T-4147: the edges (path order, one entry a path step, then the return run's, `drawn_edges`) the line's path would
+    /// take once `insert_stop`'s stops are set, read while the pointer is over the station so a click can draw them before the edit is applied.
+    /// Empty where there is nowhere to put it.
+    pub fn insert_path(&self, line: u32, station: u32) -> Vec<f64> {
+        let net = &self.w.net;
+        best_insert(net, line, station, &mut HopMemo::new()).map_or(vec![], |(stops, path)| drawn_edges(net, line, &stops, &path, net.line_ones(line)))
+    }
+    /// T-4097: the edges a plain click on `station` leaves the line's strokes drawing: `take_path` on one of its stops,
+    /// else `insert_path`, as the worker's `toggleStop` tells them apart. Read in message order, so a read asked after a
+    /// stop click is of the line that click left.
+    pub fn click_path(&self, line: u32, station: u32) -> Vec<f64> {
+        if self.w.net.line_ok(line) && self.w.net.line_stops(line).contains(&station) { self.take_path(line, station) } else { self.insert_path(line, station) }
+    }
+    /// T-4097: the line tool's plain click on a stop: every visit of `station` out (`without_stop`), the path found
+    /// again as `set_stops` finds it.
+    pub fn take_stop(&mut self, id: u32, station: u32) -> u32 {
+        let stops = self.w.net.line_data(id).map_or(vec![], |d| without_stop(&d.stops, station));
+        self.set_stops(id, &stops)
+    }
+    /// T-4097: the edges (path order) the line's path would take once `take_stop` takes `station` out, read while the
+    /// pointer is over the stop so a click can draw them before the edit is applied (`insert_path`'s twin). Empty where
+    /// it is no stop of the line or the edit would be refused.
+    pub fn take_path(&self, line: u32, station: u32) -> Vec<f64> {
+        let net = &self.w.net;
+        let Some(mut d) = net.line_data(line) else { return vec![] };
+        if d.bus.is_some() || d.ferry.is_some() || !d.stops.contains(&station) {
+            return vec![];
+        }
+        let Some((stops, path)) = edited_stops(net, &without_stop(&d.stops, station), d.hand, &d.ones) else { return vec![] };
+        (d.stops, d.path) = (stops, path);
+        if !settle_ones(net, &mut d) {
+            return vec![];
+        }
+        drawn_edges(net, line, &d.stops, &d.path, &d.ones)
+    }
     /// The line tool's click: `station` put in where `insert_stop` puts it, as `set_stops` takes those
     /// stops. A line never turns round a loop by itself; the right click does that (T-3140, `turn_end`).
     /// 2 when there is nowhere to put it.
@@ -412,6 +449,30 @@ impl TrackApi {
     /// T-3711: the stations of a line's one-way stops the player set.
     pub fn line_one_stops(&self, id: u32) -> Vec<u32> {
         self.w.net.line_ones(id).iter().map(|x| x.0).collect()
+    }
+    /// T-4013: let riders at a rail line's stop `station` only board (`kind` 1, `BOARD_ONLY`), only get
+    /// off (2, `ALIGHT_ONLY`) or both (0), one undoable edit, free; 1 when it is so already (no edit).
+    /// Refused for a bus or ferry line, a station no stop of the line, or another kind.
+    pub fn set_stop_only(&mut self, id: u32, station: u32, kind: u8) -> u32 {
+        let Some(mut d) = self.w.net.line_data(id) else { return self.refuse(Issue::NoSuchLine { line: id }) };
+        if d.bus.is_some() || d.ferry.is_some() || !d.stops.contains(&station) || kind > ALIGHT_ONLY {
+            return self.refuse(Issue::LinePath { line: id });
+        }
+        if self.w.net.stop_only(id, station) == kind {
+            self.money_short = None;
+            self.issues.clear();
+            return 1;
+        }
+        d.only.retain(|x| x.0 != station);
+        if kind != 0 {
+            d.only.push((station, kind));
+        }
+        self.run(Op::Line { id, data: Some(d) })
+    }
+    /// T-4013: a line's boarding-only and getting-off-only stops, `[station, kind]` pairs (kind
+    /// `BOARD_ONLY` 1 or `ALIGHT_ONLY` 2).
+    pub fn line_stop_only(&self, id: u32) -> Vec<u32> {
+        self.w.net.line_only(id).iter().flat_map(|&(s, k)| [s, k as u32]).collect()
     }
 
     /// The stations a line passes without stopping (T-646): `[gap, node]` pairs in path order, gap
@@ -668,8 +729,10 @@ impl TrackApi {
         if !rest.is_empty() {
             op = Op::Batch(std::iter::once(op).chain(rest).collect());
         }
-        if self.w.net.line_bus.get(id as usize).and_then(|b| b.as_ref()).is_some_and(|r| r.built) {
-            return self.run_charged(op);
+        // T-3378: free, though another BRT line's lanes counted again where they were shared can move the built value
+        if let Some(r) = self.w.net.line_bus.get(id as usize).and_then(|b| b.as_ref()) {
+            let built = r.built;
+            return self.run_free(op, built);
         }
         self.run(op)
     }
@@ -869,6 +932,14 @@ impl TrackApi {
     /// T-3542: line `id`'s trains follow a headway in seconds per row (`line_row_trains`'s order and
     /// count; 0 no service), as `set_auto_headway` does for three rows.
     pub fn set_line_row_headways(&mut self, id: u32, headways: Vec<u32>) -> u32 {
+        self.row_headways(id, headways, true)
+    }
+    /// T-4104: `set_line_row_headways` as part of the player's edit before it (a line's kind changed and its
+    /// headways follow): that edit's undo takes it back and its redo makes it again (`TrackWorld::apply_off_history`).
+    pub fn set_line_row_headways_with_edit(&mut self, id: u32, headways: Vec<u32>) -> u32 {
+        self.row_headways(id, headways, false)
+    }
+    fn row_headways(&mut self, id: u32, headways: Vec<u32>, recorded: bool) -> u32 {
         let Some(d) = self.w.net.line_data(id) else { return self.refuse(Issue::NoSuchLine { line: id }) };
         let (net, l) = (&self.w.net, id as usize);
         let rows = ROW_PLACES[net.rows(l) - ROWS_MIN];
@@ -887,7 +958,8 @@ impl TrackApi {
             }
         };
         let ((am, ax), (tm, tx)) = (unplace(a), unplace(trains));
-        self.run(Op::Batch(vec![Op::AutoTrains { id, auto: Some(am), trains: Some(tm) }, Op::Extra { id, x: Extra { auto: ax, trains: tx, ..d.x } }]))
+        let op = Op::Batch(vec![Op::AutoTrains { id, auto: Some(am), trains: Some(tm) }, Op::Extra { id, x: Extra { auto: ax, trains: tx, ..d.x } }]);
+        if recorded { self.run(op) } else { self.run_off_history(op, true) }
     }
     /// T-3542: line `id`'s settled trains an hour in each of the five periods (its slot's), on
     /// weekdays.
@@ -1219,6 +1291,23 @@ fn dropped(net: &Network, d: &LineData, lo: usize, hi: usize) -> Option<(Vec<u32
     let path = d.path[at[first]..at[last]].to_vec();
     net.match_run(&path_node_list(net, &path), &stops, &net.stop_reversals(&path), &d.ones, &path)?;
     Some((stops, path))
+}
+
+/// T-4097: the edges line `line`'s strokes would draw run over `stops` and `path`: the path's, and its return run's where
+/// that takes a way of its own (`line_back_path`); one entry a path step, as the worker's word reads them.
+fn drawn_edges(net: &Network, line: u32, stops: &[u32], path: &[u32], ones: &[(u32, u8)]) -> Vec<f64> {
+    let back = if net.line_runs_once(line) { vec![] } else { net.back_path_of(stops, path, ones).unwrap_or_default() };
+    path.iter().chain(&back).map(|&p| (p >> 1) as f64).collect()
+}
+
+/// T-4097: `stops` with every visit of `station` out; a loop that loses its first stop closes again on its new first
+/// stop (T-3050).
+fn without_stop(stops: &[u32], station: u32) -> Vec<u32> {
+    let mut out: Vec<u32> = stops.iter().copied().filter(|&s| s != station).collect();
+    if closed(stops) && out.len() >= 2 && out[0] != out[out.len() - 1] {
+        out.push(out[0]);
+    }
+    out
 }
 
 /// T-1791: a line's stops with a station its path passes put in, the path untouched. None if it is

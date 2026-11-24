@@ -106,6 +106,10 @@ pub const ACCEL_TOP: f64 = 0.3;
 pub const ACCEL_SWITCH_V: f64 = 60.0 / 3.6;
 pub const ACCEL_TOP_V: f64 = 200.0 / 3.6;
 pub const BRAKE: f64 = 0.9;
+/// T-3921 (Anita, 2026-11-21): a tram line's braking, 0.8 at first and raised to a train's 0.9 for
+/// consistency. Its own constant so it can differ again; with the dwell matched a tram stop now
+/// costs what a train's does at the same speed. Real trams brake harder in service (about 1.2-1.3 m/s²).
+pub const TRAM_BRAKE: f64 = 0.9;
 
 // ---- costs, US$M (SPEC 6.4) ----
 
@@ -126,6 +130,8 @@ pub const TRAM_ROW: u8 = 4;
 pub const STREET_TRAM_ROW: u8 = 5;
 /// T-3352: a single-track row of those kinds is the kind's row plus this
 pub const SINGLE_ROW_OFFSET: u8 = 3;
+/// T-3378: and for a busway, always double (past the single rows of the three above)
+pub const BUSWAY_ROW: u8 = 9;
 pub const WATER_COST: f64 = 2.0;
 /// 200 m station with two platform tracks: the part every station has wherever it is (platforms,
 /// halls, systems), plus its structure's part by level, index `level + 3`: 50 + 25 a level down,
@@ -226,6 +232,14 @@ pub const BRT_COST_PER_KM: f64 = 5.0;
 /// T-3907: a BRT route's upkeep a day per road-km in place of `UPKEEP_BUS_KM`, real US$: street tram track's at
 /// ground (US$21k a game day at `ECONOMY`), as Anita asked, since bus lanes wear the road faster than rails wear.
 pub const UPKEEP_BRT_KM: f64 = UPKEEP_GROUND_KM * STREET_TRAM_UPKEEP;
+/// T-3378: a BRT station's price, US$M, and upkeep a day, real US$ (US$5k a game day): a tram stop's (Anita 11-21).
+pub const BRT_STATION_COST: f64 = 2.0;
+pub const UPKEEP_BRT_STATION: f64 = 50.0;
+/// T-3378: a BRT station's platform, m: room for three buses, a two-section tram stop's.
+pub const BRT_STATION_PLATFORM: u16 = 40;
+/// T-3378: what a BRT line's stop at a BRT station costs, s, in place of `streets::BUS_STOP_S` (level boarding,
+/// fares paid on the platform); it stands no dwell of its own there (Anita 11-21).
+pub const BRT_STATION_STOP_S: f64 = 18.0;
 /// Street tram track's upkeep over double track's (its `TrackSpec::upkeep`).
 pub const STREET_TRAM_UPKEEP: f64 = 0.6;
 /// A bus's riders at crush: a third of a train car (T-2919; demand's `BUS_CARS`), 53 at the rated load.
@@ -266,9 +280,26 @@ pub enum TrackKind {
     HighSpeed = 1,
     StreetTram = 2,
     Tram = 3,
+    /// T-3378 stage 4: an off-road busway, for buses only (family 2: it joins no other kind of track).
+    Busway = 4,
 }
 
-pub const TRACK_KINDS: usize = 4;
+pub const TRACK_KINDS: usize = 5;
+
+/// T-3378: what a busway's price per level is over off-road tram track's (Anita 11-21: US$25M a km at ground, as
+/// BRT lanes in town are two thirds of street tram track's).
+pub const BUSWAY_COST: f64 = 2.0 / 3.0;
+/// T-3378: a busway's smallest curve, m (a bus turns tighter than a tram).
+pub const BUSWAY_MIN_RADIUS: f64 = 12.0;
+/// T-3378: any bus on a constructed busway runs this, km/h (Anita 11-21).
+pub const BUSWAY_KMH: f64 = 60.0;
+/// T-3378: a stop on a busway costs this much more than `streets::BUS_STOP_S`, s: the run has no acceleration, and
+/// a bus takes about 15 s to reach 60 against 8 s for 35.
+pub const BUSWAY_STOP_EXTRA_S: f64 = 7.0;
+/// T-3378: a route's pace step lies on a busway when its middle is this near a constructed busway (ground m) and
+/// runs within `BUSWAY_MATCH_DEG` of it, either way.
+pub const BUSWAY_MATCH_M: f64 = 8.0;
+pub const BUSWAY_MATCH_DEG: f64 = 30.0;
 
 /// T-2997: tram track's smallest curve, centre line, m: one every common modern low-floor tram takes
 /// (Citadis and Skoda 18, Combino 15); old street networks go down to 11-13 (notes/T-2921.md).
@@ -387,7 +418,8 @@ pub static TRACK_SPECS: [TrackSpec; TRACK_KINDS] = [
         platform: (20, 80),
         station_flat: Some(2.0),
         station_upkeep: Some(50.0),
-        dwell_s: 15.0,
+        // T-3921: a train's dwell
+        dwell_s: DEFAULT_DWELL_S,
         turnaround_s: 120.0,
         car: CarSpec { price: TRAM_CAR_PRICE, run_train_km: RUN_COST_TRAIN_KM, run_car_km: RUN_COST_CAR_KM, riders_scale: 0.75, fleet: 4 },
     },
@@ -408,14 +440,37 @@ pub static TRACK_SPECS: [TrackSpec; TRACK_KINDS] = [
         platform: (20, 80),
         station_flat: Some(2.0),
         station_upkeep: Some(50.0),
-        dwell_s: 15.0,
+        dwell_s: DEFAULT_DWELL_S,
+        turnaround_s: 120.0,
+        car: CarSpec { price: TRAM_CAR_PRICE, run_train_km: RUN_COST_TRAIN_KM, run_car_km: RUN_COST_CAR_KM, riders_scale: 0.75, fleet: 4 },
+    },
+    // T-3378 stage 4: off-road tram track's prices times `BUSWAY_COST`, its terrain and water, its upkeep; no train
+    // or tram runs on it and no station stands on it, so the rest is tram's and never read
+    TrackSpec {
+        family: 2,
+        v_cap_kmh: BUSWAY_KMH,
+        min_radius: BUSWAY_MIN_RADIUS,
+        level_mult: scaled([1.6, 1.2, 0.6, 0.5, 0.6, 1.1, 1.6], BUSWAY_COST),
+        terrain_mult: TRAM_TERRAIN,
+        water_mult: 1.0,
+        price_scale: 1.0,
+        upkeep: 1.0,
+        road_crossings: false,
+        ramps_over: false,
+        section_s: 60.0,
+        conflict_s: 45.0,
+        platform_margin_s: 60.0,
+        platform: (20, 80),
+        station_flat: Some(2.0),
+        station_upkeep: Some(50.0),
+        dwell_s: DEFAULT_DWELL_S,
         turnaround_s: 120.0,
         car: CarSpec { price: TRAM_CAR_PRICE, run_train_km: RUN_COST_TRAIN_KM, run_car_km: RUN_COST_CAR_KM, riders_scale: 0.75, fleet: 4 },
     },
 ];
 
 impl TrackKind {
-    pub const ALL: [TrackKind; TRACK_KINDS] = [TrackKind::Regular, TrackKind::HighSpeed, TrackKind::StreetTram, TrackKind::Tram];
+    pub const ALL: [TrackKind; TRACK_KINDS] = [TrackKind::Regular, TrackKind::HighSpeed, TrackKind::StreetTram, TrackKind::Tram, TrackKind::Busway];
 
     pub fn spec(self) -> &'static TrackSpec {
         &TRACK_SPECS[self as usize]
@@ -434,9 +489,19 @@ impl TrackKind {
         self == TrackKind::HighSpeed
     }
 
+    /// T-3378: a busway (family 2), for buses only.
+    pub fn is_busway(self) -> bool {
+        self.spec().family == 2
+    }
+
+    /// Tram track, street or off-street (family 1).
+    pub fn is_tram(self) -> bool {
+        self.spec().family == 1
+    }
+
     /// T-3027: the shortest ramp per level this kind takes where room is short, m.
     pub fn ramp_floor(self) -> f64 {
-        if self.spec().family == 1 { TRAM_RAMP_FLOOR } else { RAMP_FLOOR }
+        if self.spec().family != 0 { TRAM_RAMP_FLOOR } else { RAMP_FLOOR }
     }
 
     /// The kind a high-speed flag stands for.
@@ -474,6 +539,10 @@ pub const RHO_KNEE: f64 = 0.9;
 pub const OVERLOAD_WINDOW_S: f64 = 3600.0;
 /// A resource at this utilisation counts as full: count schedules are cut to fit (T-517).
 pub const FULL_RHO: f64 = 0.9999;
+/// T-4178: a turn partway this full, the map's "near full" orange, limits its line when it is the line's
+/// tightest spot by `TURN_LIMIT_MARGIN_TPH` trains an hour (`Capacity::turn_limits`).
+pub const TURN_LIMIT_RHO: f64 = 0.9;
+pub const TURN_LIMIT_MARGIN_TPH: f64 = 0.1;
 /// Delays are rounded to whole seconds; under this they are dropped.
 pub const HOLD_MIN_S: f64 = 2.0;
 /// A hold point closer than this to the previous stop becomes extra dwell there.
@@ -729,6 +798,10 @@ mod kind_tests {
         assert!((track_cost(1000.0, &flat, &[], 2, TrackKind::StreetTram) - 7.5).abs() < 1e-9);
         assert!((track_cost(1000.0, &flat, &[], 2, TrackKind::Tram) - 37.5).abs() < 1e-9);
         assert!((track_cost(1000.0, &flat, &[], 2, TrackKind::Regular) - 37.5).abs() < 1e-9);
+        // T-3378: a busway, two thirds of off-road tram track: US$25M a km at ground, 30 a level up
+        assert!((track_cost(1000.0, &flat, &[], 2, TrackKind::Busway) - 25.0).abs() < 1e-9);
+        assert!((TrackKind::Busway.spec().level_mult[4] * BASE_COST_PER_KM - 30.0).abs() < 1e-9);
+        assert!(TrackKind::Busway.is_busway() && TrackKind::Busway.spec().upkeep == TrackKind::Tram.spec().upkeep);
         // T-2928: over water street tram track pays half water's 2.5, off-street tram track all of it
         let wet = [[0.0, 1000.0]];
         assert!((track_cost(1000.0, &flat, &wet, 2, TrackKind::StreetTram) - 75.0 * (0.1 + 1.25)).abs() < 1e-9);

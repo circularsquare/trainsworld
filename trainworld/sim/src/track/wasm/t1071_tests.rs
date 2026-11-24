@@ -14,7 +14,7 @@ fn line_api() -> (TrackApi, u32) {
     let edges: Vec<u32> = (0..a.w.net.edge_count() as u32).filter(|&k| a.w.net.edge_ok(k)).collect();
     assert_eq!(a.construct(&edges, &[w, e]), 0, "{}", a.issues());
     let id = a.new_line_id();
-    assert_eq!(a.set_line(id, &[w, e], 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(id, &[w, e], 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     assert_eq!(a.set_train_counts(id, 2, 2, 2), 0, "{}", a.issues());
     (a, id)
 }
@@ -71,6 +71,28 @@ fn undo_and_redo_of_a_count_change_are_service_edits() {
     assert!(a.step_is_service(false));
 }
 
+/// T-4185: edits made while `join_edit` is on are one undo with the edit before them, and one redo.
+#[test]
+fn joined_edits_undo_and_redo_with_the_first() {
+    let (mut a, id) = line_api();
+    let first = a.new_line_id();
+    let stops = a.line_stops(id);
+    assert_eq!(a.set_line_with_trains(first, &stops, 6, 4, 2, 30.0, 180.0, 0, 0, "N".into()), 0, "{}", a.issues());
+    a.join_edit(true);
+    assert_eq!(a.set_line_badge(first, "N2".into(), 5, "Z".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_train_counts(first, 3, 3, 3), 0, "{}", a.issues());
+    a.join_edit(false);
+    assert!(a.w.net.line_ok(first));
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(first), "one undo takes back the line and its later edits");
+    assert!(a.w.net.line_ok(id));
+    assert_eq!(a.redo(), 0, "{}", a.issues());
+    assert!(a.w.net.line_ok(first));
+    assert_eq!(a.line_name(first), "N2");
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(!a.w.net.line_ok(first));
+}
+
 /// T-1072: a stop added past one end moves no train on the ground, the other direction's included.
 #[test]
 fn a_stop_added_at_an_end_moves_no_train() {
@@ -88,7 +110,7 @@ fn a_stop_added_at_an_end_moves_no_train() {
     let edges: Vec<u32> = (0..a.w.net.edge_count() as u32).filter(|&k| a.w.net.edge_ok(k)).collect();
     assert_eq!(a.construct(&edges, &ns), 0, "{}", a.issues());
     let id = a.new_line_id();
-    assert_eq!(a.set_line(id, &ns[..2], 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(id, &ns[..2], 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     assert_eq!(a.set_train_counts(id, 4, 4, 4), 0, "{}", a.issues());
     let now = 2.0 * 86400.0 + 11.0 * 3600.0 + 417.0;
     a.set_now(now);
@@ -107,7 +129,7 @@ fn a_stop_added_at_an_end_moves_no_train() {
     };
     let before = at_now(&a);
     assert!(before.iter().any(|t| t.0 == 1), "a train on the way back: {before:?}");
-    assert_eq!(a.set_line(id, &ns, 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(id, &ns, 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     let after = at_now(&a);
     assert_eq!(before.len(), after.len(), "{before:?} {after:?}");
     for (p, q) in before.iter().zip(&after) {
@@ -464,4 +486,18 @@ fn an_unrecorded_count_change_stays_off_the_undo_history() {
     assert_eq!(c.undo(), 0, "{}", c.issues());
     assert_eq!(c.set_train_counts_unrecorded(idc, 4, 4, 4), 0, "{}", c.issues());
     assert!(c.can_redo(), "the lowering must not clear the redo history");
+}
+
+/// T-3655: a game running more trains than its fleet (a save made so) has the load's cap lowering go
+/// through at no cost, with little cash: before, it was refused for the whole shortfall's price.
+#[test]
+fn an_unrecorded_lowering_is_free_where_the_fleet_is_short() {
+    let (mut a, id) = line_api();
+    assert_eq!(a.set_train_counts(id, 6, 6, 6), 0, "{}", a.issues());
+    a.set_fleet(0);
+    a.set_cash(1.0);
+    assert_eq!(a.set_train_counts_unrecorded(id, 4, 4, 4), 0, "{}", a.issues());
+    assert_eq!(a.cash(), 1.0, "the lowering costs nothing");
+    assert_eq!(a.fleet(), 0, "and gives no cars");
+    assert_eq!(a.set_train_counts_unrecorded(id, 5, 5, 5), 1, "a rise still pays for its trains");
 }

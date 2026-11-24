@@ -29,6 +29,11 @@ impl TrackApi {
             if on && d.berth.is_some() && bit != upgrades::WAITING_ROOM {
                 return self.refuse(Issue::NotAtPort { node });
             }
+            // T-3378, T-4012: a BRT station has its waiting room built in and sells no upgrade (the passage is another
+            // edit); a park and ride from an older save can still be removed
+            if d.road.is_some() && (on || bit == upgrades::WAITING_ROOM) {
+                return self.refuse(Issue::NotAtBrtStation { node });
+            }
             let ups = if on { d.upgrades | bit } else { d.upgrades & !bit };
             if ups != d.upgrades {
                 built |= d.built;
@@ -91,6 +96,13 @@ impl TrackApi {
             .filter(|&n| net.is_station(n) && net.node_upgrades[n as usize] != 0)
             .flat_map(|n| [n, net.node_upgrades[n as usize] as u32])
             .collect()
+    }
+
+    /// T-3922: stations whose upgrades pay upkeep (`Network::upgrade_upkeep_by_node`): node, upkeep a game day
+    /// US$M, flat.
+    pub fn station_upgrade_upkeep(&self) -> Vec<f64> {
+        let (v, _) = self.w.net.upgrade_upkeep_by_node();
+        v.iter().enumerate().filter(|(_, &u)| u > 0.0).flat_map(|(n, &u)| [n as f64, u]).collect()
     }
 
     /// T-3740: stations with a fare zone: node, code (`StationData::fare`), flat.

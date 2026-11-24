@@ -15,6 +15,8 @@ import { SkyBanner } from "./SkyBanner";
 import { StatusTag } from "./StatusTag";
 import { BusyTag } from "./BusyTag";
 import { ViewedLike } from "./Community";
+import { calculateViewTrips } from "../game/community";
+import { tripsOff } from "../game/loading";
 import { countryName, groupHolidays, holidaysNear, loadHolidays, rushNear, runToday, superDays, supersNear, type HolidaySpan, type RushSpan } from "../game/holidays";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { display, setDisplay, shownDay, shownDayOn } from "../game/ui";
@@ -22,8 +24,9 @@ import { splitTable, splitTip } from "../game/splitTip";
 import { lengthsOf, wantLengths } from "../game/zoneLengths";
 import { t, tList, tNumber, tSpaced } from "../i18n";
 import { tPlace } from "../i18n/places";
-import { world } from "../game/world";
+import { say, world } from "../game/world";
 import { liveMoney, moneyState } from "../game/money";
+import { cashShown } from "../game/pending";
 import { pointsShort, pointsShown } from "../game/points";
 import { Icon, TransitSegs } from "./widgets";
 import { perfOff } from "../perfFlags";
@@ -208,7 +211,8 @@ function Cash() {
   // T-728: a sandbox shows no cash; the hover has the money since the start
   if (m?.mode === "sandbox") return <div class="cash sandbox" data-tip={[t("topBar.infiniteMoney"), t("topBar.sinceDay1", { amount: money((live.cash - START_CASH) * 1e6) }), ...(tip ? [tip] : []), t("moneyTab.scaleTip")].join("\n")}>{t("topBar.sandbox")}</div>;
   // T-1865: after the split, in a box of fixed width (style.css .cash), so nothing beside it moves
-  const shown = m ? moneyCash(live.cash * 1e6) : "";
+  // T-4145: less what edits not yet in the money cost
+  const shown = m ? moneyCash(cashShown(live.cash) * 1e6) : "";
   return <div class={"cash num" + (usingUsd() ? "" : " cash-wide") + (shown.startsWith("−") ? " money-neg" : "")} data-tip={m ? [...(tip ? [tip] : []), t("moneyTab.scaleTip")].join("\n") : undefined}>{shown}</div>;
 }
 
@@ -311,13 +315,24 @@ function worldShareTip(tot: ReturnType<typeof worldTotals>, day: string, note: s
 const joinWhere = (place: string, day: string) => tSpaced(place && day ? t("topBar.placeDay", { place, day }) : place || day);
 
 function SaveNotice() {
-  const state = saveSlotsState.value;
-  if (state.writable) return null;
+  const state = saveSlotsState.value, light = tripsOff.value;
+  const [going, setGoing] = useState(false);
+  // T-3851: a game opened without its trips; the button opens it again with them
+  const calc = light && <button class="btn save-notice-trips" disabled={going} onClick={() => {
+    setGoing(true);
+    void calculateViewTrips().then((why) => { if (why) { say(why, true); setGoing(false); } });
+  }}>{t("topBar.calculateTrips")}</button>;
   // T-3257: a network viewed from Community is kept nowhere until saved
   if (state.viewing) return <div class="save-notice" role="status">
-    <span>{t("topBar.viewing", { name: state.viewing.name })}</span>
+    <span>{t(light ? "topBar.viewingNoTrips" : "topBar.viewing", { name: state.viewing.name })}</span>
+    {calc}
     <button class="btn" onClick={() => manageSaveSlot("save")}>{t("topBar.viewSave")}</button>
   </div>;
+  if (light && state.writable) return <div class="save-notice" role="status">
+    <span>{t("topBar.noTrips")}</span>
+    {calc}
+  </div>;
+  if (state.writable) return null;
   return <div class="save-notice" role="status">
     <span>{state.reason ?? t("topBar.autosaveOff")}</span>
     <button class="btn" onClick={() => { savesOpen.value = true; }}>{t("topBar.saves")}</button>

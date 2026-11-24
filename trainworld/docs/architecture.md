@@ -94,7 +94,12 @@ Web first, so it can be shared as a link.
   profiles; a state built at another draw anchor, or one with no trips to wait for (`noTrips`), is
   taken at once. **Previews go before an edit's follow-up** [T-1407]: after applying an edit the
   worker answers the track previews and station checks asked meanwhile, then builds and posts its
-  state, trips and boarding hour and answers it (`later` in the clock worker). A full state is built
+  state, trips and boarding hour and answers it (`later` in the clock worker). **A service edit's loads
+  can follow** [T-3655]: a count or headway edit takes one step of the boarding account (3 lines)
+  first; with lines still to redo, its state, its trips without loads and its answer go, the steps go
+  on (8 ms of them a task), and the last sends the hour's trips with loads, which the page waits for
+  before drawing the staged state (`loadsFollow`; a state a newer one replaced goes in with that one;
+  past 2 s it is drawn without loads until they come). A full state is built
   a piece a task outside the message queue, about 0.1 s each on the biggest saves (`stateSteps`,
   `networkSteps`: the rows, the network in a few pieces, then its post with the trips, never split),
   previews answered between them; any other message, trips sent from a timer, or a full state sent
@@ -124,8 +129,52 @@ Web first, so it can be shared as a link.
   snaps. The client takes the state after the next paint (`ghostFirst`). **A stop click's rows go
   first** [T-2766]: the line tool's stop clicks ask `rows`; the worker applies the edit, posts a state
   of the rows alone (`rows`: world and money, no network, no trips; the renderer keeps its network)
-  and then answers, so the next click reads the stops this one left and a refusal for money comes at
-  its click. The network, trips, boarding hour and demand's snapshot follow once no stop click has
+  and then answers, so a refusal for money comes at its click. The rows go a task after the edit through the message
+  queue, so clicks already queued are applied first and share one rows state, their answers after it [T-4114].
+  **Every edit's word goes first of all** [T-4145, T-4114]: right after an edit is applied, before anything else it
+  sends, the worker posts `applied` (workers/clockWord.ts, one file per kind of edit: a line's new edges, edges and
+  stations hidden or with a new look, station boxes, colours, the charge). The page shows edits ahead of the network
+  from one list (game/pending.ts). **One path** [T-4170]: an edit's entry is made in one place, as it is sent
+  (`pendingSent`, which every edit passes once), so no edit has two. Its guess is read from the op there
+  (game/editGuess.ts, one part per kind of edit as the word has; an undo's from the network before the edit it takes
+  back), joined with what the caller drew at the click with `ahead()` (only what the op cannot say: the station tool's
+  ghost, a drag's preview, a price the panel quoted). The entry is armed by its word (whose parts replace the guess's;
+  a part it has nothing for is done at once, so a panel edit never waits for a network; the word says when no network
+  follows, a service edit's or a rename's, and its map part is done then) and dropped in the frame a refusal lands. An
+  armed entry no state clears goes after 30 s, with a warning (a backstop). An undo is not drawn ahead across a move of
+  the draw anchor, nor after an edit an undo would not take back whole (a construct, a new line or copy: the word says
+  `noUndo`). **Money at the click** [T-4181]: a price is shown only when it is the charge exactly (a worker quote for
+  the world drawn, with no other edit out: Construct all and Construct line from their quotes, Rebuild, upgrades and
+  passages from the panel's), else the cash moves with the word's charge (0 for a free edit); an edit the cash cannot
+  pay, by its price or the least it costs, shows nothing, since the worker refuses it. **Message order says what a state holds**: every state
+  posted after a word was built after that edit (`later` starts again behind an edit; a stop click's rows go before the
+  next apply), so an entry's map part goes with the first network taken that *arrived* after its word, its panel part
+  with the first rows or state, its cost with the first money, cash or state (a state held for its trips keeps its
+  arrival place). **Clicks wait for the map** [T-4214]: a click on the map with a tool (a tap, the touch bar's confirm)
+  made while an edit sent before it is not yet in the network the tools pick on waits, the tool's tag showing the
+  spinner after 0.3 s, and is carried out at the same map spot once every such edit's network is set (the same message
+  order; game/pending.ts `editsOut`, map/toolWait.ts); waiting clicks go in order, each after the edits the one before
+  sent. Every edit sent arms it (panels, drags and keys too, which never wait themselves); a click counts from the moment
+  it is made until its tool has sent (a station's name, a delete's question); a refusal ends the wait, and so does a
+  word saying no network follows (a service edit, a rename, a fare or loan edit). A waiting click asks the worker for a
+  network held for the pointer's rest. A track run's next segment waits only for the answer to the one before (it starts
+  from the node the worker answered), and stop clicks never count. A tool switch the player makes meanwhile (the
+  toolbar, its keys, a panel's tool button, leaving a tool) waits its turn behind the waiting clicks, so each click goes
+  with the tool it was made with (game/ui.ts `inClickOrder`). A waiting click is dropped when its spot has left the
+  screen, on Escape or a load, and carried out on the map as it is after 5 s. Undo and redo wait for it as
+  for stop clicks. Every edit carries the game stamp, so one made before a load or a restart is refused. The renderer draws the list (map/lineAhead.ts): a line drawn ahead on its own segments it keeps and
+  the track's in its colour on the edges it gained, its network strokes off by a per-line texture; edges off by a
+  per-edge texture, or redrawn with their new look; station boxes by a second draw of the station shader; a deleted
+  line's colour transparent (a new line's colour drawn opaque past the network's ones). **Pieces** [T-4148]: a track type
+  change or a rebuild gives an edge the new type's flags (`kind`); one way gives it a way (`oneWay`) and the one-way
+  chevrons are drawn again without those on the edges it names, with the new ones laid on the strokes of those it sets; a
+  switched off station is drawn from its flags changed; Double up's new pair comes with the word (`pieces`: the model's
+  own points, drawn as blueprint). A guess sent waits for its
+  answer however long its ground takes (a 120 s backstop); one never sent goes after 15 s. The line tool draws a stop click's path at the click from
+  a read of it taken while the pointer was over that station (`clickPath`: the path once taken out or added, the return
+  run's too), valid while no edit has been sent since it was asked, and asked again behind each click, since the worker
+  answers in message order [T-4147, T-4097]; failing that, a first or last stop taken out from the network's stretches
+  when that network shows the world's stops. The line panel's Delete line hides the line at the click. The network, trips, boarding hour and demand's snapshot follow once no stop click has
   come for 500 ms (5 s at most); a stop click before then joins them (one full state for the run),
   and the line tool's reads of the lines (`stopTiers` and the like), demand's money results and the
   clock pass it, anything else runs it first. Meanwhile the client holds every other read until no
@@ -135,7 +184,9 @@ Web first, so it can be shared as a link.
   complex or line renamed, a station bound): rows, then the answer, then a state at once, unheld, with no trips and
   the renderer's network left as it is (a train count's kind, the schematic's graph sent again for its names), since
   the network drawn has no names and no train's run changed [T-3793, T-3803]. The clicks wait in the page in order (`queueStopEdit` in
-  game/world.ts), each holding its line and game stamp from the click: stop editing ending sends them all (the busy
+  game/world.ts), each holding its line and game stamp from the click; a plain click goes at once by station
+  (`toggleStop`, `sendStopEdit`: the worker takes the station out when it is a stop, else puts it in as
+  `insertStop`), still counted with the queue so what waits for clicks waits for it [T-4114]: stop editing ending sends them all (the busy
   tag says "Saving stops" meanwhile) and only a game loaded since drops one, on the page or, for one sent before the
   page heard of the load, in the worker (T-3734); an undo or redo, a save, leaving the game
   and a reload wait for them (closing the tab does not: Anita, 2026-11-18) [T-3731]. The line panel's own
@@ -151,7 +202,13 @@ Web first, so it can be shared as a link.
   tries changed (`map/facilityPlace.ts` `FacilityCache`, in the network cache) [T-3803].
   The worker itself reads from the track model only the rows an edit changed: it keeps the last
   rows, the track model lists the lines whose service or net was touched and the stations whose name
-  was set since the last read, and a station's name is kept by node (`stateRows.ts`, T-1382). The
+  was set since the last read, and a station's name is kept by node (`stateRows.ts`, T-1382). Edges and
+  nodes are looked at only where an edit touched them (`take_touched`), at the ends of track whose lines
+  moved, and in the regions those lie in: the world split into regions of at most 64 stations
+  (`workers/regions.ts`, a quadtree that is a function of the station set). A rows state with many regions
+  dirty does those of the edit and the view first and leaves the rest for the next read. A noted line
+  whose stamp (everything the worker reads of it) is unchanged is left off the list (T-4113). A repricing
+  for water or terrain still looks at every record. The
   run profiles' phase tables are kept per line the same way and laid end to end only when a line's
   differ; what the track model prices (the cost sums, the construct-all quote) asks the water mask
   once for a node while the node and the mask stay as they are (T-1540). The construct-all quote and
@@ -196,16 +253,17 @@ Web first, so it can be shared as a link.
   it, drawn only on MapLibre's frames and after their data changes, never by the clock; bubbles and
   a selection's far end are summed in their own worker (`workers/commuters.worker.ts`).
 - **The stroke cache** [T-1638; `map/strokeCache.ts`, notes/T-1618.md]: everything the renderer
-  draws before the stations (car parks, bus lines, the track and line strokes, highlight, ghost and
+  draws before the stations (car parks, bus lines, the track and line strokes, highlight and
   crossing marks) is drawn into an offscreen target with the canvas's own MSAA and stencil, resolved
   into a texture, and copied onto the canvas each frame with the strokes' premultiplied blend; the
-  stations, crowds, bubbles and trains draw over it every frame as before. The track through the
+  stations, crowds, bubbles and trains draw over it every frame as before, and so do the track tool's ghost, its marks and
+  a placed segment's stand-in (T-4136: a ghost that follows the pointer never redraws the network). The track through the
   station boxes is a second texture, copied through the stencil where it was drawn. Both are drawn
   again only when the key changes: the camera (matrices, zoom, pixel ratio, canvas size), the
   selected line and edge, the hovered line and edge, the colour view (height, speed), line width,
   dimming, crossing marks, the shade, the bus lines, and any GL upload or deletion made outside the
-  per-frame passes (counted on the context: a network, preview, highlight, demand view or traffic
-  view change). The complex map's snapshot has a cache of its own. `?perfOff=strokeCache` (or
+  per-frame passes (counted on the context: a network, highlight, demand view or traffic view change;
+  not the ghost's). The complex map's snapshot has a cache of its own. `?perfOff=strokeCache` (or
   `renderer.strokeCache = false`) draws the strokes every frame.
 - **Fewer stroke instances** [T-1639; `map/strokeLod.ts`, notes/T-1618.md]: below zoom 15 (plus log2
   of the pixel ratio) the network's track and line strokes are drawn from a simplified copy per
@@ -283,7 +341,7 @@ Web first, so it can be shared as a link.
   less than the phone, an iPhone's killed near 2 GB), and unreported memory (desktop Firefox, Safari)
   at most 2; a big game may then drop some by memory [T-1205, below]. Such a small device runs no
   focus pool ([demand-runtime.md](demand-runtime.md) "The focus pool"). The Settings "Use more cores" restores half the threads less one, 1 to 5
-  (one per period), at the next load; `?demandWorkers=N` overrides both. A 32-bit browser gets 1 whatever the setting, and no focus pool (`addressLimited`, T-2867: a resizable ArrayBuffer's 4 GB maximum refused; its user agent cannot tell). A worker that cannot get memory halves the solving workers, `memoryShort`, and the rest solve again; with one left it is replaced as after a panic, and the failure offers "Play without intercity trips" (`dropMarket`, which unticks that setting, game/ui.ts; T-3630; notes/T-2867.md). Plus one auxiliary worker with no periods
+  (one per period), at the next load; `?demandWorkers=N` overrides both. A 32-bit browser gets 1 whatever the setting, and no focus pool (`addressLimited`, T-2867: a resizable ArrayBuffer's 4 GB maximum refused; its user agent cannot tell). A worker that cannot get memory halves the solving workers, `memoryShort`, and the rest solve again; with one left it is replaced as after a panic (a load that ran more than one first opens again in a fresh page with half, T-3933, ui-panels.md "Loading"), and the failure offers "Play without intercity trips" (`dropMarket`, which unticks that setting, game/ui.ts; T-3630; notes/T-2867.md). Plus one auxiliary worker with no periods
   that answers at once what needs no period's result (a city's cells, each bubble's commuters by
   mode). Worker i owns periods i, i + n, .... Every worker opens only the packs the game needs, each
   its own copy: the viewed zone first (only above zoom 7.5, docs/zones.md, T-871), and every zone with a built station inside its footprint or
@@ -292,7 +350,9 @@ Web first, so it can be shared as a link.
   auxiliary worker alone [T-325, [demand-runtime.md](demand-runtime.md) "Bare zones"], the viewed zone of a new game from the start [T-351]. Solving
   workers also open the regional market once a market zone is viewed or reached or a station lies
   within its reach [T-396]. A solve waits until every pack it needs is open in
-  every worker, so a published result never leaves out a constructed city. Each worker solves the
+  every worker, so a published result never leaves out a constructed city; a pack that starts opening
+  while a solve runs (a zone reached, a market, a zone at another level) leaves that solve's figures
+  shown but its network waiting, and the next solve's final is the final [T-4055]. Each worker solves the
   network's clusters (populations and the lines they reach, sharing no rider) apart, and after an
   edit only those it touched [T-326, [demand-runtime.md](demand-runtime.md) "Clusters"]; within a
   cluster each city's layers solve on the stations within its reach, the market on the whole
@@ -396,7 +456,7 @@ Web first, so it can be shared as a link.
   panic is never taken for a broken pack. The page terminates it, starts a new worker in its place,
   downloads again (all replacements together keep 6 downloads going) and reopens everything it held, then sends the newest network again under a new
   version (`freshParts`: every worker composes its market afresh from the packs open, as the
-  replacement did, so all hold the same corridor book, T-1354); the shown figures stay until that final. A second panic before the replacement has seen
+  replacement did); the shown figures stay until that final. A second panic before the replacement has seen
   a solve through, or a fifth replacement in the page, stops the pool as before. `?debug=1` on the
   dev server has `twDemand.client.debugPanic(worker, "now" | "solve")`; check `t1174-panic-recover.mjs`.
   A demand worker whose code did not download (an error with no message before the worker said
@@ -423,7 +483,10 @@ Web first, so it can be shared as a link.
   open, close or question, no replacement) and the network has been still for 20 s, every worker
   whose memory is at least 384 MB and 15% above its need is restarted through the panic path above,
   together and without counting as a panic; the network is solved once more, questions wait for that
-  final, and a worker is not restarted again until its memory or need has moved by 384 MB. Before
+  final, and a worker is not restarted again until its memory or need has moved by 384 MB. A replacement
+  holds nothing solved, so that solve is the whole game's (4-6 minutes on a 140-zone Asia save): such a
+  restart waits until the pool is short of memory, the workers' WASM with the rest of the page (guessed
+  from their needs, not their WASM) past 95% of the budget below, or the pool grows (T-4204). Before
   each solve the pool drops solving workers while the page outside the workers' WASM (at least 0.6 GB, and as
   the live memory reading counts it, `liveMemory.ts`: about 5 GB on a 7,000-station game, T-3757), each worker's need plus 0.15 GB
   for its JS heap (or, on a cross-origin isolated page, `measureUserAgentSpecificMemory`'s measure of
@@ -535,20 +598,34 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   (`LEVEL` in `sim/src/track/save.rs`, `TrackApi.save_level`; absent before T-1826, read as 0).
   It goes up by one with every new trailing block (listed in `save.rs` `BLOCKS`; a Rust test pins
   the level and the block count, so a block added without raising it fails), every new field inside
-  a header field (a fares setting, a ledger figure) and every new meaning of existing bytes. A new
-  top-level header field needs no raise: `headerUnread` (workers/saveFile.ts) treats a field missing
-  from `HEADER_FIELDS` as unread in any save with a level. A load counts a game as unread in part
-  when its level is above this build's, its header has an unknown field, or `TrackApi.save_unread`
-  finds network bytes left after the last block it knows (an unknown block stops the decoder, so
-  known blocks after it are unread too) or node or edge flag bits it does not know. Such a game
-  plays, but nothing writes its slot (autosave, Save, the frame conversion) or reaches the account
-  (no claim, no upload), so the device playing it in the newer build keeps it; the top bar and the
-  saves panel say "This game was saved by a newer version. Reload the page to update." A newer file
-  opened with Open a file (or a backup restored) is written to its new slot as it was loaded.
-  Download gives the file as loaded, with everything; Make a copy gives a slot of this build's
-  with the game as played here, without the parts it could not read, and autosaves from then on.
-  Saves without a level are judged by their network bytes alone (they can carry retired header
-  fields such as `points`), so every older save opens as before.
+  a header field (a fares setting, a ledger figure) and every new meaning of existing bytes. The app
+  keeps a copy, `SAVE_LEVEL` in workers/saveFile.ts (a Rust test pins it to `LEVEL`), so both
+  threads judge a save without the track model. A new top-level header field needs no raise:
+  `headerUnread` treats a field missing from `HEADER_FIELDS` as unread in any save with a level.
+  **A save from a newer build never opens** [T-3948, T-4014]: a newer header `format`, a level above
+  this build's, an unknown header field (in a save with a level), a network magic past TWT6 (`TWT7`
+  on, the track rework's; `isNewerTrackFormat`, `save::is_newer_magic` in the sim), all in
+  `isNewerSave`, which `decodeSave` applies to every read of a save (slot, file, backup, account
+  copy, the file picker's check; a Community share is refused as "version" by `sharedSave.ts` on
+  the same level and magic); and in the clock worker, before any conversion, network bytes
+  `TrackApi.save_unread` finds left over (an unknown block stops the decoder) or node or edge flag
+  bits it does not know. Its open fails with "This game was saved on a newer game version. Reload
+  the page to update." (`clockWorker.newer`), back to the start menu (an account copy pulled in
+  play: the game in hand is let go the same way, its slot unchanged). The slot stays byte for byte,
+  with no aside copy and no damaged mark, and the save check calls it "other", so no good copy is
+  rescued over it and nothing uploads it. So nothing this build writes can drop what a newer one
+  saved (busways read as rail, T-4014). Saves without a level are judged by their network bytes
+  alone (they can carry retired header fields such as `points`), so every older save opens as
+  before.
+- **Never over a newer account copy** [T-4014]: every upload sends this build's level (the PUT's
+  meta `level`, and the facts' `level`, which any build lists back). The server refuses a PUT from
+  a build whose level (else its save's header level) is below that of the build that sent the
+  current rev, whatever `force` says (409 `newer`; shonei-server docs/trainworld-api.md), and the
+  page refuses it first when the list has shown such a level (`newerThere` in workers/cloud.ts,
+  checked in `upload`, the one function that sends a save). The slot keeps the game and its card
+  and the account mark say "This game was saved on a newer game version. Reload the page to
+  update."; nothing is tried again until the page reloads. A fork (a new account game) still goes
+  up.
 - **Removed zones** [T-1053]: a save opens if its header names the registry's world (or none, as
   legacy New York files do); the zones it names need not all exist. The header's `cities` lists
   every zone registered when it was written, so a replan that merges or re-splits zones would
@@ -608,7 +685,8 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
 - **Real networks** [T-731]: `packs/real/<id>.save` for New York, London, Paris, Tokyo, Seoul,
   Toronto and Sendai, made by hand from timetables, and [T-3225] the cities in `pipeline/realauto.json`
   (the 30 biggest metros by annual riders that have a pack), made with no hand work from noritetsu's OSM
-  extract: route relations cut to the pack, intercity, high-speed and heritage trains left out, stations
+  extract: route relations cut to the pack, intercity, high-speed and heritage trains left out (Kansai and Nagoya
+  also get the lines OSM maps only as track, from N02 [T-3935, `pipeline/realtracks.py`]), stations
   by name within 400 m, trains an hour from OSM's `interval` else a default by kind of line (a suburban
   train with no line of its own every half hour; a light-rail route on main-line track with 5 or more
   stops at least 1 km apart, as OSM maps Berlin's S-Bahn, runs commuter trains at commuter speed on its
@@ -745,8 +823,21 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   zone's split, the market's trips, and the viewed zone's bubbles of every purpose for the day shown
   when they were on show, T-1904), not worker state; lines and stations by their place in the network, since a load
   renumbers ids. Its key is a SHA-256 of the network demand reads, of every pack the solve covered
-  (the packs open as it was sent, one closed while it ran included, T-2579) and of the market, the app build, the worker count and the perfOff flags; the zones must be the
-  ones the new solve covers. A load's network is worked out from the save alone (it waits for the
+  (the packs open as it was sent, one closed while it ran included, T-2579) and of the market, the demand code's
+  version, the worker count and the perfOff flags; the zones must be the
+  ones the new solve covers. **A stand-in** (T-4202, Anita 2026-11-24): a result whose key differs only in the
+  demand code's version or the worker count (an update; the same network, zones, packs and levels of detail) is
+  shown and ends the load exactly as a matching one does, its figures the last version's until the fresh
+  final replaces them; that final is written over it (the same key, so one result per slot still), and a stand-in
+  is never written itself (a write takes only a solve's own final). Packs that differ, a changed network form
+  (`canonical`) or `CACHE_FORMAT` mean no stand-in: a full load. `?perfOff=standIn` turns it off. The demand code's version (T-3926, `vite.config.ts` `demandKey`) is a SHA-256, made
+  at build time, of the source of every module in the bundler's graph from `demandClient.ts` (static and dynamic
+  imports, and every file loaded by `new URL`: the demand, sums and cache-write workers' whole graphs, the demand
+  WASM, market-rows.json), so every build of the same demand code has the same one and a release that changes none
+  of it keeps every cached result. Left out by name only: the translations, and the clock worker with the track
+  WASM, whose output reaches a solve only as the network, which the key holds in the form demand reads (every
+  field of the service a solve reads, the way back's stations, boat size, busway and bus catchment included). The
+  dev server's version is new at each start. A load's network is worked out from the save alone (it waits for the
   bus routes' street speeds, [track-and-service.md](track-and-service.md) 6.7, T-2499; the clock worker sends no state
   or snapshot between a load's start and the loaded game's, T-3686), so a reload
   of an unchanged game finds the result its last final wrote. When a whole game loads and the key matches, the result shows at once
@@ -761,7 +852,7 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   solves that zone alone to its round 0, shown nowhere, and answers from it (`focusAsked`) until the workers' solve
   of the network is sent and what was asked of it is answered (`retireFocus`, [demand-runtime.md](demand-runtime.md)
   "The zone in view first"); from then a click is answered from the newest round the workers reach ("The pool", T-327),
-  and the fresh final replaces the cache in one step (it is bit for bit the same). A test page, `?new=1` and a tab without the slot never
+  and the fresh final replaces the cache in one step (bit for bit the same, a stand-in's aside). A test page, `?new=1` and a tab without the slot never
   write it. The write runs in a worker of its own (`workers/cacheWrite.worker.ts`, T-789), the
   market's corridor book (shared by the days) copied once and transferred to it, with the corridor rows the page
   holds of the zone in view and up to 15 more zones (T-2136: no worker has them at the next load until it holds
@@ -769,8 +860,9 @@ all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
   **Ahead of the network** (T-1539): a result whose network is the one a load worked out from its
   save also holds that network snapshot and the key of the save's network inputs (a SHA-256 of the
   save's track bytes, which a save numbers densely, without their eras tail (the trains changing over
-  after an edit, drawn only and pruned as the clock runs, T-2588), and the header fields the snapshot
-  reads: `saveNetKey`), with a small pointer `ahead:<slot>` to it. The clock worker sends that key as a
+  after an edit, drawn only and pruned as the clock runs, T-2588), the header fields the snapshot
+  reads, and the app build, since the clock worker that works the snapshot out is not in the demand code's
+  version (T-3926; after a release the result shows once the network is in): `saveNetKey`), with a small pointer `ahead:<slot>` to it. The clock worker sends that key as a
   load starts (`netAhead`), before it works the network out (17-42 s on the China save), and the
   page shows the result through the same key checks, on the stored network; the network that
   arrives is compared with it: the same one takes its place with no second look, a different one

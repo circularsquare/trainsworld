@@ -9,10 +9,17 @@ impl TrackApi {
         self.w.net.alloc_line()
     }
 
+    /// T-4185: while on, every edit made takes back and makes again with the player's edit before it, so one
+    /// player action that is sent as several edits is one undo. Off at the start of each action.
+    pub fn join_edit(&mut self, on: bool) {
+        self.join = on;
+    }
+
     pub(super) fn done(&mut self, r: Result<EditResult, Vec<Issue>>) -> u32 {
         self.money_short = None;
         match r {
             Ok(r) => {
+                self.touched.note(&r.dirty);
                 self.last = Some(r);
                 self.issues.clear();
                 0
@@ -40,7 +47,12 @@ impl TrackApi {
         let at = self.edit_start();
         let before = self.w.svc.before_edit(&self.w.net, at);
         let cash = self.spendable();
-        let r = self.w.apply_paid(op, cash, false, &|w| trains_to_buy(w, fleet));
+        // T-4185: the second and later edits of one player action take back with the first
+        let r = if self.join {
+            self.w.apply_off_history(op, cash, &|w| trains_to_buy(w, fleet), true)
+        } else {
+            self.w.apply_paid(op, cash, false, &|w| trains_to_buy(w, fleet))
+        };
         self.settle(r, &before)
     }
 
@@ -56,6 +68,24 @@ impl TrackApi {
         let before = self.w.svc.before_edit(&self.w.net, at);
         let cash = self.spendable();
         let r = self.w.apply_off_history(op, cash, &|w| trains_to_buy(w, fleet), with_edit);
+        // T-3655: one that buys nothing leaves the fleet too: a save running more trains than its fleet
+        // would be given the shortfall's cars by the first cap lowering on load, before the rest bring
+        // what runs under the fleet
+        let free = matches!(r, Ok((_, t)) if t <= 0.0);
+        let out = self.settle(r, &before);
+        if free { self.fleet = fleet; }
+        out
+    }
+
+    /// T-3378: an edit that charges nothing for construction (trains it needs still paid), final or undoable:
+    /// taking a bus line off BRT, or deleting a bus line, where the lanes another BRT line shared are counted
+    /// on that line again and could move the built value up by a step.
+    pub(super) fn run_free(&mut self, op: Op, final_: bool) -> u32 {
+        let fleet = self.fleet;
+        let at = self.edit_start();
+        let before = self.w.svc.before_edit(&self.w.net, at);
+        let cash = self.spendable();
+        let r = self.w.apply_priced(op, cash, final_, &|w| trains_to_buy(w, fleet), Some(&|_: &TrackWorld| 0.0));
         self.settle(r, &before)
     }
 
@@ -675,21 +705,20 @@ impl TrackApi {
                     v[0].y = quant(v[0].y + dy);
                     made[0] = true;
                 } else {
-                    if v.is_empty() && far_keep {
-                        let fp = &net.node_ports[fi];
-                        let side = fp.find(e, 1 - which).map_or(1, |q| fp.side[q]);
-                        let fdir = if side == 1 { net.node_heading[fi] } else { net.node_heading[fi] + PI };
-                        if let Some(p) = lead_in_capped(fx, fy, net.node_level[fi], fdir, (x, y), scaled, cap) {
-                            v.push(p);
-                            made.push(true);
-                        }
+                    // a far end keeping its heading gets a lead-in only where the edge has no PI
+                    let fp = &net.node_ports[fi];
+                    let side = fp.find(e, 1 - which).map_or(1, |q| fp.side[q]);
+                    let fdir = if side == 1 { net.node_heading[fi] } else { net.node_heading[fi] + PI };
+                    let far_lead = |t| if v.is_empty() && far_keep { lead_in_capped(fx, fy, net.node_level[fi], fdir, t, scaled, cap) } else { None };
+                    let near_lead = |t| if keep { lead_in_capped(x, y, net.node_level[i], leave, t, scaled, cap) } else { None };
+                    let (near, far) = end_leads(near_lead, far_lead, (x, y), (fx, fy), &v);
+                    if let Some(p) = far {
+                        v.push(p);
+                        made.push(true);
                     }
-                    if keep {
-                        let toward = v.first().map_or((fx, fy), |p| (p.x, p.y));
-                        if let Some(p) = lead_in_capped(x, y, net.node_level[i], leave, toward, scaled, cap) {
-                            v.insert(0, p);
-                            made.insert(0, true);
-                        }
+                    if let Some(p) = near {
+                        v.insert(0, p);
+                        made.insert(0, true);
                     }
                 }
                 if which == 1 {

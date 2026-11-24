@@ -18,6 +18,12 @@ pub const BUS_CARS: f32 = 1.0 / 3.0;
 pub const BUS_CROWD_START: f32 = 0.85;
 /// A tram section's share of a rail car's riders (T-2926; `track::params` `riders_scale` of the tram kinds).
 pub const TRAM_CARS: f32 = 0.75;
+/// T-4079: a bus stop's walks to change reach this far, m, against `Params::xfer_walk_m` (300) between
+/// stations: at 300 m a dense bus network's stops all joined (notes/T-4079.md).
+pub const BUS_WALK_M: f32 = 150.0;
+/// T-4079 (Anita 2026-11-23): a change on foot with no passage at a bus stop or BRT station takes this many real
+/// minutes more than its walk, so a passage there saves one minute.
+pub const CONNECTION_MIN: f32 = 1.0;
 
 #[derive(Clone)]
 pub struct Network {
@@ -79,9 +85,12 @@ pub struct Network {
     /// T-3888: per line, whether it is a ferry, whose trips pay no stairs (`Params::train_in_min`).
     /// Empty: none is.
     pub line_pier: Vec<bool>,
-    /// T-3888: per stop (parallel to `line_stops`), whether its platform is at grade, so the stairs
-    /// are not paid there (both runs take the listed stop's). Empty: none is.
-    pub stop_grade: Vec<bool>,
+    /// T-4041: per stop (parallel to `line_stops`), whether it is a tram stop on the street, where a
+    /// trip pays no boarding cost (both runs take the listed stop's). Empty: none is.
+    pub stop_street: Vec<bool>,
+    /// T-4094: the walks of bus stops merged along lines (`busmerge::Walks`), measured between their real
+    /// stops; None with none merged.
+    pub bus_walks: Option<std::sync::Arc<super::busmerge::Walks>>,
 }
 
 /// A bus stop's stretch of route (T-1464): its demand station and the stretch as points in the
@@ -108,6 +117,19 @@ impl Network {
     pub fn bus_only(&self, s: usize) -> bool {
         self.st_bus.get(s).copied().unwrap_or(false)
     }
+    /// T-4079: how far riders walk to change between stations `a` and `b` outside a complex: `xfer_walk_m`,
+    /// or `BUS_WALK_M` where either is a bus stop only.
+    #[inline]
+    pub fn walk_reach_m(&self, a: usize, b: usize, xfer_walk_m: f32) -> f32 {
+        if self.bus_only(a) || self.bus_only(b) { xfer_walk_m.min(BUS_WALK_M) } else { xfer_walk_m }
+    }
+    /// T-4079: the real minutes a change on foot between `a` and `b` with no passage adds to its walk:
+    /// `CONNECTION_MIN` where either is a bus stop only or a BRT station, else none.
+    #[inline]
+    pub fn connection_min(&self, a: usize, b: usize) -> f32 {
+        let bus = |s: usize| self.bus_only(s) || self.ups(s) & crate::track::upgrades::BRT_STATION != 0;
+        if bus(a) || bus(b) { CONNECTION_MIN } else { 0.0 }
+    }
     /// Whether station `s` is served by tram lines only (T-2926).
     #[inline]
     pub fn tram_only(&self, s: usize) -> bool {
@@ -132,22 +154,22 @@ impl Network {
     pub fn stairs_line(&self, l: usize) -> bool {
         !self.line_pier.get(l).copied().unwrap_or(false) && !self.bus_line(l)
     }
-    /// T-3888: whether stop `k` (an index into `line_stops`) is at grade (`stop_grade`).
+    /// T-4041: whether stop `k` (an index into `line_stops`) is a tram stop on the street (`stop_street`).
     #[inline]
-    pub fn at_grade(&self, k: usize) -> bool {
-        self.stop_grade.get(k).copied().unwrap_or(false)
+    pub fn street_stop(&self, k: usize) -> bool {
+        self.stop_street.get(k).copied().unwrap_or(false)
     }
-    /// T-3910: whether a train or tram trip pays its end costs at stop `k`: every stop while
-    /// `STAIRS_AT_GRADE`, else only those below or above ground.
+    /// T-3910, T-4041: whether a train or tram trip pays its boarding cost at stop `k`: every stop
+    /// but a tram stop on the street (Anita 11-22: "we can also drop 2+2 boarding cost for street stops").
     #[inline]
     pub fn pays_ends(&self, k: usize) -> bool {
-        STAIRS_AT_GRADE || !self.at_grade(k)
+        !self.street_stop(k)
     }
 }
 
-/// T-3910: a train or tram trip pays the boarding cost at a stop at grade too. Set false to exempt
-/// stops at grade again (the T-3888 level rule).
-pub const STAIRS_AT_GRADE: bool = true;
+/// `Network::span`'s marks (T-3332, T-4013), written by the clock worker's `track::span::line_span`.
+pub use crate::track::span::{span_clamped, stop_span};
+
 
 #[derive(Clone, Copy)]
 enum Kind {
@@ -259,7 +281,8 @@ pub fn synth_network() -> Network {
         st_tram: vec![],
         back_stops: vec![],
         line_pier: vec![],
-        stop_grade: vec![],
+        stop_street: vec![],
+        bus_walks: None,
     };
     for &(name, kind, pts) in LINES {
         let mut stops: Vec<u32> = vec![];

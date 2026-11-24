@@ -54,7 +54,7 @@ export type StationAt = (
 /** A route turning at the clicked points `pis`; a junction it makes is flat (T-080). `through`
  * (T-418): a route with no PIs from a heading to open ground is one tangent arc. `design` (T-817):
  * the design speed its curves are laid out for, km/h; 160 when absent. */
-export interface RouteAsk { from: RouteEnd; to: RouteEnd; pis: PiInput[]; single: boolean; quad?: boolean; through?: boolean; design?: number; hsr?: boolean; tram?: boolean; /** T-2927: tram track that follows the streets (street tram track), along `streetLine` (lng, lat pairs, flat) */ street?: boolean; streetLine?: number[]; ramp?: boolean; beside?: [number, number];
+export interface RouteAsk { from: RouteEnd; to: RouteEnd; pis: PiInput[]; single: boolean; quad?: boolean; through?: boolean; design?: number; hsr?: boolean; tram?: boolean; /** T-3378: an off-road busway (kind 4) */ busway?: boolean; /** T-2927: tram track that follows the streets (street tram track), along `streetLine` (lng, lat pairs, flat) */ street?: boolean; streetLine?: number[]; ramp?: boolean; beside?: [number, number];
   /** T-3137: which of double track's two tracks single track joins at its start and end: a point (pack units) on that
    * track, start x, y, end x, y (`TrackApi::set_route_join`); null for the track beside the route there */
   join?: [number | null, number | null, number | null, number | null];
@@ -96,6 +96,10 @@ export type EditOp =
   | { op: "flying"; node: NodeId; flying: boolean }
   | { op: "stationUpgrade"; nodes: NodeId[]; bit: number; on: boolean }
   | { op: "addStation"; at: StationAt; platform: number; name: string }
+  /** T-3378: a blueprint BRT station at x, y (world metres) on no track, its platform along a road on `heading` (radians) */
+  | { op: "addBrtStation"; x: number; y: number; heading: number; name: string }
+  /** T-3999: a blueprint port on no ferry line, its landing at x, y and its berth at bx, by (world metres) */
+  | { op: "addPort"; x: number; y: number; bx: number; by: number; name: string }
   /** a crossover on track `edge` near x, y and the track running beside it (T-338) */
   | { op: "crossover"; edge: EdgeId; x: number; y: number }
   /** an express pair beside double track `edge` and the run it is on, as blueprint (T-708) */
@@ -137,7 +141,7 @@ export type EditOp =
   /** T-3907: a bus line on BRT or off it; switching on a constructed line is paid at once */
   | { op: "busBrt"; line: number; on: boolean }
   /** T-2891: a stop on a by-hand bus line put where the route is nearest (x, y), or (`on` false) the stop there taken out */
-  | { op: "busHandStop"; line: number; x: number; y: number; on: boolean }
+  | { op: "busHandStop"; line: number; x: number; y: number; on: boolean; exact?: boolean }
   /** T-2194: a planned ferry line over its ports in route order (a port's node, or a new one added
    * first) and its route (world metres, x, y, kind, m/s per point, flat: notes/T-2177.md "F2 -> F3");
    * answered with its `line` */
@@ -161,6 +165,12 @@ export type EditOp =
   /** T-3711, a shift-click in the line tool: the station made a stop served one way only (added where insertStop
    * puts it if it is no stop yet), or such a stop served both ways again; refused as insertStop */
   | { op: "oneWayStop"; line: number; station: NodeId; autoFast?: boolean }
+  /** T-4114, the line tool's plain click: the station taken out of the line's plan, every visit of it (a loop that loses
+   * its first stop closes again on its new first stop, T-3050), when it is a stop then, else put in as `insertStop`. The
+   * worker reads the stops it holds, so a click is sent without waiting for the one before it. */
+  | { op: "toggleStop"; line: number; station: NodeId; autoFast?: boolean }
+  /** T-4013: riders at the line's stop `station` only board (kind 1), only get off (2), or both (0) */
+  | { op: "stopOnly"; line: number; station: NodeId; kind: 0 | 1 | 2 }
   /** T-1791, the group view's stop edits, all keeping the line's path: stop `index` out (an end's removal cuts the path back), the line ended at stop `index` (the stops past it toward the nearer end go), a station the line passes made a stop; refused with "LinePath" */
   | { op: "dropStop"; line: number; index: number }
   | { op: "endLineAt"; line: number; index: number }
@@ -232,7 +242,8 @@ export type EditOp =
   | { op: "fareHsr"; mul: number }
   /** T-2194: the fare multiplier on ferry lines; T-3892: of one boat size (game/fareCurve.ts `Boat`), Medium if none */
   | { op: "fareFerry"; mul: number; boat?: 0 | 1 | 2 }
-  | { op: "fareBus"; mul: number }
+  /** T-3028: the fare multiplier on bus lines; T-3915: on BRT lines with `brt` */
+  | { op: "fareBus"; mul: number; brt?: true }
   /** T-3567: line `line`'s own fare multiplier, 0 to 3 (1: none); refused for a line that is gone */
   | { op: "fareLine"; line: number; mul: number }
   | { op: "fareTransfer"; usd: number }
@@ -251,8 +262,10 @@ export type EditOp =
   | { op: "reshapeBuilding"; id: number; corners: number[] }
   | { op: "renameBuilding"; id: number; name: string }
   | { op: "removeBuilding"; id: number }
-  | { op: "undo" }
-  | { op: "redo" };
+  /** `after` (T-4145): the newest edit unanswered when the player asked; refused quietly when that edit was refused
+   * and nothing was accepted since, so the step under it is not taken back instead (clockClient fills it) */
+  | { op: "undo"; after?: number }
+  | { op: "redo"; after?: number };
 
 export type ToClock =
   | { kind: "freezeTrace"; port: MessagePort }
@@ -271,6 +284,8 @@ export type ToClock =
       guide?: boolean;
       /** T-2703: reads of the saved game to fail on purpose, for checks (`?debug=1&readFails=N`) */
       readFails?: number;
+      /** T-4072 (`?debug=1&maskWaitMs=N`): the load's wait for its water masks, ms, so a check sees them land late */
+      maskWaitMs?: number;
       /** T-3773: the next game opened panics after its decode, for checks (dev server, `?debug=1&loadPanic=1`); "late": the first load after the game has opened (T-3788) */
       loadPanic?: boolean | "late";
       /** T-3869, checks (dev server, `?debug=1&saveRoom=`): the buffers a save asks for refused as a browser short of
@@ -395,6 +410,8 @@ export type ToClock =
   /** T-3707: this page is not the published game, or runs a mod (game/modded.ts): the game in hand and every game
    * loaded or started after are marked modded, for good. `why`: the page's reasons, all of them each time */
   | { kind: "modded"; why: string[] }
+  /** T-3851: this page opened its game without calculating trips: money is not settled while it runs */
+  | { kind: "moneyFrozen" }
   /** T-3297: every train, tram and bus to the other side (`TrackApi.flip_right_hand`), answered with "answer": the
    * sites, two numbers each (sim `FLIP_*`: 1 single track turned round, an edge; 2 a line moved, 3 a line left
    * broken; 4 a junction now crossing flat, 5 one-way track no train can use, a node) */
@@ -426,7 +443,7 @@ export type ToClock =
   | {
       kind: "query";
       seq: number;
-      q: { what: "insertStop"; line: number; station: number } | { what: "stopTiers"; line: number } | { what: "stopGap"; line: number; station: number } | { what: "passedStations"; line: number } | { what: "junction"; node: number } | { what: "lineDelays"; line: number; level: number; period?: number } | { what: "lineWaits"; line: number; level: number; period?: number } | { what: "passingSpots"; line: number } | { what: "lineHeld"; line: number; rows?: boolean } | { what: "lineMarks"; line: number } | { what: "lineProfile"; line: number } |{ what: "lineRelated"; line: number } | { what: "lineTrips"; line: number; t0: number; t1: number } | { what: "stationDeps"; line: number; node: number; t0: number; t1: number } | { what: "edgePis"; edge: number } | { what: "flyover"; node: number } | { what: "upgradeCost"; node: number } | { what: "tracksCost"; node: number } | { what: "upgradeCosts"; nodes: number[]; bit: number } |{ what: "platformCost"; nodes: number[]; platform: number } | { what: "doubleUp"; edge: number } | { what: "oneWays"; edges: number[]; dirs: number[] } | { what: "lineAccount"; line: number; day: number } | { what: "linePeriods"; line: number; day: number } | { what: "linesPeriods"; lines: number[]; day: number } |{ what: "today" } | { what: "removal"; edges: number[]; stations: number[] } | { what: "busQuote"; line: number; route: number[] } | { what: "rebuildQuote"; edges: number[]; stations: number[]; level: number | null; kind: number; tracks: number } | { what: "blueprintQuote" } | { what: "blueprintPieces" } | { what: "lineCost"; line: number } | { what: "buildingQuote"; id: number | null; corners: number[] } | { what: "linePairs"; line: number };
+      q: { what: "insertStop"; line: number; station: number } | { what: "clickPath"; line: number; station: number } | { what: "stopTiers"; line: number } | { what: "stopGap"; line: number; station: number } | { what: "passedStations"; line: number } | { what: "junction"; node: number } | { what: "lineDelays"; line: number; level: number; period?: number } | { what: "lineWaits"; line: number; level: number; period?: number } | { what: "passingSpots"; line: number } | { what: "lineHeld"; line: number; rows?: boolean } | { what: "lineMarks"; line: number } | { what: "lineProfile"; line: number } |{ what: "lineRelated"; line: number } | { what: "lineTrips"; line: number; t0: number; t1: number } | { what: "stationDeps"; line: number; node: number; t0: number; t1: number } | { what: "edgePis"; edge: number } | { what: "flyover"; node: number } | { what: "upgradeCost"; node: number } | { what: "tracksCost"; node: number } | { what: "upgradeCosts"; nodes: number[]; bit: number } |{ what: "platformCost"; nodes: number[]; platform: number } | { what: "doubleUp"; edge: number } | { what: "oneWays"; edges: number[]; dirs: number[] } | { what: "lineAccount"; line: number; day: number } | { what: "linePeriods"; line: number; day: number } | { what: "linesPeriods"; lines: number[]; day: number } |{ what: "today" } | { what: "removal"; edges: number[]; stations: number[] } | { what: "busQuote"; line: number; route: number[] } | { what: "rebuildQuote"; edges: number[]; stations: number[]; level: number | null; kind: number; tracks: number } | { what: "blueprintQuote" } | { what: "blueprintPieces" } | { what: "lineCost"; line: number } | { what: "buildingQuote"; id: number | null; corners: number[] } | { what: "linePairs"; line: number };
     };
 
 /** T-531: each region's today and this hour, as the "cash" message carries them. */
@@ -477,7 +494,10 @@ export interface MoneyState {
   upkeepHsr: number;
   /** T-867: the network's upkeep a game day, US$M (track and stations), the route-km and stations
    * behind it; T-1464: bus routes' upkeep, US$M, and their road-km */
-  upkeep: { track: number; stations: number; km: number; count: number; buses: number; busKm: number; ports: number; portCount: number };
+  upkeep: { track: number; stations: number; km: number; count: number; buses: number; busKm: number; ports: number; portCount: number; upgrades: number };
+  /** T-3922: upkeep a game day of what is bought on a station (upgrades, passages, buildings) over its price (0.002);
+   * in the stations' and ports' figures above, and `upgrades` alone */
+  upkeepUpgradeShare: number;
   /** T-1464: buses owned and needed; a bus's price US$M, its running cost a bus-km and a route's
    * upkeep a road-km a day (real US$), a route's price a road-km US$M */
   fleetBus: number;
@@ -517,7 +537,7 @@ export interface MoneyState {
   economy: number;
   /** T-1661, T-2022: the loan out, null for none */
   loan: Loan | null;
-  fares: { base: number; perKm: number; nodes: [number, number][]; scales?: Record<string, number>; byCity?: boolean; cityScales?: Record<string, number>; baseline?: string; basis?: "usd"; income?: number; hsr?: number; ferry?: number; ferrySmall?: number; ferryLarge?: number; bus?: number; transfer?: number; lines?: Record<string, number>; zones?: FareArea[]; zoneNext?: number };
+  fares: { base: number; perKm: number; nodes: [number, number][]; scales?: Record<string, number>; byCity?: boolean; cityScales?: Record<string, number>; baseline?: string; basis?: "usd"; income?: number; hsr?: number; ferry?: number; ferrySmall?: number; ferryLarge?: number; bus?: number; brt?: number; transfer?: number; lines?: Record<string, number>; zones?: FareArea[]; zoneNext?: number };
   /** running cost per game hour in each demand period on weekdays (T-3542: five, `PERIODS`) */
   runningPerHour: number[];
   /** recent game days, oldest first; the last is today so far (as of the last whole hour; the
@@ -608,6 +628,8 @@ export interface ClockNode {
   oneHeading?: number;
   /** one platform track (a one way station, or a stop on single track with no passing loop): pays `upkeepOnePlatform` of the station upkeep */
   onePlatform?: true;
+  /** T-3922: the upkeep a game day of its upgrades, its share of its passages and building, US$; only where some */
+  upgradeUpkeep?: number;
   /** the name it shows (T-3759, `StateRows.foldNames`): its own while unbound, else its complex's */
   name: string;
   /** the player typed the name (T-2683) */
@@ -627,6 +649,8 @@ export interface ClockNode {
   bus?: true;
   /** T-2194: a port (a station for ferries, no track) and its berth, longitude and latitude */
   port?: [number, number];
+  /** T-3378: a BRT station: no track, beside a road along `heading`; only BRT lines stop there */
+  brtStation?: true;
 }
 
 export interface ClockLine {
@@ -697,6 +721,8 @@ export interface ClockLine {
   ways: number[];
   /** T-3711: the stops the player made one way with a shift-click (`TrackApi::line_one_stops`) */
   oneStops: number[];
+  /** T-4013: `[station, kind]` pairs, kind 1 boarding only, 2 getting off only (`TrackApi::line_stop_only`); absent for none */
+  stopOnly?: number[];
   /** T-2895: the player set its stop order by hand (`TrackApi::line_hand`) */
   hand: boolean;
   /** a loop (`TrackApi::line_loop`, T-798): 0 none, 1 a circle, 2 a balloon */
@@ -762,11 +788,23 @@ export interface ClockBus {
   spacing: number;
   /** T-2891: the player places the stops */
   hand: boolean;
-  /** T-3907: bus lanes along the whole route (BRT) */
+  /** T-3907: bus lanes along the whole route (BRT), constructed on a constructed line */
   brt: boolean;
-  /** T-3907: road metres in town for BRT (where a plain bus moves under BRT's floor), on BRT or not: what its
-   * lanes are paid and upkept over */
+  /** T-3944: a constructed line's BRT lanes in the blueprint (`brt` false till Construct) */
+  brtBp: boolean;
+  /** T-3944: its BRT lanes on the map, runs of [kind, points, lng, lat, ...] flat: kind 0 new lanes in the blueprint,
+   * 1 in the blueprint on lanes a constructed BRT line has, 2 constructed; empty off BRT */
+  lanes: number[];
+  /** T-3907: road metres in town for BRT (where a plain bus moves under BRT's floor), on BRT or not */
   townM: number;
+  /** T-3378: of `townM`, the road metres no other BRT line has lanes on (constructed ones, for a constructed
+   * line): what switching it on pays for */
+  newM: number;
+  /** T-3378: its part of the lanes' upkeep, road metres (a lane two lines share, half each); 0 off BRT */
+  laneM: number;
+  /** T-3378: per demand period, buses an hour one way on its fullest stretch of BRT lane (0 with none), then the
+   * most a lane takes */
+  laneLoad: number[];
   /** T-2891: while `hand`, the stations the route can stop at, a stop or not */
   reach: { node: number; x: number; y: number; lng: number; lat: number }[];
   /** `route` and `street` as longitude, latitude pairs, flat */
@@ -807,6 +845,9 @@ export interface ClockRender {
   meta: Float32Array;
   samples: Float32Array;
   lineTable: Float32Array;
+  /** T-4075, per sample and per bend point: `NetworkBuffers.sampleBend` and `bends` */
+  sampleBend?: Float32Array;
+  bends?: Float32Array;
 }
 
 /** A busy resource (SPEC 6.2: 75% and up), local units. `kind`: 0 track, 1 single track,
@@ -844,6 +885,8 @@ export interface ClockState {
   /** T-819: per demand period, track sections at capacity, `TrackApi.full_track_in`: per edge on one
    * edge id, utilisation, trains an hour */
   fullTrack: Float64Array[];
+  /** T-4178: `TrackApi.turn_limits`: `[line, node, most trains an hour]` for each turn partway that limits its line */
+  turnLimits: Float64Array;
   /** T-3542: the rows (3, 4 or 5) lines following the game's set their trains in (`TrackApi.game_periods`) */
   periods: number;
   /** T-3542: the hours lines following the game's split their day at (`TrackApi.game_hours`) */
@@ -902,6 +945,9 @@ export interface ClockState {
   /** T-1071: the game time a train count or headway edit takes effect, a moment ahead of the
    * clock; the renderer draws this state and its trips from then, not before */
   effectiveAt?: number;
+  /** T-3655: its trips come first without loads and again with them once the boarding account is worked out; the
+   * renderer draws it once the loaded ones are here (at most STAGE_WAIT_MS late) */
+  loadsFollow?: boolean;
   /** T-1407: no trips follow it (blueprint track), so it is taken as it comes, not held for them */
   noTrips?: boolean;
   /** T-1407: the state of an edit answered ahead of it (`early`): taken after the next paint, so
@@ -918,10 +964,51 @@ export interface ClockState {
  * (a stop click's new trains: the line; an upgrade on a built station: the station; a rebuilt piece: the edge) */
 export type PaidFor = { line?: number; nodes?: number[]; edges?: number[] };
 
+/** T-4145: a station's box drawn ahead of the network: the station tool's ghost (`tk.lastBox`): its node in local units,
+ * the track leaving it each way (local polylines from the node), local units a metre, platform metres, which side of
+ * single track (0 both), tram, a one-track station's box centred; built: drawn as built, else as blueprint */
+export interface StationBox { lx: number; ly: number; ways: ArrayLike<number>[]; perM: number; plat: number; side: number; tram: boolean; mid?: boolean; built?: boolean }
+/** T-4145: how an edge is drawn ahead: built (blueprint no more), switched off or on, its level at each end, its track count */
+export interface EdgeLook {
+  built?: boolean; off?: boolean; level?: [number, number]; tracks?: 1 | 2;
+  /** T-4148: the track type, as the track model numbers it (0 rail, 1 high speed, 2 street tram, 3 tram, 4 busway) */
+  kind?: 0 | 1 | 2 | 3 | 4;
+  /** T-4148: one-way single track's way, as the track model stores it (0 the run's own, 1 a to b, 2 b to a, 3 both) */
+  oneWay?: 0 | 1 | 2 | 3;
+  /** the edge's end nodes, a and b, with `oneWay` (its chevrons are laid in runs of joined pieces) */
+  ends?: [number, number];
+}
+/** T-4148: a new piece of track the edit made, drawn as blueprint until the network holds it: the edge's points in local
+ * units (x, y, z each) */
+export interface NewPiece { edge: number; pts: Float32Array; tracks: 1 | 2; kind: number }
+/** T-4145: what an applied edit changed, as the page draws it (ids are the ones drawn now unless said); every part optional */
+export interface EditWord {
+  /** a rail line's strokes now draw these edges (its plan's path and its return run's); null: the line is gone */
+  lines?: { line: number; edges: Uint32Array | null }[];
+  /** edges not drawn (their track and the line strokes on them) until the next network */
+  hideEdges?: number[];
+  /** edges drawn with this look: their network strokes redrawn from the same segments, the look changed */
+  edges?: ({ edge: number } & EdgeLook)[];
+  /** station node ids not drawn */
+  hideStations?: number[];
+  stations?: StationBox[];
+  /** T-4148: track the edit added (Double up's pair), drawn as blueprint */
+  pieces?: NewPiece[];
+  /** a line's colour, 0-255 */
+  colours?: { line: number; rgb: [number, number, number] }[];
+  /** what the edit cost, in the cash's units (0: nothing, in place of a price guessed at the click) */
+  charge?: number;
+  /** T-4181: an undo right after takes back less than this edit, or nothing: none is drawn at that undo's click */
+  noUndo?: true;
+}
+
 export type FromClock =
   | { kind: "ready"; initMs: number; frame: FrameSpec }
   /** an edit's answer; `issues` are the track model's problem kinds (`TrackApi.issue_kinds`);
    * `ms`: the worker's time on the edit by step (T-229, for `?debug=1`); `node` after addBuilding: the building's id */
+  /** T-4145: an edit applied, sent before anything else it sends (rows, state, answer): what the map and panels can
+   * show of it until the first network (or rows) after this message (notes/T-4145.md) */
+  | { kind: "applied"; seq: number; word: EditWord; /** T-4170: no network follows (a service edit, a rename, a fare or loan edit) */ noNet?: true }
   | { kind: "edited"; seq: number; ok: boolean; issues: string[]; charge: number; line?: number; node?: number; paid?: PaidFor; skipped?: number; ms?: Record<string, number>; early?: boolean; held?: Float32Array[] }
   | {
       kind: "preview";
@@ -1014,6 +1101,10 @@ export type FromClock =
   | { kind: "terrainDrop"; keys: number[] }
   /** `index.bin`: which blocks have a file */
   | { kind: "terrainIndex"; bytes: ArrayBuffer }
+  /** T-3913: a pack's in-town squares for BRT as polygons (`TrackApi.last_town_outline`), for the bus tool's road hint */
+  | { kind: "town"; id: string; outline: Float64Array }
+  /** the street speeds were dropped (a new model after a panic): every pack's polygons go */
+  | { kind: "townClear" }
   /** T-2613: terrain grids and water masks on their way, and those whose last fetch failed */
   | { kind: "ground"; pending: number; failed: number; why: string[] }
   /** T-1929: road tiles just put in the track model: a preview asked before them is out of date */
@@ -1053,23 +1144,26 @@ export type FromClock =
   | { kind: "savedByHand"; at?: number; error?: string }
   /** T-1826: the player changed the game while nothing can write it (the page asks before closing) */
   | { kind: "unsaved"; on: boolean }
-  /** `backups`: the active slot's (T-744), newest first; `newer`: a newer build saved the game in
-   * hand, which is not written here (T-1826) */
+  /** `backups`: the active slot's (T-744), newest first */
   /** `viewing` (T-3257): the game in hand is a network viewed from Community, in no slot: its card, `key` "" */
   /** `game` (T-3734): the game `active` holds, as `loaded`'s `game`; during a load into another slot still the game
    * being left */
-  | { kind: "saveSlots"; slots: SaveSlot[]; active: string; game: number; writable: boolean; at: number; reason?: string; error?: string; backups: SlotBackup[]; newer?: boolean; viewing?: SaveSlot }
+  | { kind: "saveSlots"; slots: SaveSlot[]; active: string; game: number; writable: boolean; at: number; reason?: string; error?: string; backups: SlotBackup[]; viewing?: SaveSlot }
   | { kind: "error"; message: string }
   /** T-988: the server refused the session's token (the main thread signs out) */
   | { kind: "accountGone" }
   /** T-1007: the track model panicked and was rebuilt from the game's last edit (or, `down`, could
    * not be: the player is asked to reload). `detail` is for the console, `notice` for the player. */
   | { kind: "recovered"; detail: string; notice: string; down?: boolean }
+  /** an edit, save or download asked of a track model that is down: the player is told again */
+  | { kind: "refused"; notice: string }
   /** T-950: the worker's start (its WASM, the first game) threw; no game will come. `storage` (T-2703):
    * the saved game could not be read, and was left as it is */
   | { kind: "failed"; error: string; storage?: boolean }
   /** T-2710: the worker's script has loaded, its first message */
-  | { kind: "booted" };
+  | { kind: "booted" }
+  /** T-4072: the game load's step in the worker (a wait, by name), for a report on a load that never ends */
+  | { kind: "loadStep"; step: string };
 
 // ---------- the network as demand sees it (T-025 -> T-026) ----------
 
@@ -1118,6 +1212,8 @@ export interface SnapshotStation {
   /** T-1464: a bus stop that is no station (id from `bus::STOP_ID_BASE` up, platform 0), reached
    * only through its line's corridor (`SnapshotLine.catches`) */
   bus?: true;
+  /** T-4041: a tram stop on street track at ground, where a trip pays no boarding cost */
+  street?: true;
 }
 
 export interface SnapshotLine {
@@ -1150,6 +1246,8 @@ export interface SnapshotLine {
   ferry?: boolean;
   /** T-3892: a ferry line's boat size when other than Medium (1), whose multiplier its fares take */
   boat?: 0 | 2;
+  /** T-3915: a bus line on BRT, whose fares take the BRT multiplier in place of the bus one */
+  brt?: boolean;
   /** T-2926: a line on tram track (`DemandApi.set_tram_lines`) */
   tram?: boolean;
   /** dwell at each stop, s, per run and period, in the run's own stop order (0 at both ends) */

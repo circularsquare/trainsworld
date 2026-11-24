@@ -3,7 +3,7 @@
 // Its hover says more. T-2693: a thin bar in every case (see `share` below); no ring since T-2728.
 
 import { computed, effect, signal } from "@preact/signals";
-import { demandBehindFrom, demandHeld, demandScope, demandStep, demandSolving, demandWork, editHeld, workShare, demandUpdating, demandView, focusZones, intercityDemand, refiningZone, viewRecomputing } from "../game/demand";
+import { demandBehindFrom, demandHeld, demandScope, demandStep, demandSolving, demandWork, editHeld, solveRestarted, workShare, demandUpdating, demandView, focusZones, intercityDemand, refiningZone, viewRecomputing } from "../game/demand";
 import { linesPending } from "../game/lineFigures";
 import { count } from "../game/format";
 import { clock, DEMAND_CAP } from "../game/clock";
@@ -11,7 +11,7 @@ import { activeCity, cityById, viewedZone, type CityId } from "../game/cities";
 import { keepPlace, nextLeft, STAGE_TEXT, type BarPlace } from "../game/loadBar";
 import { editLeft, editPrior } from "../game/editLeft";
 import { loadFailText } from "../game/loadText";
-import { cityNames,demandIdle, demandStopped, loadFailure, loadLines, loadProgress, memoryResolve, oldestDownload, solveLeft, zoneFailures, zoneLoads, zoneSteps } from "../game/loading";
+import { cityNames,demandIdle, demandStopped, loadFailure, loadLines, loadProgress, memoryResolve, oldestDownload, solveLeft, tripsOff, zoneFailures, zoneLoads, zoneSteps } from "../game/loading";
 import { selection } from "../game/ui";
 import { tripView } from "../game/trip";
 import { LoadBar, loadingCardShown } from "./LoadingScreen";
@@ -50,7 +50,7 @@ const clickWait = computed<CityId | null>(() => {
     const v = tripView.value;
     return v?.trip || v?.market || v?.failed ? null : activeCity.value;
   }
-  if (sel?.kind === "city" && !demandIdle.value && (zoneLoads.value.has(sel.city) || !intercityDemand.value)) return sel.city;
+  if (sel?.kind === "city" && !demandIdle.value && !tripsOff.value && (zoneLoads.value.has(sel.city) || !intercityDemand.value)) return sel.city;
   return null;
 });
 
@@ -114,6 +114,13 @@ effect(() => {
   if (demandUpdating.value) solvingSince ??= performance.now();
   // (a held edit's solve is sent just after the final before it: the same wait goes on)
   else solveEnd = window.setTimeout(() => { if (!demandUpdating.peek()) { solvingSince = null; solvePlace = { best: 0 }; } }, 1000);
+});
+// T-3925: a newer edit stopped the solve and started a new one: its wait starts from 0
+effect(() => {
+  if (!solveRestarted.value) return;
+  solvingSince = performance.now();
+  solvePlace = { best: 0 };
+  editShown.all = editShown.view = null;
 });
 /** the share of that wait passed, by the time left the hover shows: what has passed over that and what is left;
  * null while no time left is known */
@@ -256,7 +263,7 @@ export function StatusTag() {
     : terrain ? terrain
     : mapWait ? mapWait
     : wholeSolveUnseen.value ? t("statusTag.recomputingCities", { count: count(demandSolving.value?.size ?? demandScope.value) })
-    : !demandView.value ? (demandIdle.value ? null : t("statusTag.loadingDataDots")) // T-318: nothing to load over dead space
+    : !demandView.value ? (demandIdle.value || tripsOff.value ? null : t("statusTag.loadingDataDots")) // T-318: nothing to load over dead space; T-3851: nor with trips off
     // T-1493: the zone in view has figures but its bubbles are still on their way
     : bubblesWaiting.value ? t("statusTag.loadingDataDots")
     // T-3427: edits made while paused, held for the game to run ("Recalculate trips while paused" off)

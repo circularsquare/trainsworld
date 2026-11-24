@@ -434,20 +434,22 @@ impl Leg {
 
 /// Every route of the strategy from station `a` to station `t` carrying at least `min_share` of
 /// what leaves `a` (each with its share): at a station riders split over the useful departures by
-/// their frequency, and a route node follows its best edge, as `kernel::assign` loads them.
+/// their shares (T-4041), and a route node follows its best edge, as `kernel::assign` loads them.
 pub(crate) fn routes(g: &Graph, sk: &Skims, p: &Params, a: usize, t: usize, min_share: f32) -> Vec<(f32, Vec<Leg>)> {
     let mut out = vec![];
     let slot = sk.slot[t];
     if slot == NONE || a == t {
         return out;
     }
-    let (next, board) = (&sk.next[slot as usize].to_vec(), &sk.board_tph(g, slot as usize));
+    let next = &sk.next[slot as usize].to_vec();
     let mut rep = vec![NONE; g.n_st];
     for (r, &st) in g.rn_station.iter().enumerate().rev() {
         rep[st as usize] = r as u32;
     }
     let mut legs = vec![];
-    let at = At { g, p, next, board, cn: &sk.change[slot as usize], rep: &rep, t, min_share };
+    // T-4179: a skims table keeps no waits; this destination's search again has them
+    let waits = DestSearch::new(g, p).run(t, None).share;
+    let at = At { g, p, next, st: sk.strategy(slot as usize), waits: &waits, rep: &rep, t, min_share };
     // T-3718: a trip that starts with a walk to a station nearby, as a walk leg first; the walk to
     // the platform there joins it, by the train taken
     match sk.start[slot as usize].iter().find(|x| x.0 as usize == a) {
@@ -508,8 +510,8 @@ struct At<'a> {
     g: &'a Graph,
     p: &'a Params,
     next: &'a [u32],
-    board: &'a [f32],
-    cn: &'a ChangeNodes,
+    st: Strategy<'a>,
+    waits: &'a Shares,
     rep: &'a [u32],
     t: usize,
     min_share: f32,
@@ -519,7 +521,8 @@ struct At<'a> {
 /// node the rider left by an alighting or a walk to it, None at the trip's start; `walked` at a
 /// trip's start reached by its start walk (T-3718), the rider at the station's position.
 fn walk(at: &At, v: usize, came: Option<usize>, walked: bool, share: f32, legs: &mut Vec<Leg>, out: &mut Vec<(f32, Vec<Leg>)>) {
-    let At { g, p, next, board, cn, rep, t, min_share } = *at;
+    let At { g, p, next, st: strat, waits, rep, t, min_share } = *at;
+    let cn = strat.change;
     if v == t {
         out.push((share, legs.clone()));
         return;
@@ -528,21 +531,20 @@ fn walk(at: &At, v: usize, came: Option<usize>, walked: bool, share: f32, legs: 
         return; // a guard: strategies have no cycles
     }
     let s = g.n_st;
-    let (st, k) = if v < s { (v, NONE as usize) } else { (cn.st[v - g.n] as usize, v - g.n) };
-    let acc = |r: usize| if v < s { board[r] } else { cn.tph(g, k, r) };
-    let v = st;
-    let edges = g.adj_off[v] as usize..g.adj_off[v + 1] as usize;
-    let sum: f32 = edges.clone().map(|e| acc(g.adj_to[e] as usize - s)).sum();
-    if sum == 0.0 {
+    let mut dep = vec![];
+    let st = departures(g, strat.board, strat.change, strat.share, v, &mut dep);
+    let sum: f32 = dep.iter().map(|d| d.1).sum();
+    if !(sum > 0.0) {
         return;
     }
-    let headway = 60.0 / sum;
-    let wait_min = headway / 2.0;
+    // the node's expected wait for whichever comes first (T-4041), the same on every leg from it
+    let wait_min = waits.wait(g, v, &dep);
+    let v = st;
     let arrived = came.map(|c| arrival_at(g, c, v)).or(walked.then_some((0.0, 0.0)));
-    for e in edges {
-        let r0 = g.adj_to[e] as usize;
-        let sh = share * acc(r0 - s) / sum;
-        if acc(r0 - s) == 0.0 || sh < min_share {
+    for &(e, a) in &dep {
+        let r0 = g.adj_to[e as usize] as usize;
+        let sh = share * a / sum;
+        if sh < min_share {
             continue;
         }
         // T-717: a change walks to this train's platform, as part of the walk into the station if
@@ -590,7 +592,7 @@ fn walk(at: &At, v: usize, came: Option<usize>, walked: bool, share: f32, legs: 
         let change = if came.is_some() { p.transfer_min * g.change_f(v) } else { 0.0 };
         legs.push(Leg { kind: 1, rn_from: (r0 - s) as u32, rn_to: (r - s) as u32, st_from: v as u32, st_to: here, min, perc, fare, km, wait_min: wait_min + left - span, wait_perc: g.st_wait[v] * wait_min + left, full_wait: left - span, stops, change, base_mul: 1.0, free: false, ends: 0.0 });
         pushed += 1;
-        let to = if (nx as usize) < s { nx } else { cn.st[nx as usize - g.n] };
+        let to = if (nx as usize) < s { nx } else { cn.station(nx as usize - g.n) as u32 };
         if to != here {
             // a walking transfer from this route node to a station nearby
             let cost = (g.adj_off[r] as usize..g.adj_off[r + 1] as usize).find(|&k| g.adj_to[k] == to).map_or(0.0, |k| g.adj_cost[k]);
@@ -874,16 +876,31 @@ impl DemandApi {
                 let fixed = if svc.ups.get(a).is_some_and(|&u| u & crate::track::upgrades::PARK_RIDE != 0) { (p.p_ride - crate::track::upgrades::PARK_RIDE_MIN).max(0.0) } else { p.p_ride };
                 parts = [extra, fixed, end, money, drop as u8 as f32, ride_home_park, extra - fixed - end - ride_home_park];
             }
-            body.extend([a as f64, t as f64, rep[a], rep[t], sz.acc_d[ka] as f64, sz.acc_w[ka] as f64, sz.acc_d[kt] as f64, sz.acc_w[kt] as f64, sk.r[a * s + t] as f64, share as f64, sz.acc_t[ka] as f64, sz.acc_t[kt] as f64, ride as u8 as f64]);
+            // T-4094: a merged group's route node at the stop nearest the trip's end
+            let (rep_a, rep_t) = match self.svc.as_ref().and_then(|s| s.fold.as_ref()) {
+                Some(f) => {
+                    let at = |r: f64, c: usize| if r < 0.0 { r } else { f.nearest(r as usize, city.x[c], city.y[c]) as f64 };
+                    (at(rep[a], o), at(rep[t], d))
+                }
+                None => (rep[a], rep[t]),
+            };
+            body.extend([a as f64, t as f64, rep_a, rep_t, sz.acc_d[ka] as f64, sz.acc_w[ka] as f64, sz.acc_d[kt] as f64, sz.acc_w[kt] as f64, sk.r[a * s + t] as f64, share as f64, sz.acc_t[ka] as f64, sz.acc_t[kt] as f64, ride as u8 as f64]);
             body.extend(parts.iter().map(|&x| x as f64));
         }
         // routes over the bigger pairs, by their share of the whole trip's rail riders; one is always
         // kept while any rail rides (T-3730, as the intercity panel's)
         let shares: Vec<f32> = pairs.iter().map(|p| p.2).collect();
-        let all = pick_routes(&shares, |pi, min| {
+        let mut all = pick_routes(&shares, |pi, min| {
             let (ka, kt, _) = pairs[pi];
             routes(g, &sk, p, sz.acc_st[ka] as usize, sz.acc_st[kt] as usize, min)
         });
+        // T-4094: each ride boards at its run's stop nearest where the rider is and leaves at the one nearest
+        // where they go next (the next boarding, or the trip's end)
+        if let Some(f) = self.svc.as_ref().and_then(|s| s.fold.as_ref()) {
+            for (_, _, legs) in all.iter_mut() {
+                f.map_legs(legs, (city.x[o], city.y[o]), (city.x[d], city.y[d]));
+            }
+        }
         h[24] = pairs.len() as f64;
         h[25] = all.len() as f64;
         h[31] = (1.0 - all.iter().map(|r| r.1 as f64).sum::<f64>()).max(0.0);

@@ -6,13 +6,15 @@
 
 import { effect, signal } from "@preact/signals";
 import { t } from "../i18n";
-import { gameReady } from "../game/loading";
+import { gameReady, loadRetried } from "../game/loading";
 import { display } from "../game/ui";
 import { mobileDevice } from "../workers/deviceMemory";
 import { Icon } from "./widgets";
 
 const SHOWN_MS = 45_000;
-const shown = signal(false);
+/** the note is on show (ui/InstallBanner.tsx waits for it: they share a place) */
+export const deviceNoteShown = signal(false);
+const shown = deviceNoteShown;
 let timer = 0;
 
 /** The browser says the device has 4 GB or less (never a guess: Firefox and Safari do not say). */
@@ -42,7 +44,8 @@ effect(() => {
   if (ready === wasReady) return;
   wasReady = ready;
   hide();
-  if (ready && !seenBefore() && noteParts().length) { markSeen(); shown.value = true; timer = window.setTimeout(hide, SHOWN_MS); }
+  // (T-3933: not over the note of a load opened again with fewer workers; it waits for a later load)
+  if (ready && !loadRetried.peek() && !seenBefore() && noteParts().length) { markSeen(); shown.value = true; timer = window.setTimeout(hide, SHOWN_MS); }
 });
 
 export function DeviceNote() {

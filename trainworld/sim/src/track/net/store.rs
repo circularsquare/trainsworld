@@ -61,6 +61,7 @@ impl Network {
             node_fare: vec![],
             node_own: vec![],
             node_berth: vec![],
+            node_road: vec![],
             node_ports: vec![],
             node_moves: vec![],
             node_heading: vec![],
@@ -101,6 +102,7 @@ impl Network {
             line_day: vec![],
             line_hand: vec![],
             line_ones: vec![],
+            line_only: vec![],
             line_one_way: vec![],
             line_limit: vec![],
             line_fare_dist: vec![],
@@ -174,7 +176,60 @@ impl Network {
             node_wet: Default::default(),
             mask_epoch: 0,
             wet_cache: true,
+            brt_room: Default::default(),
+            brt_lanes: Default::default(),
+            busways: Default::default(),
+            busways_planned: Default::default(),
         }
+    }
+
+    /// T-3378 stage 4: the constructed busway edges.
+    pub fn built_busways(&self) -> impl Iterator<Item = u32> + '_ {
+        let planned = self.busways_planned.get();
+        (0..self.edge_count() as u32).filter(move |&e| {
+            let e = e as usize;
+            self.edge_alive[e] && self.edge_kind[e].is_busway() && (self.edge_built[e] || planned && !self.edge_off[e])
+        })
+    }
+    /// T-3378: whether the blueprint holds a busway Construct would build.
+    pub fn busway_planned(&self) -> bool {
+        (0..self.edge_count()).any(|e| self.edge_alive[e] && !self.edge_built[e] && !self.edge_off[e] && self.edge_kind[e].is_busway())
+    }
+    /// T-3378: `f` worked out as if every busway in the blueprint were constructed: Construct takes the BRT lanes they
+    /// run along off the lanes it charges for, so the quote must too.
+    pub fn with_busways_planned<T>(&self, f: impl FnOnce() -> T) -> T {
+        self.busways_planned.set(true);
+        let out = f();
+        self.busways_planned.set(false);
+        out
+    }
+    /// T-3378: a hash of the constructed busways: each one's id, length and ends.
+    pub fn busway_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for e in self.built_busways() {
+            e.hash(&mut h);
+            let len = self.edge_len[e as usize];
+            len.to_bits().hash(&mut h);
+            let pcs = self.edge_pieces(e);
+            for s in [0.0, 0.5 * len, len] {
+                let (x, y, _) = super::geom::pos_at(pcs, s);
+                (x.to_bits(), y.to_bits()).hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+    /// T-3378: the constructed busways a bus route runs along, worked out again only when `busway_key` changes.
+    pub fn busways(&self) -> std::sync::Arc<super::bus::busway::Busways> {
+        let key = self.busway_key();
+        if let Some((k, b)) = self.busways.borrow().as_ref() {
+            if *k == key {
+                return b.clone();
+            }
+        }
+        let b = std::sync::Arc::new(super::bus::busway::Busways::build(self));
+        *self.busways.borrow_mut() = Some((key, b.clone()));
+        b
     }
 
     /// Whether the node lies on water (`water_mask.is_water` at it), asked of the mask once while the
@@ -326,6 +381,7 @@ impl Network {
         self.node_fare.push(0);
         self.node_own.push(String::new());
         self.node_berth.push(None);
+        self.node_road.push(None);
         self.node_ports.push(Ports::default());
         self.node_moves.push(Moves::default());
         self.node_heading.push(0.0);
@@ -383,6 +439,7 @@ impl Network {
         self.line_day.push(0);
         self.line_hand.push(false);
         self.line_ones.push(vec![]);
+        self.line_only.push(vec![]);
         self.line_one_way.push(false);
         self.line_limit.push(0);
         self.line_fare_dist.push(false);
@@ -461,6 +518,7 @@ impl Network {
                 day: self.line_day[i],
                 hand: self.line_hand[i],
                 ones: self.line_ones[i].clone(),
+                only: self.line_only[i].clone(),
                 one_way: self.line_one_way[i],
                 limit: self.line_limit[i],
                 twin: self.line_twin[i],
@@ -498,6 +556,14 @@ impl Network {
     pub fn is_port(&self, n: u32) -> bool {
         self.is_station(n) && self.node_berth[n as usize].is_some()
     }
+    /// T-3378: a BRT station, beside a road on no track.
+    pub fn is_brt_station(&self, n: u32) -> bool {
+        self.is_station(n) && self.node_road[n as usize].is_some()
+    }
+    /// A station on no track, a port or a BRT station: none of the track's station rules apply to it.
+    pub fn trackless(&self, n: u32) -> bool {
+        self.node_berth[n as usize].is_some() || self.node_road[n as usize].is_some()
+    }
     /// A live ferry line (T-2193).
     pub fn is_ferry(&self, l: u32) -> bool {
         self.line_ok(l) && self.line_ferry[l as usize].is_some()
@@ -529,11 +595,13 @@ impl Network {
     pub fn station_build_price(&self, n: u32) -> f64 {
         self.station_price(n as usize, || self.node_is_wet(n as usize))
     }
-    /// A station's price, US$M: a port's flat price, any other by its level, platform, tracks and the
-    /// water under it (`wet`, asked only for those).
+    /// A station's price, US$M: a port's or a BRT station's flat price, any other by its level, platform, tracks
+    /// and the water under it (`wet`, asked only for those).
     pub(super) fn station_price(&self, n: usize, wet: impl FnOnce() -> bool) -> f64 {
         if self.node_berth[n].is_some() {
             PORT_COST
+        } else if self.node_road[n].is_some() {
+            BRT_STATION_COST
         } else {
             cost::station_cost_k(self.node_kind(n as u32), self.node_level[n], self.node_platform[n], self.station_tracks(n as u32), wet())
         }
@@ -545,12 +613,113 @@ impl Network {
             _ => 0.0,
         }
     }
-    /// Build cost of every bus route, US$M: all of them, or the constructed ones.
+    /// Build cost of every bus route, US$M: all of them, or the constructed ones. T-3378: lanes two BRT lines
+    /// share are counted once (`brt_lane_m`).
     pub(super) fn bus_cost(&self, built: bool) -> f64 {
-        (0..self.line_count() as u32)
+        let road: f64 = (0..self.line_count() as u32)
             .filter(|&l| self.line_bus.get(l as usize).and_then(|b| b.as_ref()).is_some_and(|r| self.line_ok(l) && (!built || r.built)))
-            .map(|l| self.bus_road_m(l) / 1000.0 * BUS_ROUTE_COST_PER_KM + self.brt_town_m(l) / 1000.0 * BRT_COST_PER_KM)
-            .sum()
+            .map(|l| self.bus_road_m(l) / 1000.0 * BUS_ROUTE_COST_PER_KM)
+            .sum();
+        road + self.brt_lane_m(built) / 1000.0 * BRT_COST_PER_KM
+    }
+    /// T-3378: the BRT lines, those with constructed lanes first, each part by id; only those with `built`. T-3944:
+    /// a constructed route with its lanes in the blueprint is among the planned ones.
+    pub fn brt_order(&self, built: bool) -> Vec<u32> {
+        let brt: Vec<u32> = (0..self.line_count() as u32).filter(|&l| self.line_ok(l) && self.bus_route(l).is_some_and(|r| r.brt_any())).collect();
+        let (mut done, rest): (Vec<u32>, Vec<u32>) = brt.into_iter().partition(|&l| self.lanes_built(l));
+        if !built {
+            done.extend(rest);
+        }
+        done
+    }
+    /// T-3378: a hash of what the BRT lines' lanes are worked out from: `order`'s routes, whether each is
+    /// constructed and a loop run one way, and the street grids.
+    fn brt_key(&self, order: &[u32]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for &l in order {
+            l.hash(&mut h);
+            self.line_one_way.get(l as usize).copied().unwrap_or(false).hash(&mut h);
+            if let Some(r) = self.line_bus.get(l as usize).and_then(|b| b.as_ref()) {
+                (r.built, r.brt, r.brt_bp).hash(&mut h);
+                r.points.len().hash(&mut h);
+                r.points.iter().flatten().for_each(|v| v.to_bits().hash(&mut h));
+                r.kinds.hash(&mut h);
+            }
+        }
+        self.streets.grids.iter().for_each(|g| (std::sync::Arc::as_ptr(g) as usize).hash(&mut h));
+        // T-3378: a lane on a busway is none (the busway paid), but its room counts
+        if !order.is_empty() {
+            self.busway_key().hash(&mut h);
+        }
+        h.finish()
+    }
+    /// T-3378: every BRT line's lanes in `brt_order(false)`, and how many of them are constructed (they come first),
+    /// worked out again only when `brt_key` changes: the state rows ask it of every bus line.
+    pub fn brt_lanes(&self) -> std::sync::Arc<(super::bus::lanes::Lanes, u32)> {
+        let order = self.brt_order(false);
+        let key = self.brt_key(&order);
+        if let Some((k, lanes)) = self.brt_lanes.borrow().as_ref() {
+            if *k == key {
+                return lanes.clone();
+            }
+        }
+        let built = order.iter().filter(|&&l| self.lanes_built(l)).count() as u32;
+        let lanes = std::sync::Arc::new((super::bus::lanes::Lanes::build(self, &order), built));
+        *self.brt_lanes.borrow_mut() = Some((key, lanes.clone()));
+        lanes
+    }
+    /// T-3378: the road metres of BRT lanes in town, each shared stretch once: every BRT line's, or the
+    /// constructed ones'. Constructed lines come first, so what the planned ones add is the blueprint's.
+    pub fn brt_lane_m(&self, built: bool) -> f64 {
+        let all = self.brt_lanes();
+        let (lanes, n) = (&all.0, if built { all.1 as usize } else { usize::MAX });
+        lanes.lines().iter().take(n).map(|&l| lanes.split(l).first).sum()
+    }
+    /// T-3378: the road metres of route `pts` in town that no other BRT line has lanes on: the constructed ones for
+    /// a constructed line `l`, any for a planned one (or an id no line has).
+    pub fn brt_new_m(&self, l: u32, pts: &[[f64; 2]], kinds: &[u8]) -> f64 {
+        let all = self.brt_lanes();
+        let built = self.line_bus.get(l as usize).and_then(|b| b.as_ref()).is_some_and(|r| r.built);
+        let steps = super::bus::lanes::town_steps(self, pts, kinds).0;
+        all.0.new_m_upto(&steps, all.0.position(l), if built { all.1 } else { u32::MAX })
+    }
+    /// T-3378: a bus line's lanes, road metres: [in town, not shared with another BRT line (what switching it on
+    /// would pay), its part of the lanes' upkeep (0 off BRT)], beside the constructed BRT lines for a constructed
+    /// line and all of them for a planned one.
+    pub fn brt_split(&self, l: u32) -> [f64; 3] {
+        let Some(r) = self.line_bus.get(l as usize).and_then(|b| b.as_ref()).filter(|_| self.line_ok(l)) else { return [0.0; 3] };
+        let all = self.brt_lanes();
+        let upto = if r.built { all.1 } else { u32::MAX };
+        if all.0.position(l).is_some() {
+            let s = all.0.split_upto(l, upto);
+            return [s.town, s.alone, s.share];
+        }
+        let steps = super::bus::lanes::town_steps(self, &r.points, &r.kinds).0;
+        [steps.iter().map(|s| s.m).sum(), all.0.new_m_upto(&steps, None, upto), 0.0]
+    }
+    /// T-3378 stage 2: the room on the constructed BRT lines' lanes, worked out again only when one of their routes,
+    /// their one-way loops or the street grids have changed (it is read on every round of a settle).
+    pub fn brt_room(&self) -> std::sync::Arc<super::bus::lanes::Room> {
+        let order = self.brt_order(true);
+        let key = self.brt_key(&order);
+        if let Some((k, room)) = self.brt_room.borrow().as_ref() {
+            if *k == key {
+                return room.clone();
+            }
+        }
+        let room = std::sync::Arc::new(if order.is_empty() { Default::default() } else { super::bus::lanes::Room::build(self, &order) });
+        *self.brt_room.borrow_mut() = Some((key, room.clone()));
+        room
+    }
+    /// T-3378: each line's part of the constructed BRT lanes' upkeep, road metres, by line index.
+    pub fn brt_upkeep_m(&self) -> Vec<f64> {
+        let all = self.brt_lanes();
+        let mut out = vec![0.0; self.line_count()];
+        for &l in all.0.lines().iter().take(all.1 as usize) {
+            out[l as usize] = all.0.split_upto(l, all.1).share;
+        }
+        out
     }
     /// T-3907: a bus line's road metres in town for BRT (`bus::Pace::town_m`), on BRT or not (0 for any other line).
     pub fn bus_town_m(&self, l: u32) -> f64 {
@@ -566,6 +735,26 @@ impl Network {
     /// Whether a bus line runs on BRT (T-3907).
     pub fn is_brt(&self, l: u32) -> bool {
         self.line_bus.get(l as usize).and_then(|b| b.as_ref()).is_some_and(|r| r.brt)
+    }
+    /// T-3944: whether a constructed bus line's BRT lanes are in the blueprint.
+    pub fn brt_bp(&self, l: u32) -> bool {
+        self.bus_route(l).is_some_and(|r| r.brt_bp)
+    }
+    /// T-3944: whether a bus line's BRT lanes are constructed.
+    pub fn lanes_built(&self, l: u32) -> bool {
+        self.bus_route(l).is_some_and(|r| r.lanes_built())
+    }
+    fn bus_route(&self, l: u32) -> Option<&super::bus::BusRoute> {
+        self.line_bus.get(l as usize).and_then(|b| b.as_ref())
+    }
+    /// T-3944: a BRT line's lanes on the map: runs of its road in town, each `[kind, points, x, y, ...]` (frame), kind 0
+    /// new lanes in the blueprint, 1 in the blueprint on lanes a constructed BRT line has (free), 2 constructed. The
+    /// blueprint's kinds are against the constructed lanes, as its Construct price is. Empty off BRT.
+    pub fn brt_marks(&self, l: u32) -> Vec<f64> {
+        let Some(r) = self.bus_route(l).filter(|r| self.line_ok(l) && r.brt_any()) else { return vec![] };
+        let all = self.brt_lanes();
+        let built = r.lanes_built();
+        super::bus::lanes::marks(self, &r.points, &r.kinds, |s| if built { 2 } else if all.0.sharers(s, all.0.position(l)).iter().any(|&j| j < all.1) { 1 } else { 0 })
     }
 
     pub fn edge_pieces(&self, e: u32) -> &[Piece] {
@@ -592,6 +781,14 @@ impl Network {
     /// T-3711: a line's one-way stops the player set (`LineData::ones`).
     pub fn line_ones(&self, l: u32) -> &[(u32, u8)] {
         self.line_ones.get(l as usize).map_or(&[], |v| &v[..])
+    }
+    /// T-4013: a line's boarding-only and getting-off-only stops (`LineData::only`).
+    pub fn line_only(&self, l: u32) -> &[(u32, u8)] {
+        self.line_only.get(l as usize).map_or(&[], |v| &v[..])
+    }
+    /// T-4013: what riders may do at station `s` on line `l`: `BOARD_ONLY`, `ALIGHT_ONLY`, or 0 both.
+    pub fn stop_only(&self, l: u32, s: u32) -> u8 {
+        self.line_only(l).iter().find(|x| x.0 == s).map_or(0, |x| x.1)
     }
     pub fn lines_on_edge(&self, e: u32) -> &[u32] {
         let i = e as usize;

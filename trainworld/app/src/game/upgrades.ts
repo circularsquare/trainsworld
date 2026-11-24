@@ -9,6 +9,9 @@ export const UPGRADE_BITS: number[] = [UPGRADE.terminal, UPGRADE.parkRide, UPGRA
 /** Set on a station building's members in demand's snapshot only, never bought or saved (T-2220,
  * `upgrades::IN_BUILDING`): a change there counts 0.8. */
 export const IN_BUILDING = 16;
+/** Set on BRT stations in demand's snapshot only (T-3378, `upgrades::BRT_STATION`): a wait there counts as in a
+ * waiting room, and it takes a tram stop's slot among a home's nearest stations. */
+export const BRT_STATION = 32;
 
 export interface UpgradeText {
   bit: number;
@@ -33,4 +36,9 @@ export const UPGRADE_TEXT: UpgradeText[] = [
 export const PASSAGE_BASE = 10, PASSAGE_PER_KM = 90;
 export const passagePrice = (m: number) => PASSAGE_BASE + PASSAGE_PER_KM * m / 1000;
 
-export const hasUpgrade = (bits: number | undefined, bit: number) => ((bits ?? 0) & bit) !== 0;
+/** T-3922: the upkeep a game day, US$, of what costs `priceM` US$M to buy on a station (`upgrades::upkeep`); 0
+ * before the money has come. */
+export const upgradeUpkeep = (priceM: number, m: { upkeepUpgradeShare: number } | null | undefined) =>
+  m ? priceM * 1e6 * (m.upkeepUpgradeShare ?? 0) : 0;
+
+export const hasUpgrade =(bits: number | undefined, bit: number) => ((bits ?? 0) & bit) !== 0;

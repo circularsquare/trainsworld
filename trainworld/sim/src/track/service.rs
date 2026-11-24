@@ -8,6 +8,9 @@ use super::net::{path_dir, path_edge, LoopKind, Network};
 use super::params::*;
 use super::profile::{self, Hold, Profile};
 
+pub mod bends;
+pub mod check;
+
 /// One direction of a line. Offsets are metres along this direction's path, from the first
 /// stop's node.
 #[derive(Clone, Debug, Default)]
@@ -43,6 +46,8 @@ pub struct Run {
     pub limits: Vec<[f64; 2]>,
     /// The hops between stops and ends with no holds (`run_profile`).
     pub hops: profile::Hops,
+    /// A tram line's run (`Network::line_tram`): it brakes at `TRAM_BRAKE` (T-3921).
+    pub tram: bool,
     /// No capacity delay.
     pub free: Profile,
     /// Per slot (`params::SLOTS`): track holds and extra dwell per stop from the capacity pass.
@@ -116,12 +121,20 @@ pub struct LineSvc {
     /// T-3346 stage 2: the pattern the runs' variants were worked out for (`timing::retime`, as
     /// `Lattice::timing_key`); a trip takes one only while the line still runs it.
     pub timed: Option<Lattice>,
+    /// T-4013: per stop (parallel to `stops`), `LineData::only`'s kind there (0 both ways on and
+    /// off); empty for a line with none. Demand reads it through `span::line_span`.
+    pub only: Vec<u8>,
 }
 
 impl Run {
     /// Trains pass stop `j` without stopping (T-3332).
     pub fn passes(&self, j: usize) -> bool {
         self.pass.get(j).copied().unwrap_or(false)
+    }
+
+    /// Its trains' braking, m/s².
+    pub fn brake(&self) -> f64 {
+        if self.tram { TRAM_BRAKE } else { BRAKE }
     }
 }
 
@@ -266,6 +279,35 @@ pub struct InFlight {
     /// comes up in the run, and the metres into it. A changed run can start somewhere else, so
     /// the offset alone would move the train.
     at: Option<(u32, usize, f64)>,
+    /// T-4133: what `note_changes` reads of its profile and run (`train_key`): the same after the edit,
+    /// the train stands where it was.
+    key: u64,
+}
+
+/// T-4133: the bits of what moving a train again reads: its profile's phases and length, and its
+/// run's path and offsets.
+fn train_key(r: &Run, p: &Profile) -> u64 {
+    let bits = p.phases.iter().flat_map(|x| [x.t, x.s, x.v, x.a]).chain([p.duration, r.len]).chain(r.seg_off.iter().copied()).map(f64::to_bits);
+    bits.chain(r.segs.iter().map(|&x| x as u64)).fold(0xcbf2_9ce4_8422_2325, |h, x| (h ^ x).wrapping_mul(0x100_0000_01b3))
+}
+
+/// T-4133: `train_key` once per line, run, slot and variant (per line, the few it has).
+struct TrainKeys(Vec<Vec<([u8; 3], u64)>>);
+
+impl TrainKeys {
+    fn new(lines: usize) -> TrainKeys {
+        TrainKeys(vec![vec![]; lines])
+    }
+    fn of(&mut self, ls: &LineSvc, l: u32, run: u8, level: u8, var: u8) -> u64 {
+        let v = &mut self.0[l as usize];
+        let at = [run, level, var];
+        if let Some(&(_, k)) = v.iter().find(|x| x.0 == at) {
+            return k;
+        }
+        let k = train_key(&ls.runs[run as usize], ls.prof_of(run as usize, level as usize, var));
+        v.push((at, k));
+        k
+    }
 }
 
 /// Where offset `s` is on a run's path, as `InFlight::at` keeps it.
@@ -292,6 +334,9 @@ pub struct Before {
     lat: Vec<Option<Lattice>>,
     flight: Vec<InFlight>,
     lens: Vec<[f64; 2 * SLOTS]>,
+    /// T-4133: how many lines `changed` held: what the edit notes after this is what it touched
+    /// (`Service::touched_since`).
+    noted: usize,
 }
 
 /// The earliest time a profile's train has reached `s` (it never goes back), within `[0, dur]`.
@@ -373,6 +418,36 @@ impl Hours {
             }
         }
         out
+    }
+    /// T-3931: the piece whose period's slot piece `i` runs the timetable of (its waits, round
+    /// trip, spare time and phase): in a slot its hours share between rows (`own_on`), the nearest
+    /// piece of its own row, through the day, that has a slot to itself, so a moved hour of the
+    /// morning runs as the morning does; itself where its row has none.
+    pub fn row_piece(&self, i: usize) -> usize {
+        let n = self.n as usize;
+        if !self.own_on[i] || n == 0 {
+            return i;
+        }
+        let k = self.pieces[i].k;
+        // (the day's last piece runs on into its first: the night crosses midnight)
+        let find = |step: usize| {
+            let mut j = i;
+            for d in 1..n {
+                j = (j + step) % n;
+                if self.pieces[j].k != k {
+                    return None;
+                }
+                if !self.own_on[j] {
+                    return Some((d, j));
+                }
+            }
+            None
+        };
+        match (find(1), find(n - 1)) {
+            (Some(a), Some(b)) => if b.0 < a.0 { b.1 } else { a.1 },
+            (Some(a), None) | (None, Some(a)) => a.1,
+            (None, None) => i,
+        }
     }
 }
 
@@ -538,7 +613,7 @@ fn day_stretches(lat: &Lattice, day: i64) -> Vec<Stretch> {
     let mut out: Vec<(Stretch, u8)> = Vec::with_capacity(h.n as usize);
     for i in 0..h.n as usize {
         let p = h.pieces[i];
-        let lev = levels[p.q as usize];
+        let lev = levels[h.pieces[h.row_piece(i)].q as usize];
         let (tph, off, phase) = if h.own_on[i] { h.own[i][row] } else { lat.slot(lev) };
         match out.last_mut() {
             Some((x, k)) if *k == p.k && x.lev == lev && x.tph.to_bits() == tph.to_bits() && x.off.to_bits() == off.to_bits() && x.phase.to_bits() == phase.to_bits() => x.h1 = p.b as f64,
@@ -687,8 +762,12 @@ pub struct Service {
     /// T-3346 stage 2: the profiles `timing::retime` built last time, by what they were built
     /// from, so an edit elsewhere builds none of them again.
     pub timing_memo: std::collections::HashMap<(u32, u8, Vec<u64>), Profile>,
-    /// T-3346 stage 2: what `timing::retime` read last time; the same again keeps its variants.
-    pub timing_key: Vec<u64>,
+    /// T-4132: per cluster of lines `timing::retime` times together, by its first line: what it read
+    /// last time and the state it left its lines' variants in; both the same again keep them.
+    pub timing_keys: std::collections::HashMap<u32, (Vec<u64>, Vec<u64>)>,
+    /// T-4132: while a trial times no train (`TrackWorld::trial_with`), the variants each line it
+    /// rebuilds had before it, to put back after (`timing::put_back`); None otherwise.
+    pub timing_held: Option<Vec<(u32, super::timing::Held)>>,
 }
 
 /// One run of the stops and path its trains run (`line`: the whole plan, or the part of it a
@@ -703,7 +782,7 @@ struct Served<'a> {
 fn build_run(net: &Network, l: u32, on: &Served, rev: bool, train_len: f64, dwell: f64) -> Option<Run> {
     let path = on.path;
     let running = on.running;
-    let mut run = Run::default();
+    let mut run = Run { tram: net.line_tram(l), ..Default::default() };
     // T-3348: each run's own stop nodes, run 1's in its order
     let stops = if rev {
         let (stops, segs) = net.back_run_of(on.stops, path, net.line_ones(l))?;
@@ -814,8 +893,8 @@ fn build_run(net: &Network, l: u32, on: &Served, rev: bool, train_len: f64, dwel
     let turn = net.line_turn[l as usize] as f64;
     let dw = stand_times(&run, dwell, turn);
     run.hops = match with_ends(&run, &dw, turn) {
-        None => profile::hops(&run.limits, &run.stop_s, &run.jump),
-        Some((s, jump, ..)) => profile::hops(&run.limits, &s, &jump),
+        None => profile::hops(&run.limits, &run.stop_s, &run.jump, run.brake()),
+        Some((s, jump, ..)) => profile::hops(&run.limits, &s, &jump, run.brake()),
     };
     run.free = run_profile(&run, &dw, turn, &[]);
     Some(run)
@@ -826,9 +905,9 @@ fn build_run(net: &Network, l: u32, on: &Served, rev: bool, train_len: f64, dwel
 /// timed as the train goes by.
 fn run_profile(run: &Run, dw: &[f64], turn: f64, holds: &[Hold]) -> Profile {
     let Some((s, jump, stand, keep)) = with_ends(run, dw, turn) else {
-        return profile::run_with(&run.limits, &run.stop_s, &run.jump, dw, holds, &run.hops);
+        return profile::run_with(&run.limits, &run.stop_s, &run.jump, dw, holds, &run.hops, run.brake());
     };
-    let mut p = profile::run_with(&run.limits, &s, &jump, &stand, holds, &run.hops);
+    let mut p = profile::run_with(&run.limits, &s, &jump, &stand, holds, &run.hops, run.brake());
     let n = run.stop_s.len();
     let (mut arr, mut dep) = (vec![0.0; n], vec![0.0; n]);
     for (i, k) in keep.iter().enumerate() {
@@ -909,6 +988,9 @@ fn build_on(net: &Network, l: u32, stops: &[u32], path: &[u32], running: bool) -
     let mut ls = LineSvc::default();
     ls.stops = stops.to_vec();
     if ls.stops.len() < 2 { return ls; }
+    if !net.line_only(l).is_empty() {
+        ls.only = stops.iter().map(|&s| net.stop_only(l, s)).collect();
+    }
     ls.kind = net.loop_kind(stops, path);
     ls.one_way = net.runs_once(l, stops, path);
     // T-3348: the platforms each run stops at
@@ -947,14 +1029,18 @@ fn build_bus(net: &Network, l: u32, r: &super::bus::BusRoute) -> LineSvc {
     let dwell = net.line_dwell[l as usize] as f64;
     let n = plan.stops.len();
     let fwd_s: Vec<f64> = plan.stops.iter().map(|s| s.s).collect();
-    let fwd_dw: Vec<f64> = plan.stops.iter().map(|s| if s.station.is_some() { dwell } else { 0.0 }).collect();
+    // T-3378: a BRT line at a BRT station stands no dwell and its stop costs `BRT_STATION_STOP_S`
+    let brt_at = |s: &super::bus::BusStop| r.brt && s.station.is_some_and(|n| net.is_brt_station(n));
+    let fwd_dw: Vec<f64> = plan.stops.iter().map(|s| if s.station.is_some() && !brt_at(s) { dwell } else { 0.0 }).collect();
+    let fwd_cut: Vec<f64> = plan.stops.iter().map(|s| if brt_at(s) { super::streets::BUS_STOP_S - BRT_STATION_STOP_S } else { 0.0 }).collect();
     let len = plan.len;
     let pace = super::bus::Pace::along(net, &r.points, &plan.cum, &r.kinds, len).brt(r.brt);
     let rev_s: Vec<f64> = fwd_s.iter().rev().map(|s| len - s).collect();
     let rev_dw: Vec<f64> = fwd_dw.iter().rev().copied().collect();
+    let rev_cut: Vec<f64> = fwd_cut.iter().rev().copied().collect();
     let rev_street: Vec<f64> = plan.street.iter().rev().map(|s| len - s).collect();
-    let make = |s: Vec<f64>, dw: &[f64], street: &[f64], pace: &super::bus::Pace| {
-        let p = if r.rule() != super::bus::StopRule::Auto { super::bus::spaced_profile(&s, dw, pace) } else { super::bus::profile(&s, dw, street, pace) };
+    let make = |s: Vec<f64>, dw: &[f64], cut: &[f64], street: &[f64], pace: &super::bus::Pace| {
+        let p = super::bus::profile_cut(&s, dw, cut, street, pace, r.rule() != super::bus::StopRule::Auto);
         let top = p.phases.iter().map(|x| x.v).fold(0.0, f64::max);
         Run {
             len,
@@ -975,7 +1061,7 @@ fn build_bus(net: &Network, l: u32, r: &super::bus::BusRoute) -> LineSvc {
         ls.kind = LoopKind::Circle;
         ls.one_way = net.line_one_way[l as usize];
     }
-    ls.runs = [make(fwd_s, &fwd_dw, &plan.street, &pace), make(rev_s, &rev_dw, &rev_street, &pace.reversed())];
+    ls.runs = [make(fwd_s, &fwd_dw, &fwd_cut, &plan.street, &pace), make(rev_s, &rev_dw, &rev_cut, &rev_street, &pace.reversed())];
     ls.cars = 1;
     ls.train_len = super::bus::BUS_LEN_M;
     ls.ok = true;
@@ -1088,26 +1174,32 @@ impl Service {
         // The incremental capacity pass needs the old and new paths of the rebuilt lines.
         let mut path_edges: Vec<u32> = vec![];
         let mut path_nodes: Vec<u32> = vec![];
+        // T-3945: both runs, since the way back can call at platforms the way out does not (a street
+        // tram's stop on each side of the road): a platform only one run visits otherwise keeps the
+        // old line's stop indices
         let mut add_path = |ls: &LineSvc| {
             if ls.running {
-                path_edges.extend(ls.runs[0].segs.iter().map(|&p| path_edge(p)));
-                path_nodes.extend_from_slice(&ls.runs[0].nodes);
+                for run in &ls.runs {
+                    path_edges.extend(run.segs.iter().map(|&p| path_edge(p)));
+                    path_nodes.extend_from_slice(&run.nodes);
+                }
             }
         };
         for &l in rebuilt {
             add_path(&self.lines[l as usize]);
         }
-        // T-3346 stage 2: a rebuilt line has lost its variants, so the next retime works them out
-        // whatever else it reads
-        if !rebuilt.is_empty() {
-            self.timing_key.clear();
-        }
         for &l in rebuilt {
             let (old_ok, old_run) = (self.lines[l as usize].ok, self.lines[l as usize].running);
             let old_stops = std::mem::take(&mut self.lines[l as usize].stops);
+            let old_only = std::mem::take(&mut self.lines[l as usize].only);
+            if let Some(held) = &mut self.timing_held {
+                if !held.iter().any(|h| h.0 == l) {
+                    held.extend(super::timing::take(&mut self.lines[l as usize]).map(|h| (l, h)));
+                }
+            }
             self.lines[l as usize] = build_line(net, l);
             let now = &self.lines[l as usize];
-            if now.ok != old_ok || now.running != old_run || now.stops != old_stops {
+            if now.ok != old_ok || now.running != old_run || now.stops != old_stops || now.only != old_only {
                 demand.push(l);
             }
         }
@@ -1211,6 +1303,12 @@ impl Service {
         self.note_changed(rescheduled);
         self.note_changed(&d.recomputed);
         d
+    }
+
+    /// T-4132: the next `timing::retime` works every line out again, as from a load.
+    pub fn forget_timing(&mut self) {
+        self.timing_keys.clear();
+        self.timing_memo.clear();
     }
 
     pub fn note_changed(&mut self, lines: &[u32]) {
@@ -1379,15 +1477,19 @@ impl Service {
             let (auto, ps) = (net.auto_of(l), net.period_slot());
             let mut h = Hours { n: m.n_pieces as u8, pieces: m.pieces, ..Hours::NONE };
             for (i, pc) in m.pieces[..m.n_pieces].iter().enumerate() {
+                h.own_on[i] = m.mixed[ps[pc.q as usize]];
+            }
+            for (i, pc) in m.pieces[..m.n_pieces].iter().enumerate() {
+                if !h.own_on[i] { continue; }
                 let s = ps[pc.q as usize];
-                if !m.mixed[s] { continue; }
-                h.own_on[i] = true;
+                // T-3931: laid out on the slot whose timetable it runs (`Hours::row_piece`)
+                let sr = ps[m.pieces[h.row_piece(i)].q as usize];
                 let k = pc.k as usize;
                 let (a, ar) = (auto.map(|a| a[k]), auto_r.map(|a| a[k]));
                 let tk = net.place_tph(l, s, k, tph[s], ls.round_trip[s]);
-                h.own[i][WEEKDAYS] = (tk, off_at(s, tk, &split, &|lev, t| self.spare_with(net, l, lev, t, a)), phase_in(&p, s, tk));
+                h.own[i][WEEKDAYS] = (tk, off_at(sr, tk, &split, &|lev, t| self.spare_with(net, l, lev, t, a)), phase_in(&p, sr, tk));
                 let tk = net.place_tph(l, s, k, rest[s], ls.round_trip[s]);
-                h.own[i][WEEKEND] = (tk, off_at(s, tk, &split_r, &|lev, t| self.spare_paced(net, l, lev, t, ar, pace_r[lev])), phase_in(&p_r, s, tk));
+                h.own[i][WEEKEND] = (tk, off_at(sr, tk, &split_r, &|lev, t| self.spare_paced(net, l, lev, t, ar, pace_r[lev])), phase_in(&p_r, sr, tk));
             }
             h
         };
@@ -1450,28 +1552,53 @@ impl Service {
     /// Every line's pattern and every train running at `now`, before an edit (`note_changes`
     /// after it).
     pub fn before_edit(&self, net: &Network, now: f64) -> Before {
+        #[cfg(not(target_arch = "wasm32"))]
+        let t0 = std::time::Instant::now();
         let lat = (0..self.lines.len()).map(|l| self.lattice(net, l)).collect();
         let mut flight = vec![];
         if now.is_finite() {
+            let mut keys = TrainKeys::new(self.lines.len());
             for t in self.trips(net, now, now + 1e-3) {
-                let p = self.lines[t.line as usize].prof_of(t.run as usize, t.level as usize, t.var);
+                let ls = &self.lines[t.line as usize];
+                let p = ls.prof_of(t.run as usize, t.level as usize, t.var);
+                let key = keys.of(ls, t.line, t.run, t.level, t.var);
                 let tau = now - t.draw;
                 if tau < 0.0 {
                     continue;
                 }
                 if tau >= p.duration {
                     // standing at the terminal: as long again after the new profile's arrival
-                    flight.push(InFlight { line: t.line, run: t.run, level: t.level, var: t.var, dep: t.dep, s: f64::INFINITY, stopped_left: Some(tau - p.duration), at: None });
+                    flight.push(InFlight { line: t.line, run: t.run, level: t.level, var: t.var, dep: t.dep, s: f64::INFINITY, stopped_left: Some(tau - p.duration), at: None, key });
                     continue;
                 }
                 let (s, v) = profile::state_at(&p.phases, tau);
                 let stopped_left = (v < 0.01).then(|| time_reaching(&p.phases, p.duration, s + 0.05) - tau);
-                let at = ground_at(&self.lines[t.line as usize].runs[t.run as usize], s);
-                flight.push(InFlight { line: t.line, run: t.run, level: t.level, var: t.var, dep: t.dep, s, stopped_left, at });
+                let at = ground_at(&ls.runs[t.run as usize], s);
+                flight.push(InFlight { line: t.line, run: t.run, level: t.level, var: t.var, dep: t.dep, s, stopped_left, at, key });
             }
         }
         let lens = (0..self.lines.len()).map(|l| self.trip_lens(net, l)).collect();
-        Before { lat, flight, lens }
+        #[cfg(not(target_arch = "wasm32"))]
+        check::before(t0, flight.len());
+        Before { lat, flight, lens, noted: self.changed.len() }
+    }
+
+    /// T-4133: per line, whether the edit since `before` noted it (`note_changed`: rebuilt,
+    /// rescheduled, its profiles recomputed or its variants moved by `timing::retime`, or the net
+    /// changed under it): what the clock worker reads again. A line it did not note runs the
+    /// profiles and variants it ran, so its trains stand where they were.
+    fn touched_since(&self, before: &Before) -> Vec<bool> {
+        let n = self.lines.len();
+        if self.changed_all || self.changed.len() < before.noted {
+            return vec![true; n];
+        }
+        let mut on = vec![false; n];
+        for &l in &self.changed[before.noted..] {
+            if let Some(x) = on.get_mut(l as usize) {
+                *x = true;
+            }
+        }
+        on
     }
 
     /// A line's trip lengths (run and turnaround) per run and slot.
@@ -1489,6 +1616,12 @@ impl Service {
         if !now.is_finite() {
             return;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let (t0, shadow) = (std::time::Instant::now(), check::shadow(self));
+        // T-4133: the trains to move again: those of lines the edit touched or whose pattern moved
+        let mut moved = if check::full() { vec![true; self.lines.len()] } else { self.touched_since(before) };
+        // (a line noted is often one a settle scheduled again as it was: `train_key` below finds its
+        // trains unchanged)
         self.eras.resize(self.lines.len(), vec![]);
         self.shifts.resize(self.lines.len(), vec![]);
         for l in 0..self.lines.len() {
@@ -1500,6 +1633,7 @@ impl Service {
             let was = before.lat.get(l).copied().flatten().unwrap_or(Lattice::NONE);
             let lens = self.trip_lens(net, l);
             let reshaped = before.lens.get(l).is_some_and(|b| b.iter().zip(&lens).any(|(x, y)| (x - y).abs() > 1e-6));
+            moved[l] |= was != after || reshaped;
             let v = &mut self.eras[l];
             match v.last() {
                 // a change at the same instant: the pattern before the instant stands for
@@ -1513,11 +1647,27 @@ impl Service {
                 _ => {}
             }
         }
-        for f in &before.flight {
+        let (full, mut keys) = (check::full(), TrainKeys::new(self.lines.len()));
+        #[cfg(not(target_arch = "wasm32"))]
+        let (mut walked, mut skip) = (0, u32::MAX);
+        for f in before.flight.iter().filter(|f| moved.get(f.line as usize).copied().unwrap_or(true)) {
             let l = f.line as usize;
             let Some(ls) = self.lines.get(l).filter(|ls| ls.running && l < net.line_count()) else { continue };
             // T-3346 stage 2: the timetable that departure runs now (after the eras above)
-            let p = ls.prof_of(f.run as usize, f.level as usize, self.var_now(net, l, f.run as usize, f.dep));
+            let var = self.var_now(net, l, f.run as usize, f.dep);
+            // T-4133: on the profile and run it had, a train stands where it was (moving it again
+            // would only round its shift)
+            if !full && keys.of(ls, f.line, f.run, f.level, var) == f.key {
+                continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if check::skip_line(&mut skip, f.line) {
+                    continue;
+                }
+                walked += 1;
+            }
+            let p = ls.prof_of(f.run as usize, f.level as usize, var);
             let moved = f.at.and_then(|a| offset_at(&ls.runs[f.run as usize], a));
             let f = &InFlight { s: moved.unwrap_or(f.s), ..*f };
             let tau = match f.stopped_left {
@@ -1536,6 +1686,8 @@ impl Service {
                 v.push((f.run, f.dep, by));
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        check::after(net, self, shadow, before, walked, now, t0);
     }
 
     /// Forget eras whose trains can no longer be drawn at `now`, or that lie more than an hour

@@ -44,6 +44,10 @@ export function endCardFull(p: LoadProgress | null) {
   cardEnding.value = p && { ...p, fraction: 1, leftMs: null };
   if (p) endingTimer = setTimeout(() => (cardEnding.value = null), END_BEAT_MS);
 }
+/** the card's last progress, so any load that ends with the card up shows its bar full first (the bar is drawn well
+ * short of full near the end, `shownShare`) */
+let lastCardLoad: LoadProgress | null = null;
+loadProgress.subscribe((p) => { if (p) lastCardLoad = p; });
 /** T-343: each zone being loaded whose figures have not arrived yet, with its share done (0-1).
  * A zone of the load above has that load's share; a zone opened for its bubbles only, its own. */
 export const zoneLoads = signal<ReadonlyMap<CityId, number>>(new Map());
@@ -103,8 +107,11 @@ export const gameWait = () => wait;
  * the last game's "last" */
 export const waitKey = (choice: { slot?: string; newGame?: boolean; pending?: boolean }) => choice.slot ?? (choice.newGame ? "new" : choice.pending ? "pending" : "last");
 /** The start menu's pick (main.ts): the startup wait begins. */
-export function startGameWait(key: string) {
-  setLoadFlag(true);
+export function startGameWait(key: string, choice?: { slot?: string; newGame?: boolean; pending?: boolean; game?: { real?: unknown; start?: string } }) {
+  // T-3927: the kind for a died-load report (the slot's name stays out of it)
+  const kind = !choice ? "unknown" : choice.game?.real ? "real network" : choice.newGame ? "new game" : choice.pending ? "file, backup or shared game" : "saved slot";
+  setLoadFlag(true, kind);
+  if (choice?.game?.start) noteLoad("picked", { city: choice.game.start });
   wait ={ seq: wait.seq, since: performance.now(), key };
   gameReady.value = false;
   viewFigures.value = false;
@@ -143,11 +150,27 @@ export function loadComplete() {
   // T-742: the last game's hold ending after the next game loaded, before the demand client took
   // the next one's hold, ran the clock on the last game's demand (no fares) until the next final
   if (holdArmed) return;
+  if (clock?.held.peek() && lastCardLoad && !cardEnding.peek()) endCardFull(lastCardLoad);
+  lastCardLoad = null;
   clock?.setHeld(false);
   // T-1655: a chime for a wait over 30 s, once per game
   if (!gameReady.peek() && performance.now() - wait.since > LONG_LOAD_MS) onLoadChime?.();
   gameReady.value = true;
   if (startup.peek() === "loading") startup.value = "ready";
+}
+
+/** T-3851: the page opened its game without calculating trips (`?trips=off`, a Community view's light load): no
+ * demand pool starts, and the load is over once the network is in. Calculating trips reloads the page into the
+ * game with the pool (workers/clockClient.ts `calculateTrips`). Set once, at startup. */
+export const tripsOff = signal(false);
+export function startWithoutTrips() {
+  tripsOff.value = true;
+}
+/** T-3851: a full state of the game arrived with trips off: the clock runs and the game is ready */
+export function networkInWithoutTrips() {
+  if (!tripsOff.peek() || gameReady.peek()) return;
+  holdArmed = false;
+  loadComplete();
 }
 
 /** T-757: demand stopped after startup (a worker failed mid-game: out of memory, an error), as the
@@ -226,19 +249,154 @@ if (typeof document !== "undefined") {
  * when a game starts loading and cleared when the load ends (or fails, or the page is left on purpose);
  * found still set at the next start, the last load died, and main.ts says so. */
 const LOAD_FLAG = "tw-load-started";
-function setLoadFlag(on: boolean) {
-  try { if (on) sessionStorage.setItem(LOAD_FLAG, "1"); else sessionStorage.removeItem(LOAD_FLAG); } catch { /* storage unavailable */ }
+/** T-3927: what the flag also holds, so a report after a died load says which game it was: the kind, the zones, the
+ * save's station and line counts, the last step reached and when (ms since the pick). No slot name or account.
+ * T-3933: also what a retry needs, kept out of the report: the most solving workers the load ran (`workers`; a worker
+ * that ran out of memory may have cut them before the tab died), the slot the game is in once the page knows it
+ * (`slot`), whether this load is itself the retry of one that died (`retry`), and whether the page saw its failure and
+ * reloaded for the retry (`caught`). */
+interface LoadMark { kind: string; zones?: string; city?: string; stations?: number; lines?: number; step: string; ms: number; workers?: number; slot?: string; retry?: boolean; caught?: boolean }
+let mark: (LoadMark & { t0: number }) | null = null;
+/** T-3933: the next load to start is the retry of one that died (main.ts) */
+let nextIsRetry = false;
+function writeMark() {
+  try {
+    if (!mark) { sessionStorage.removeItem(LOAD_FLAG); return; }
+    const { t0: _t0, ...out } = mark; void _t0;
+    sessionStorage.setItem(LOAD_FLAG, JSON.stringify(out));
+  } catch { /* storage unavailable */ }
 }
+function setLoadFlag(on: boolean, kind = "unknown") {
+  if (on) { mark = { kind, step: "picked", ms: 0, t0: Date.now(), ...(nextIsRetry ? { retry: true } : {}) }; nextIsRetry = false; }
+  else mark = null;
+  writeMark();
+}
+/** T-3940: the slot whose load last died in this browser, in localStorage so a closed tab keeps it too: the start
+ * menu asks before opening it again. Kept until that slot loads with its trips. */
+const DIED_SLOT = "tw-died-slot";
+export function diedSlot(): string | null {
+  try { return localStorage.getItem(DIED_SLOT); } catch { return null; }
+}
+function setDiedSlot(slot: string | null) {
+  try { if (slot) localStorage.setItem(DIED_SLOT, slot); else localStorage.removeItem(DIED_SLOT); } catch { /* storage unavailable */ }
+}
+/** T-3927: a step of the load in hand (a name), and what is known of the game; no-op when no load is in hand or nothing
+ * changed. Zones, a city, counts and the solving workers are kept once known. */
+export function noteLoad(step: string, known: { zones?: string[]; city?: string; stations?: number; lines?: number; workers?: number } = {}) {
+  if (!mark) return;
+  const m = mark;
+  const zones = known.zones?.length ? known.zones.slice(0, 12).join(",") : undefined;
+  if (step === m.step && (!zones || zones === m.zones) && known.city === undefined && known.stations === m.stations && known.lines === m.lines && (known.workers === undefined || known.workers <= (m.workers ?? 0))) return;
+  m.step = step;
+  if (zones) m.zones = zones;
+  if (known.city !== undefined) m.city = known.city;
+  if (known.stations !== undefined) m.stations = known.stations;
+  if (known.lines !== undefined) m.lines = known.lines;
+  if (known.workers !== undefined) m.workers = Math.max(known.workers, m.workers ?? 0);
+  m.ms = Date.now() - m.t0;
+  writeMark();
+}
+/** T-3933: the pool was cut by plan (by memory estimate, not a failure): from here the load runs `n` solving workers */
+export function noteLoadWorkers(n: number) {
+  if (!mark || mark.workers === n) return;
+  mark.workers = n;
+  writeMark();
+}
+/** T-3933: the slot the loading game is in (the clock worker's saves list names it); "" for none (a test page, a
+ * network only viewed). */
+export function noteLoadSlot(slot: string) {
+  if (!mark || (mark.slot ?? "") === slot) return;
+  mark.slot = slot || undefined;
+  writeMark();
+}
+/** T-3927: the unfinished load found at this start, as a line for the report; empty when none or an old flag. */
+export let diedLoadReport = "";
+/** T-4072: the load in hand's last step and when, for a report or the reason of a load that never ends; "" when none */
+export function loadStepNow(): string {
+  if (!mark) return "";
+  return `${mark.step}, ${Math.round(mark.ms / 1000)} s after the pick, ${Math.round((Date.now() - mark.t0 - mark.ms) / 1000)} s ago`; // i18n-ignore
+}
+/** T-4072: the clock worker's own last step toward its game (the demand pool's steps follow in `noteLoad` and replace it
+ * there), and when (performance.now()) */
+let clockStep: { step: string; at: number } | null = null;
+export function noteClockStep(step: string) {
+  clockStep = { step, at: performance.now() };
+  noteLoad("clock: " + step); // i18n-ignore
+}
+export const clockStepNow = () => (clockStep ? `${clockStep.step}, ${Math.round((performance.now() - clockStep.at) / 1000)} s ago` : ""); // i18n-ignore
+/** T-3933: what a retry of the died load needs (null when none died, or an old flag) */
+let died: Pick<LoadMark, "workers" | "slot" | "retry"> | null = null;
+export const diedLoad = () => died;
 /** Whether the last load in this tab never ended; the flag is cleared. */
 export function lastLoadDied(): boolean {
-  try { const died = !!sessionStorage.getItem(LOAD_FLAG); sessionStorage.removeItem(LOAD_FLAG); return died; } catch { return false; }
+  try {
+    const raw = sessionStorage.getItem(LOAD_FLAG);
+    sessionStorage.removeItem(LOAD_FLAG);
+    if (!raw) return false;
+    try {
+      const m = JSON.parse(raw) as Partial<LoadMark> | null;
+      if (m && typeof m === "object") {
+        const secs = (n?: number) => Math.round((n ?? 0) / 1000);
+        diedLoadReport = [
+          String(m.kind ?? "unknown").slice(0, 40),
+          m.zones ? "zones " + String(m.zones).slice(0, 200) : "",
+          m.city ? "start city " + String(m.city).slice(0, 40) : "",
+          m.stations !== undefined ? `${m.stations} stations, ${m.lines ?? "?"} lines` : "counts not known yet",
+          m.workers !== undefined ? `up to ${m.workers} solving workers` : "",
+          m.retry ? "it was the retry with fewer workers" : "",
+          m.caught ? "a worker ran out of memory and the page reloaded to load it again" : "",
+          `last step: ${String(m.step ?? "?").slice(0, 80)}, ${secs(m.ms)} s after the pick`,
+        ].filter(Boolean).join("; ");
+        died = {
+          workers: Number.isInteger(m.workers) && m.workers! >= 1 ? m.workers : undefined,
+          slot: typeof m.slot === "string" && m.slot ? m.slot : undefined,
+          retry: m.retry === true,
+        };
+        if (died.slot) setDiedSlot(died.slot);
+      }
+    } catch { /* an older flag ("1") has no fields */ }
+    return true;
+  } catch { return false; }
 }
-if (typeof addEventListener === "function") addEventListener("pagehide", () => setLoadFlag(false));
-effect(() => { if (gameReady.value || demandIdle.value) setLoadFlag(false); });
+/** T-3933: the load main.ts starts next retries one that died; the notice is up until a while after it is ready */
+export const loadRetried = signal(false);
+export function startRetry() {
+  nextIsRetry = true;
+  loadRetried.value = true;
+}
+/** T-3933: the load in hand, for a retry of it (null when none) */
+export const loadInHand = (): Pick<LoadMark, "workers" | "slot" | "retry"> | null => mark && { workers: mark.workers, slot: mark.slot, retry: mark.retry };
+/** T-3933: the page is about to reload to open the load in hand again (it saves first), so its flag stays set for the
+ * next page; `keepLoadForRetry(false)` lets it go after all */
+let leavingForRetry = false;
+export function keepLoadForRetry(on: boolean) {
+  leavingForRetry = on;
+  if (!on && (gameReady.peek() || demandIdle.peek())) setLoadFlag(false);
+}
+export function reloadForRetry() {
+  if (!mark) return;
+  leavingForRetry = true;
+  mark.caught = true;
+  writeMark();
+  location.reload();
+}
+/** T-3933: a load whose demand failed in the page's sight (not the tab dying): game/oomRetry.ts may take the failure over
+ * (true) and open the game again in a fresh page when it ran out of memory (`memory`); once it has, every later failure
+ * on the way out too */
+let onLoadFail: ((why: string, memory: boolean) => boolean) | null = null;
+export const handleLoadFail = (f: (why: string, memory: boolean) => boolean) => { onLoadFail = f; };
+if (typeof addEventListener === "function") addEventListener("pagehide", () => { if (!leavingForRetry) setLoadFlag(false); });
+effect(() => {
+  if (!(gameReady.value || demandIdle.value) || leavingForRetry) return;
+  // T-3940: the slot that died loaded whole this time
+  if (mark?.slot && mark.slot === diedSlot() && !loadFailure.peek()) setDiedSlot(null);
+  setLoadFlag(false);
+});
 
 /** Demand could not load. At startup the loading screen says so and offers a way on; later the
- * clock is released at once, since there is no result to wait for. */
-export function loadFailed(why: string) {
+ * clock is released at once, since there is no result to wait for. `retried`: T-3933's retry already passed on it. */
+export function loadFailed(why: string, retried = false) {
+  if (!retried && mark && onLoadFail?.(why, isMemoryFailure(why))) { console.warn("load failed, opening it again:", why); return; } // i18n-ignore
   console.error("load failed:", why); // i18n-ignore
   loadFailure.value = why;
   loadProgress.value = null;

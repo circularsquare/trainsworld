@@ -43,11 +43,13 @@ impl IntercityApi {
     }
     /// As `DemandApi::transfers` (T-176): this market's transfers over the periods held.
     pub fn transfers(&self, sel: &[u8]) -> Vec<f32> {
+        let Some(svc) = self.svc.as_ref() else { return vec![] };
+        let dsel = svc.in_any(sel);
         let mut out = vec![];
         for st in self.per.iter().flatten() {
-            transfer_pairs(&st.g, &st.xi, &st.xfer, sel, &mut out);
+            transfer_pairs(&st.g, &st.xi, &st.xfer, &dsel, &mut out);
         }
-        out
+        svc.out_pairs(out, sel)
     }
     /// Where the longer trips of a selection of local cells go and come from (T-118).
     ///
@@ -154,6 +156,8 @@ pub(super) fn access_list(weights: BTreeMap<usize, f32>, positive: bool, comp: &
 #[wasm_bindgen]
 pub struct IntercityApi {
     pub(super) m: Rc<Market>,
+    /// T-3160: keeps the inter-city starts in this thread's skims tables (`MarketLive`).
+    pub(super) _live: MarketLive,
     /// The zone pairs between zones some station serves (T-174), two by two: (lower zone, higher
     /// zone), then the same reversed, in the order of (lower, higher) (`pair_at` searches it).
     pub(super) pairs: Vec<Pair>,
@@ -200,6 +204,8 @@ pub struct IntercityApi {
     pub(super) back_in: Vec<u32>,
     /// `DemandApi::set_stairs` (T-3888).
     pub(super) pier_in: (Vec<u8>, Vec<u8>),
+    /// `DemandApi::set_tram_lines` (T-3919).
+    pub(super) tram_in: Vec<u8>,
     /// T-409: per served zone, the track components its stations lie in.
     pub(super) served_comp: Vec<Vec<u32>>,
     pub(super) st_pat: StPattern,

@@ -93,6 +93,97 @@ fn sample_count(kind: usize, trips: f32) -> usize {
 }
 /// No airport trip ends this close to a terminal (its own jobs are not its passengers' ends).
 pub(crate) const AIRPORT_CLEAR_M: f32 = 1500.0;
+/// T-3502: big airports draw ground trips from farther away. An airport's O&D passengers a year
+/// over `AIR_FAR_FROM`, kept between 1 and `AIR_FAR_MAX`, multiply its decay length and its reach
+/// (`AIR_REACH_M`, where `local_share` ends), the reach at most `AIR_REACH_MAX_M` and faded over its
+/// last `AIR_FADE_M` as `local_share` is. Set on the CAA's 2023 survey of where Heathrow's, Gatwick's,
+/// Stansted's and Manchester's passengers start (notes/T-3502.md); the 10-30M ramp is judgement.
+pub const AIR_FAR_FROM: f64 = 10_000_000.0;
+pub const AIR_FAR_MAX: f32 = 3.0;
+pub const AIR_REACH_M: f32 = 80_000.0;
+pub const AIR_REACH_MAX_M: f32 = 150_000.0;
+pub const AIR_FADE_M: f32 = 40_000.0;
+/// O&D passengers a year per ground outing a day: an outing is a boarding (`airport_trips`), two
+/// passengers, over the build's 366 days.
+pub const AIR_PASSENGERS_PER_OUTING: f64 = 2.0 * 366.0;
+/// Terminal cells this close together are one airport's (`cross.rs`'s `TERMINAL_M`).
+pub(crate) const AIR_TERMINAL_M: f32 = 4000.0;
+/// T-3502: the decay and reach multiplier of an airport whose ground outings a day are `outings`.
+pub fn air_far(outings: f64) -> f32 {
+    ((outings * AIR_PASSENGERS_PER_OUTING / AIR_FAR_FROM) as f32).clamp(1.0, AIR_FAR_MAX)
+}
+/// T-3502: the reach, metres, of an airport with multiplier `m` (`air_far`).
+pub fn air_reach_m(m: f32) -> f32 {
+    (AIR_REACH_M * m).min(AIR_REACH_MAX_M)
+}
+/// T-3502: the share kept of a pair `d` metres apart whose purpose reaches `reach` metres: all of
+/// it up to `AIR_FADE_M` short of the reach, none at it (`local_share` is this at 80 km).
+pub(crate) fn fade_to(d: f32, reach: f32) -> f32 {
+    let x = ((d - (reach - AIR_FADE_M)) / AIR_FADE_M).clamp(0.0, 1.0);
+    1.0 - x * x * (3.0 - 2.0 * x)
+}
+/// T-3502: the pack's airports' outings of their people outside it (the header's `airport.sites`,
+/// tier0's, T-2896): x, y in the pack's frame and outings a day. None in a pack built before.
+fn air_sites(header: &str) -> Result<Vec<(f32, f32, f64)>, String> {
+    let h: serde_json::Value = serde_json::from_str(header).map_err(|e| e.to_string())?;
+    let Some(sites) = h["airport"]["sites"].as_array() else { return Ok(vec![]) };
+    let (Some(lon0), Some(lat0)) = (h["origin"]["lon"].as_f64(), h["origin"]["lat"].as_f64()) else { return Ok(vec![]) };
+    let fr = crate::track::frame::Frame::equirect(lon0, lat0);
+    Ok(sites
+        .iter()
+        .filter_map(|s| {
+            let (lon, lat, out) = (s["lon"].as_f64()?, s["lat"].as_f64()?, s["outside_outings"].as_f64()?);
+            let (x, y) = fr.from_lonlat(lon, lat);
+            Some((x as f32, y as f32, out))
+        })
+        .collect())
+}
+/// T-3502: each cell's airport multiplier (`air_far`; 1 off the terminals). Terminal cells (any
+/// `trips`) within `AIR_TERMINAL_M` of one another are one airport, sized by their outings plus the
+/// outings its people outside the pack make (`sites`: x, y in the pack's frame, outings a day; each
+/// joins the airport of the nearest terminal cell within `AIR_TERMINAL_M`).
+pub(crate) fn airport_multipliers(x: &[f32], y: &[f32], trips: &[f32], sites: &[(f32, f32, f64)]) -> Vec<f32> {
+    let cells: Vec<usize> = (0..trips.len()).filter(|&c| trips[c] > 0.0).collect();
+    let near = |a: usize, b: usize| (x[a] - x[b]).powi(2) + (y[a] - y[b]).powi(2) <= AIR_TERMINAL_M * AIR_TERMINAL_M;
+    // one airport per group of terminal cells linked within the distance
+    let mut group: Vec<usize> = (0..cells.len()).collect();
+    fn root(g: &mut [usize], mut i: usize) -> usize {
+        while g[i] != i {
+            g[i] = g[g[i]];
+            i = g[i];
+        }
+        i
+    }
+    for i in 0..cells.len() {
+        for j in 0..i {
+            if near(cells[i], cells[j]) {
+                let (a, b) = (root(&mut group, i), root(&mut group, j));
+                group[a.max(b)] = a.min(b);
+            }
+        }
+    }
+    let mut outings = vec![0.0f64; cells.len()];
+    for i in 0..cells.len() {
+        let r = root(&mut group, i);
+        outings[r] += trips[cells[i]] as f64;
+    }
+    for &(sx, sy, out) in sites {
+        let nearest = (0..cells.len())
+            .map(|i| ((x[cells[i]] - sx).powi(2) + (y[cells[i]] - sy).powi(2), i))
+            .filter(|&(d2, _)| d2 <= AIR_TERMINAL_M * AIR_TERMINAL_M)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, i)) = nearest {
+            let r = root(&mut group, i);
+            outings[r] += out.max(0.0);
+        }
+    }
+    let mut m = vec![1.0f32; trips.len()];
+    for i in 0..cells.len() {
+        let r = root(&mut group, i);
+        m[cells[i]] = air_far(outings[r]);
+    }
+    m
+}
 /// T-196: the share of the social/leisure attraction that is parks (the pack's `park_draw`, OSM
 /// parks by area and residents nearby), taken evenly from the population and leisure-jobs halves.
 /// ATUS 2023: 7.6% of leisure outings (eating out, socialising, sport and recreation) end
@@ -186,6 +277,9 @@ struct Sampler<'a> {
     mass: &'a [f64],
     cell_cdf: &'a [Vec<f64>],
     members: &'a [Vec<usize>],
+    /// T-3502: per destination zone, the purpose's reach there (`fade_to`); empty for
+    /// `local_share`'s
+    reach: &'a [f32],
 }
 
 impl Sampler<'_> {
@@ -211,8 +305,9 @@ impl Sampler<'_> {
                 let j = self.cell_cdf[z].partition_point(|&v| v <= target).min(self.members[z].len() - 1);
                 let d = self.members[z][j];
                 let distance = ((self.x[c] - self.x[d]).powi(2) + (self.y[c] - self.y[d]).powi(2)).sqrt();
+                let kept = if self.reach.is_empty() { local_share(distance) } else { fade_to(distance, self.reach[z]) };
                 // Excluded trips vanish, including from all-mode denominators. No replacement.
-                if distance >= MIN_DISTANCE_M && local_share(distance) > 0.0 {
+                if distance >= MIN_DISTANCE_M && kept > 0.0 {
                     out[at + k] = d as u32;
                 }
             }
@@ -338,6 +433,24 @@ impl DecayTable {
     }
 }
 
+/// T-3502: `DecayTable::cdf` with each listed zone's own table (`which`, into `tables`, all built
+/// on the same zones), for airports whose decay lengths differ.
+#[inline(never)]
+fn cdf_each(tables: &[DecayTable], which: &[u8], z: &Zones, o: usize, zx: &[i32], zy: &[i32], mass: &[f64], cdf: &mut Vec<f64>) -> f64 {
+    cdf.clear();
+    let mut total = 0.0;
+    for k in 0..zx.len() {
+        let t = &tables[which[k] as usize];
+        let at = match &t.layout {
+            Some(g) => (g.base(z, o) + zx[k]) as usize,
+            None => (zx[k] - z.gx[o]).unsigned_abs() as usize * t.span + (zy[k] - z.gy[o]).unsigned_abs() as usize,
+        };
+        total += mass[k] * t.v[at] as f64;
+        cdf.push(total);
+    }
+    total
+}
+
 /// T-1092: `cdf` (the local draw, summing to `local`) becomes the mixture, a share `q` drawn
 /// from `central` (summing to `tc`) appended after it, over the same zones; returns its total. A
 /// part with nothing in reach leaves the other the whole draw.
@@ -358,13 +471,14 @@ fn mix_central(cdf: &mut Vec<f64>, local: f64, central: &[f64], tc: f64, q: f64)
 /// around it (sum over zones of their origin weight x decay to the airport's zone), as the mass
 /// origin cells sample airports by. An origin cell then sends `origin x` the sum over airports of
 /// mass x decay from its zone, and every airport receives exactly its trips (before the 150 m
-/// exclusion and the 40-80 km taper, which apply to every purpose).
-fn airport_draw(z: &Zones, members: &[Vec<usize>], origin: &[f32], trips: &[f32], decay_m: f32) -> Vec<f32> {
-    let table = DecayTable::new(z, decay_m);
+/// exclusion and the fade, which apply to every purpose). `decay_m`: the decay length at each
+/// site zone (T-3502: an airport's own).
+fn airport_draw(z: &Zones, members: &[Vec<usize>], origin: &[f32], trips: &[f32], decay_m: impl Fn(usize) -> f32) -> Vec<f32> {
     let w: Vec<f64> = members.iter().map(|m| m.iter().map(|&c| origin[c] as f64).sum()).collect();
     let zones: Vec<usize> = (0..z.n).filter(|&k| w[k] > 0.0).collect();
-    let (zx, zy) = table.places(z, &zones);
+    let mut tables: Vec<(f32, DecayTable)> = vec![];
     let zw: Vec<f64> = zones.iter().map(|&k| w[k]).collect();
+    let mut places = None;
     let mut draw = vec![None; z.n];
     let mut cdf = Vec::with_capacity(zones.len());
     let mut mass = vec![0.0f32; trips.len()];
@@ -373,7 +487,14 @@ fn airport_draw(z: &Zones, members: &[Vec<usize>], origin: &[f32], trips: &[f32]
             continue;
         }
         let a = z.cell_zone[c] as usize;
-        let d = *draw[a].get_or_insert_with(|| table.cdf(z, a, &zx, &zy, &zw, &mut cdf));
+        let decay = decay_m(a);
+        let i = tables.iter().position(|e| e.0 == decay).unwrap_or_else(|| {
+            tables.push((decay, DecayTable::new(z, decay)));
+            tables.len() - 1
+        });
+        let table = &tables[i].1;
+        let (zx, zy) = places.get_or_insert_with(|| table.places(z, &zones));
+        let d = *draw[a].get_or_insert_with(|| table.cdf(z, a, zx, zy, &zw, &mut cdf));
         if d > 0.0 {
             mass[c] = (t as f64 / d) as f32;
         }
@@ -475,6 +596,7 @@ fn add_loads(total: &mut Loads, l: &Loads) {
         }
     }
     total.pax_min += l.pax_min;
+    total.dropped += l.dropped;
 }
 
 /// One lane per purpose kind in the everyday assignment (T-433); `RATE` has six kinds.
@@ -490,53 +612,53 @@ fn add_lanes(a: &mut Lanes, b: &Lanes) {
 }
 
 /// Each purpose's station-pair trips by destination station (T-433): for kind k and destination
-/// b, entries `off[k][b]..off[k][b + 1]` of `src` and `trips`, origins ascending. `off[k]` is
+/// b, entries `off[k][b]..off[k][b + 1]` of `src[k]` and `trips[k]`, origins ascending. `off[k]` is
 /// empty for a kind with no trips.
 struct Columns {
     off: Vec<Vec<u32>>,
-    src: Vec<u32>,
-    trips: Vec<f32>,
-    /// (destination, origin, trips) in origin order, while packing
-    tmp: Vec<(u32, u32, f32)>,
+    src: Vec<Vec<u32>>,
+    trips: Vec<Vec<f32>>,
     /// The origin rows of `od` written since the last `pack`.
     rows: Vec<bool>,
 }
 
 impl Columns {
     fn new(kinds: usize, s: usize) -> Columns {
-        Columns { off: vec![vec![]; kinds], src: vec![], trips: vec![], tmp: vec![], rows: vec![false; s] }
+        Columns { off: vec![vec![]; kinds], src: vec![vec![]; kinds], trips: vec![vec![]; kinds], rows: vec![false; s] }
     }
-    /// Moves one kind's trips out of `od` (`od[a * s + b]`), leaving it zero.
+    /// Moves one kind's trips out of `od` (`od[a * s + b]`), leaving it zero. Counted, then placed
+    /// in arrays of the kind's own exact length, so packing copies nothing: the everyday pass sets
+    /// a solving worker's peak (T-3160).
     fn pack(&mut self, od: &mut [f32], s: usize, kind: usize) {
         debug_assert!(self.off[kind].is_empty(), "the pairs are stored purpose by purpose");
         let mut off = vec![0u32; s + 1];
-        self.tmp.clear();
+        for (a, row) in od.chunks_exact(s).enumerate() {
+            if self.rows[a] {
+                for (b, v) in row.iter().enumerate() {
+                    off[b + 1] += (*v != 0.0) as u32;
+                }
+            }
+        }
+        for b in 0..s {
+            off[b + 1] += off[b];
+        }
+        let n = off[s] as usize;
+        let (mut src, mut trips) = (vec![0u32; n], vec![0f32; n]);
+        let mut at = off.clone();
         for (a, row) in od.chunks_exact_mut(s).enumerate() {
             if !std::mem::take(&mut self.rows[a]) {
                 continue;
             }
             for (b, v) in row.iter_mut().enumerate() {
                 if *v != 0.0 {
-                    self.tmp.push((b as u32, a as u32, *v));
-                    off[b + 1] += 1;
+                    let j = at[b] as usize;
+                    (src[j], trips[j]) = (a as u32, *v);
+                    at[b] += 1;
                     *v = 0.0;
                 }
             }
         }
-        let base = self.src.len() as u32;
-        off[0] = base;
-        for b in 0..s {
-            off[b + 1] += off[b];
-        }
-        self.src.resize(base as usize + self.tmp.len(), 0);
-        self.trips.resize(self.src.len(), 0.0);
-        let mut at = off.clone();
-        for &(b, a, v) in &self.tmp {
-            let j = at[b as usize] as usize;
-            (self.src[j], self.trips[j]) = (a, v);
-            at[b as usize] += 1;
-        }
-        self.off[kind] = off;
+        (self.off[kind], self.src[kind], self.trips[kind]) = (off, src, trips);
     }
 }
 
@@ -550,6 +672,7 @@ struct LaneLoads {
     entry: Vec<Lanes>,
     exit: Vec<Lanes>,
     pax_min: [f64; LANES],
+    dropped: [f64; LANES],
     /// `Loads::rn_fare_x` of every purpose together
     rn_fare_x: Vec<f32>,
     /// `Loads::rn_base_x` of every purpose together
@@ -558,11 +681,11 @@ struct LaneLoads {
 
 impl LaneLoads {
     fn zero(s: usize, nr: usize) -> LaneLoads {
-        LaneLoads { seg: vec![ZERO; nr], board: vec![ZERO; s], alight: vec![ZERO; s], rn_board: vec![ZERO; nr], rn_alight: vec![ZERO; nr], entry: vec![ZERO; s], exit: vec![ZERO; s], pax_min: [0.0; LANES], rn_fare_x: vec![0.0; nr], rn_base_x: vec![0.0; nr] }
+        LaneLoads { seg: vec![ZERO; nr], board: vec![ZERO; s], alight: vec![ZERO; s], rn_board: vec![ZERO; nr], rn_alight: vec![ZERO; nr], entry: vec![ZERO; s], exit: vec![ZERO; s], pax_min: [0.0; LANES], dropped: [0.0; LANES], rn_fare_x: vec![0.0; nr], rn_base_x: vec![0.0; nr] }
     }
     fn lane(&self, k: usize) -> Loads {
         let f = |v: &[Lanes]| v.iter().map(|x| x[k]).collect();
-        Loads { seg: f(&self.seg), board: f(&self.board), alight: f(&self.alight), rn_board: f(&self.rn_board), rn_alight: f(&self.rn_alight), entry: f(&self.entry), exit: f(&self.exit), pax_min: self.pax_min[k], rn_fare_x: vec![0.0; self.seg.len()], rn_base_x: vec![0.0; self.seg.len()] }
+        Loads { seg: f(&self.seg), board: f(&self.board), alight: f(&self.alight), rn_board: f(&self.rn_board), rn_alight: f(&self.rn_alight), entry: f(&self.entry), exit: f(&self.exit), pax_min: self.pax_min[k], dropped: self.dropped[k], rn_fare_x: vec![0.0; self.seg.len()], rn_base_x: vec![0.0; self.seg.len()] }
     }
 }
 
@@ -604,12 +727,12 @@ fn assign_lanes(g: &Graph, sk: &Skims, cols: &Columns, ix: &XferIndex, xfer: &mu
     let bent = !g.fare_curve.flat();
     // T-3578
     let based = !g.rn_base_mul.is_empty();
-    let used: Vec<(usize, &[u32])> = cols.off.iter().enumerate().filter(|(_, o)| !o.is_empty()).map(|(k, o)| (k, &o[..])).collect();
+    let used: Vec<(usize, &[u32], &[u32], &[f32])> = cols.off.iter().enumerate().filter(|(_, o)| !o.is_empty()).map(|(k, o)| (k, &o[..], &cols.src[k][..], &cols.trips[k][..])).collect();
     for dst in 0..s {
         let mut total = ZERO;
-        for &(k, off) in &used {
+        for &(k, off, srcs, trips) in &used {
             for j in off[dst] as usize..off[dst + 1] as usize {
-                let (src, v) = (cols.src[j] as usize, cols.trips[j]);
+                let (src, v) = (srcs[j] as usize, trips[j]);
                 flow[src][k] = v;
                 l.entry[src][k] += v;
                 total[k] += v;
@@ -617,7 +740,12 @@ fn assign_lanes(g: &Graph, sk: &Skims, cols: &Columns, ix: &XferIndex, xfer: &mu
         }
         add_lanes(&mut l.exit[dst], &total);
         let slot = sk.slot[dst];
-        debug_assert!(total == ZERO || slot != NONE, "flow towards station {dst}, which was not searched");
+        if slot == NONE {
+            for k in 0..LANES {
+                l.dropped[k] += total[k] as f64;
+            }
+            note_dropped(dst, total.iter().map(|&x| x as f64).sum());
+        }
         if total != ZERO && slot != NONE {
             let slot = slot as usize;
             if counting {
@@ -649,7 +777,7 @@ fn assign_lanes(g: &Graph, sk: &Skims, cols: &Columns, ix: &XferIndex, xfer: &mu
                     board_base(g, st, dst, |src| flow[src].iter().sum(), &km, &mb, &mut dep, &mut fxq, &mut l.rn_base_x);
                 }
             }
-            let mut w = LaneWalk { g, s, n, dst, bits: &sk.board[slot][..], cn: &sk.change[slot], flow: &mut flow, l: &mut l, head: &mut head, rec: &mut rec, use_k: &mut use_k, dep: &mut dep, xfer: if counting { Some((ix, &mut *xfer)) } else { None } };
+            let mut w = LaneWalk { g, s, n, dst, bits: &sk.board[slot][..], cn: &sk.change[slot], sh: &sk.share[slot], flow: &mut flow, l: &mut l, head: &mut head, rec: &mut rec, use_k: &mut use_k, dep: &mut dep, xfer: if counting { Some((ix, &mut *xfer)) } else { None } };
             match (&sk.next[slot], &sk.order[slot]) {
                 (NodeIds::Short(next), NodeIds::Short(order)) => w.run(next, order),
                 (NodeIds::Long(next), NodeIds::Long(order)) => w.run(next, order),
@@ -658,9 +786,9 @@ fn assign_lanes(g: &Graph, sk: &Skims, cols: &Columns, ix: &XferIndex, xfer: &mu
         }
         // the walk leaves zero every node it took flow from; the rest set here
         flow[dst] = ZERO;
-        for &(_, off) in &used {
+        for &(_, off, srcs, _) in &used {
             for j in off[dst] as usize..off[dst + 1] as usize {
-                flow[cols.src[j] as usize] = ZERO;
+                flow[srcs[j] as usize] = ZERO;
             }
         }
         debug_assert!(flow.iter().all(|f| *f == ZERO));
@@ -675,6 +803,7 @@ struct LaneWalk<'a> {
     dst: usize,
     bits: &'a [u64],
     cn: &'a ChangeNodes,
+    sh: &'a Shares,
     flow: &'a mut [Lanes],
     l: &'a mut LaneLoads,
     head: &'a mut [u32],
@@ -687,7 +816,7 @@ struct LaneWalk<'a> {
 impl LaneWalk<'_> {
     #[inline(always)]
     fn run<I: NodeIx>(&mut self, next: &[I], order: &[I]) {
-        let LaneWalk { g, s, n, dst, bits, cn, ref mut flow, ref mut l, ref mut head, ref mut rec, ref mut use_k, ref mut dep, ref mut xfer } = *self;
+        let LaneWalk { g, s, n, dst, bits, cn, sh, ref mut flow, ref mut l, ref mut head, ref mut rec, ref mut use_k, ref mut dep, ref mut xfer } = *self;
         let end = n + cn.len();
         for &v in order.iter().skip(1).rev() {
             let v = v.ix();
@@ -697,7 +826,7 @@ impl LaneWalk<'_> {
             }
             flow[v] = ZERO;
             if v < s || v >= n {
-                let st = departures(g, bits, cn, v, dep);
+                let st = departures(g, bits, cn, sh, v, dep);
                 let hx = if v < s { v } else { s + v - n };
                 let sum: f32 = dep.iter().map(|x| x.1).sum();
                 if sum == 0.0 {
@@ -754,7 +883,7 @@ impl LaneWalk<'_> {
                 } else {
                     add_lanes(&mut l.alight[g.rn_station[v - s] as usize], &f);
                     add_lanes(&mut l.rn_alight[v - s], &f);
-                    let (st, hx) = if to < s { (to, to) } else { (cn.st[to - n] as usize, s + to - n) };
+                    let (st, hx) = if to < s { (to, to) } else { (cn.station(to - n), s + to - n) };
                     if st != dst {
                         if let Some((ix, _)) = xfer.as_ref() {
                             let e = (g.adj_off[v] as usize..g.adj_off[v + 1] as usize).find(|&e| g.adj_to[e] as usize == st).unwrap();
@@ -820,7 +949,7 @@ fn check_lanes(g: &Graph, sk: &Skims, cols: &Columns, ix: &XferIndex, lanes: &La
         let mut od = vec![0.0f32; s * s];
         for b in 0..s {
             for j in off[b] as usize..off[b + 1] as usize {
-                od[cols.src[j] as usize * s + b] = cols.trips[j];
+                od[cols.src[k][j] as usize * s + b] = cols.trips[k][j];
             }
         }
         let r = assign_with_transfers(g, sk, &od, ix, &mut want);
@@ -903,6 +1032,9 @@ pub struct EverydayApi {
     /// cell's airport trips are `airport_origin[c] x airport_scale[zone]`. Empty without airports.
     airport_origin: Vec<f32>,
     airport_scale: Vec<f64>,
+    /// T-3502: per zone, an airport's reach there (`fade_to`); empty while every airport's is
+    /// `AIR_REACH_M` (`local_share`)
+    airport_reach: Vec<f32>,
     /// T-263, attractions, as the airports': visitors' home and lodging ends, and the draw.
     attraction_origin: Vec<f32>,
     attraction_scale: Vec<f64>,
@@ -945,11 +1077,13 @@ impl EverydayApi {
     }
     /// As `DemandApi::transfers` (T-176): every purpose's transfers over the periods held.
     pub fn transfers(&self, sel: &[u8]) -> Vec<f32> {
+        let Some(svc) = self.engine.svc.as_ref() else { return vec![] };
+        let dsel = svc.in_any(sel);
         let mut out = vec![];
         for st in self.per.iter().flatten() {
-            transfer_pairs(&st.g, &st.xi, &st.xfer, sel, &mut out);
+            transfer_pairs(&st.g, &st.xi, &st.xfer, &dsel, &mut out);
         }
-        out
+        svc.out_pairs(out, sel)
     }
     /// `cell_modes` for one purpose kind only (T-158's display filter).
     pub fn cell_modes_of(&self, kind: u32) -> Vec<f32> {
@@ -1177,7 +1311,12 @@ impl EverydayApi {
             _ => self.engine.pop()[c],
         };
         let kept = self.kept.get(kind).filter(|k| !k.is_empty()).map_or(1.0, |k| k[self.engine.z.cell_zone[if site_anchored(kind) { d } else { c }] as usize]);
-        let weight = budget * self.rate[kind] * share * local_share(distance) * kept;
+        let fade = if kind == AIRPORT && !self.airport_reach.is_empty() {
+            fade_to(distance, self.airport_reach[self.engine.z.cell_zone[d] as usize])
+        } else {
+            local_share(distance)
+        };
+        let weight = budget * self.rate[kind] * share * fade * kept;
         (weight, self.no_rail(kind, c, d, distance))
     }
     fn edge(&self, k: usize) -> Option<(usize, usize, usize, f32, f32)> {
@@ -1223,8 +1362,10 @@ impl EverydayApi {
             return (probability, zero.clone(), vec![Part::of(&zero); kinds], xfer, walk_lost, rail_d, unr_lost);
         }
         let (loads, parts) = with_skims(g, p, &want, |sk| {
-            // a table per distance band (T-710)
-            let ers = station_exp(sk, p);
+            // The station pairs' `station_exp` in the pair's distance band (T-710) are worked out
+            // for each pair as it comes, not as one table per band (stations² floats each, the
+            // largest part of a solving worker's peak, T-3160): its costs gathered, then the exps
+            // in one loop over them
             let ss = s * s;
             // One station-pair matrix, filled by one purpose's pairs (they are
             // stored purpose by purpose) and packed into its columns; then one walk of each
@@ -1295,6 +1436,7 @@ impl EverydayApi {
             // per access entry of a pair's start, a bit per entry at its end the walking rule keeps
             let mut kept_rows: Vec<u32> = vec![];
             let mut pair_c: Vec<f32> = vec![];
+            let mut pair_e: Vec<f32> = vec![];
             for (i, pair) in self.pairs.iter().enumerate() {
                 if parts > 1 && i as u32 % parts != part {
                     continue;
@@ -1310,7 +1452,6 @@ impl EverydayApi {
                 let bd = p.band_of_d2(pair.distance * pair.distance);
                 let (th, off) = bands[bd];
                 let (acc, acc_r) = (&accs[bd * na..(bd + 1) * na], &acc_rs[bd * na..(bd + 1) * na]);
-                let er = &ers[bd * ss..(bd + 1) * ss];
                 // the home end: its walks, or on a trip of `ride_min_km` or more its walks and
                 // rides (T-389, as the commute's `ride_offered` but on the pair's own distance);
                 // the activity end walks
@@ -1342,11 +1483,25 @@ impl EverydayApi {
                     // up once into a bit per pair for the passes below (T-2307)
                     let check = rule && rule_from[u] + rule_to[v] > walk_on && !apart && p.walk_rule_at(walk_on);
                     // every station pair's weight, and their sum as with the rule off
+                    // (and each one's exp, `pair_e`, for the assignment below)
                     pair_c.clear();
+                    pair_e.clear();
+                    for ka in a.clone() {
+                        let ia = sz.acc_st[ka] as usize;
+                        let row = &sk.r[ia * s..(ia + 1) * s];
+                        // (boarding and alighting at one station is no rail trip: `station_exp`'s zero diagonal)
+                        pair_e.extend(b.clone().map(|kb| { let ib = sz.acc_st[kb] as usize; if ib == ia { f32::INFINITY } else { row[ib] } }));
+                    }
+                    // (every exp taken, then kept or zeroed: with a branch around it the load was 8% slower)
+                    for e in pair_e.iter_mut() {
+                        let x = fast_exp(-th * (*e - off));
+                        *e = if e.is_finite() { x } else { 0.0 };
+                    }
                     let mut all_sum = 0.0;
+                    let mut es = pair_e.iter();
                     for ka in a.clone() {
                         for kb in b.clone() {
-                            let c = wa[ka] * wb[kb] * er[sz.acc_st[ka] as usize * s + sz.acc_st[kb] as usize];
+                            let c = wa[ka] * wb[kb] * *es.next().unwrap();
                             all_sum += c;
                             pair_c.push(c);
                         }
@@ -1394,6 +1549,8 @@ impl EverydayApi {
                     }
                     let (a0, b0) = (a.start, b.start);
                     let keep = |ka: usize, kb: usize| kept_rows[ka - a0] >> (kb - b0) & 1 != 0;
+                    let nb = b.len();
+                    let er = |ka: usize, kb: usize| pair_e[(ka - a0) * nb + kb - b0];
                     // T-3888: the walk tier rides where the rule keeps no pair too
                     let t = if apart || all_sum < 1e-30 { 0.0 } else { p.tier_at(cw) };
                     let kept = sum >= 1e-30;
@@ -1418,7 +1575,7 @@ impl EverydayApi {
                                 if fc.via[at] != NO_FAN && keep(ka, kb) {
                                     any = true;
                                     e = fast_exp(-th * (fc.cost[at] - off));
-                                    sum_f += wa[ka] * wb[kb] * (e - er[at]);
+                                    sum_f += wa[ka] * wb[kb] * (e - er(ka, kb));
                                 }
                                 fan_e.push(e);
                             }
@@ -1500,7 +1657,7 @@ impl EverydayApi {
                                 }
                                 let ia = sz.acc_st[ka] as usize;
                                 let ib = sz.acc_st[kb] as usize;
-                                od[ia * s + ib] += trips * wa[ka] * wb[kb] * er[ia * s + ib];
+                                od[ia * s + ib] += trips * wa[ka] * wb[kb] * er(ka, kb);
                             }
                         }
                         continue;
@@ -1523,10 +1680,10 @@ impl EverydayApi {
                             let (at, w) = (ia * s + ib, wa[ka] * wb[kb]);
                             let j = fc.via[at] as usize;
                             if j == NO_FAN as usize {
-                                od[at] += (trips + trips_f) * w * er[at];
+                                od[at] += (trips + trips_f) * w * er(ka, kb);
                                 continue;
                             }
-                            od[at] += trips * w * er[at];
+                            od[at] += trips * w * er(ka, kb);
                             let x = trips_f * w * fe;
                             let fi = fc.first[ia * np + j] as usize;
                             let (pp, qq) = (fc.ports[fi] as usize, fc.ports[j] as usize);
@@ -1552,7 +1709,7 @@ impl EverydayApi {
             if od_used {
                 cols.pack(&mut od, s, od_kind);
             }
-            drop(od);
+            drop((od, accs, acc_rs));
             let mut lanes = assign_lanes(g, sk, &cols, ix, &mut xfer);
             #[cfg(test)]
             if CHECK_LANES.with(|c| c.get()) {
@@ -1614,7 +1771,7 @@ impl EverydayApi {
         r.add(format!("{at}samples: pairs (Pair)"), vb(&self.pairs));
         r.add(format!("{at}samples: edge_pair"), vb(&self.edge_pair));
         r.add(format!("{at}samples: live, first, norm, kept"), [&self.live, &self.first].iter().map(|v| vb(*v) + v.iter().map(vb).sum::<usize>()).sum::<usize>() + vb(&self.norm) + self.norm.iter().map(vb).sum::<usize>() + vb(&self.kept) + self.kept.iter().map(vb).sum::<usize>());
-        r.add(format!("{at}per cell and zone (sz_part, airports, attractions, enrollment)"), vb(&self.sz_part) + vb(&self.wplace) + vb(&self.wpark) + vb(&self.school_enrollment) + vb(&self.university_enrollment) + vb(&self.airport_origin) + vb(&self.airport_scale) + vb(&self.attraction_origin) + vb(&self.attraction_scale) + vb(&self.attractions));
+        r.add(format!("{at}per cell and zone (sz_part, airports, attractions, enrollment)"), vb(&self.sz_part) + vb(&self.wplace) + vb(&self.wpark) + vb(&self.school_enrollment) + vb(&self.university_enrollment) + vb(&self.airport_origin) + vb(&self.airport_scale) + vb(&self.airport_reach) + vb(&self.attraction_origin) + vb(&self.attraction_scale) + vb(&self.attractions));
         let (mut net, mut g, mut l, mut parts, mut rest) = (0, 0, 0, 0, 0);
         for p in self.per.iter().flatten() {
             net += mem::network(&p.net);
@@ -1717,6 +1874,22 @@ impl EverydayApi {
         for c in 0..n {
             members[engine.z.cell_zone[c] as usize].push(c);
         }
+        // T-3502: each airport zone's decay and reach multiplier (`air_far`), 1 elsewhere; the
+        // reaches only where some airport's goes past `AIR_REACH_M`
+        let air_m: Vec<f32> = match &airport_trips {
+            Some(trips) => {
+                let m = airport_multipliers(&engine.city.x, &engine.city.y, trips, &air_sites(header)?);
+                let mut zm = vec![1.0f32; nz];
+                for c in 0..n {
+                    let k = engine.z.cell_zone[c] as usize;
+                    zm[k] = zm[k].max(m[c]);
+                }
+                zm
+            }
+            None => vec![],
+        };
+        let air_decay = |k: usize| decay[AIRPORT] * air_m.get(k).copied().unwrap_or(1.0);
+        let airport_reach: Vec<f32> = if air_m.iter().any(|&m| m > 1.0) { air_m.iter().map(|&m| air_reach_m(m)).collect() } else { vec![] };
         // Airports: the home and visitor ends are half residents, a quarter jobs (business
         // visitors) and a quarter leisure jobs (hotels, restaurants, attractions), each normalised.
         // Each airport keeps its own total: its trips are divided by its draw over every origin
@@ -1737,7 +1910,7 @@ impl EverydayApi {
                         *o = 0.0;
                     }
                 }
-                let mass = airport_draw(&engine.z, &members, &origin, trips, decay[AIRPORT]);
+                let mass = airport_draw(&engine.z, &members, &origin, trips, air_decay);
                 (origin, Some(mass))
             }
             None => (vec![], None),
@@ -1755,7 +1928,7 @@ impl EverydayApi {
                     ((if tl > 0.0 { 0.5 } else { 1.0 }) * engine.pop()[c] as f64 / tp + lodging) as f32
                 })
                 .collect();
-            let mass = airport_draw(&engine.z, &members, &origin, &attraction_visits, decay[ATTRACTION]);
+            let mass = airport_draw(&engine.z, &members, &origin, &attraction_visits, |_| decay[ATTRACTION]);
             (origin, Some(mass))
         };
         // Purpose indices stay stable: a missing purpose before a present one is an empty slot.
@@ -1814,6 +1987,21 @@ impl EverydayApi {
             let zmass: Vec<f64> = zones.iter().map(|&z| mass[z]).collect();
             let table = DecayTable::new(&engine.z, decay[kind]);
             let (zx, zy) = table.places(&engine.z, &zones);
+            // T-3502: with a big airport, each airport zone's own decay (one table per length)
+            let far = kind == AIRPORT && !airport_reach.is_empty();
+            let mut each: (Vec<DecayTable>, Vec<u8>) = (vec![], vec![]);
+            if far {
+                let mut lengths: Vec<f32> = vec![];
+                for &k in &zones {
+                    let d = air_decay(k);
+                    let i = lengths.iter().position(|&e| e == d).unwrap_or_else(|| {
+                        lengths.push(d);
+                        each.0.push(DecayTable::new(&engine.z, d));
+                        lengths.len() - 1
+                    });
+                    each.1.push(i as u8);
+                }
+            }
             let q = if has_central(kind) { engine.base.everyday_central_share.clamp(0.0, 1.0) as f64 } else { 0.0 };
             let mut central = (q > 0.0).then(|| {
                 let z = &engine.z;
@@ -1839,6 +2027,7 @@ impl EverydayApi {
                 mass: &mass,
                 cell_cdf: &cell_cdf,
                 members: &members,
+                reach: if far { &airport_reach } else { &[] },
             };
             let out = &mut destinations[start[kind]..start[kind + 1]];
             let mut cdf = Vec::with_capacity(zones.len());
@@ -1847,7 +2036,7 @@ impl EverydayApi {
                 if !members[oz].iter().any(|&c| budget.get(c).copied().unwrap_or(0.0) > 0.0) {
                     continue;
                 }
-                let mut total = table.cdf(&engine.z, oz, &zx, &zy, &zmass, &mut cdf);
+                let mut total = if far { cdf_each(&each.0, &each.1, &engine.z, oz, &zx, &zy, &zmass, &mut cdf) } else { table.cdf(&engine.z, oz, &zx, &zy, &zmass, &mut cdf) };
                 if let Some((ctable, cmass, ccdf)) = central.as_mut() {
                     let tc = ctable.cdf(&engine.z, oz, &zx, &zy, cmass, ccdf);
                     total = mix_central(&mut cdf, total, ccdf, tc, q);
@@ -1905,6 +2094,7 @@ impl EverydayApi {
             university_enrollment: university_enrollment.unwrap_or_default(),
             airport_origin,
             airport_scale,
+            airport_reach,
             attraction_origin,
             attraction_scale,
             attractions: sites,
@@ -1973,8 +2163,12 @@ impl EverydayApi {
         self.engine.set_back_stops(back);
     }
     /// `DemandApi::set_stairs` (T-3888).
-    pub fn set_stairs(&mut self, ferry_lines: &[u8], grade_stops: &[u8]) {
-        self.engine.set_stairs(ferry_lines, grade_stops);
+    pub fn set_stairs(&mut self, ferry_lines: &[u8], street_stops: &[u8]) {
+        self.engine.set_stairs(ferry_lines, street_stops);
+    }
+    /// `DemandApi::set_tram_lines` (T-2926, T-3909).
+    pub fn set_tram_lines(&mut self, flags: &[u8]) {
+        self.engine.set_tram_lines(flags);
     }
     pub fn set_network(
         &mut self,
@@ -2213,6 +2407,9 @@ impl EverydayApi {
         }
     }
     pub fn crowd_with_external(&mut self, q: usize, total: &[f32]) -> bool {
+        // T-4094: the page's totals, on the snapshot's route nodes
+        let t = self.engine.svc.as_ref().and_then(|s| s.fold.as_ref()).map(|f| f.in_total(total));
+        let total = t.as_deref().unwrap_or(total);
         let Some(Some(st)) = self.per.get(q) else {
             return false;
         };
@@ -2267,6 +2464,8 @@ impl EverydayApi {
     /// entries at the end it sets out from that still fit, those stations weighed as its access
     /// costs weigh them.
     pub fn cap_with_external(&mut self, q: usize, total: &[f32]) -> bool {
+        let t = self.engine.svc.as_ref().and_then(|s| s.fold.as_ref()).map(|f| f.in_total(total));
+        let total = t.as_deref().unwrap_or(total);
         let Some(Some(st)) = self.per.get(q) else { return false };
         let Some(fit) = capacity_fit(&st.g, &st.net, &st.p, total) else { return false };
         if !fit.any || self.engine.sz.is_none() {
@@ -2379,47 +2578,53 @@ impl EverydayApi {
                 ]
             })
     }
+    /// T-3923: as `DemandApi::dropped`.
+    pub fn dropped(&self, q: usize) -> f64 {
+        self.per.get(q).and_then(|v| v.as_ref()).map_or(0.0, |s| s.loads.dropped)
+    }
     pub fn seg(&self, q: usize) -> Vec<f32> {
         self.per
             .get(q)
             .and_then(|v| v.as_ref())
-            .map_or(vec![], |s| s.loads.seg.clone())
+            .map_or(vec![], |s| self.engine.svc().out_load(s.loads.seg.clone()))
     }
     pub fn board(&self, q: usize) -> Vec<f32> {
         self.per
             .get(q)
             .and_then(|v| v.as_ref())
-            .map_or(vec![], |s| s.loads.rn_board.clone())
+            .map_or(vec![], |s| self.engine.svc().out_split(s.loads.rn_board.clone()))
     }
     pub fn alight(&self, q: usize) -> Vec<f32> {
         self.per
             .get(q)
             .and_then(|v| v.as_ref())
-            .map_or(vec![], |s| s.loads.rn_alight.clone())
+            .map_or(vec![], |s| self.engine.svc().out_split(s.loads.rn_alight.clone()))
     }
     /// As `DemandApi::base_extra`.
     pub fn base_extra(&self, q: usize) -> Vec<f32> {
-        self.per.get(q).and_then(|v| v.as_ref()).map_or(vec![], |s| fare_x_usd(&s.loads.rn_base_x, s.p.fare_w))
+        self.per.get(q).and_then(|v| v.as_ref()).map_or(vec![], |s| self.engine.svc().out_split(fare_x_usd(&s.loads.rn_base_x, s.p.fare_w)))
     }
     /// As `DemandApi::fare_extra`.
     pub fn fare_extra(&self, q: usize) -> Vec<f32> {
-        self.per.get(q).and_then(|v| v.as_ref()).map_or(vec![], |s| fare_extra_usd(&s.loads.rn_fare_x, &s.p, &s.g, &s.xi, &s.xfer))
+        self.per.get(q).and_then(|v| v.as_ref()).map_or(vec![], |s| self.engine.svc().out_split(fare_extra_usd(&s.loads.rn_fare_x, &s.p, &s.g, &s.xi, &s.xfer)))
     }
     pub fn load_of_crush(&self, q: usize) -> Vec<f32> {
         let Some(Some(st)) = self.per.get(q) else {
             return vec![];
         };
-        (0..st.loads.seg.len())
-            .map(|r| {
-                let l = st.g.rn_line[r] as usize;
-                let cap = 60.0 / st.net.line_headway_min[l][q] * st.net.line_crush[l];
-                if cap > 0.0 {
-                    st.loads.seg[r] / st.p.period_hours * st.p.peak_hour_factor / cap
-                } else {
-                    0.0
-                }
-            })
-            .collect()
+        self.engine.svc().out_load(
+            (0..st.loads.seg.len())
+                .map(|r| {
+                    let l = st.g.rn_line[r] as usize;
+                    let cap = 60.0 / st.net.line_headway_min[l][q] * st.net.line_crush[l];
+                    if cap > 0.0 {
+                        st.loads.seg[r] / st.p.period_hours * st.p.peak_hour_factor / cap
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+        )
     }
     pub fn solved_mask(&self) -> u32 {
         (0..5)
@@ -2439,7 +2644,7 @@ impl EverydayApi {
             out.extend_from_slice(&part.rn_board);
             out.extend_from_slice(&part.rn_alight);
         }
-        out
+        self.engine.svc().out_loads3(out)
     }
     /// Six mode-major cell blocks, home and activity ends, trip legs over solved periods.
     pub fn cell_modes(&self) -> Vec<f32> {
@@ -2558,16 +2763,18 @@ impl EverydayApi {
     /// Riders in period `q` boarding at each route node after changing lines, every purpose (T-1530).
     pub fn transfers_in(&self, q: usize) -> Vec<f32> {
         let Some(Some(st)) = self.per.get(q) else { return vec![] };
-        transfers_in(&st.g, &st.xi, &st.xfer)
+        self.engine.svc().out_split(transfers_in(&st.g, &st.xi, &st.xfer))
     }
     /// `transfers` on a kind of day (T-260). The purposes' transfers are kept together, so each
     /// period's are scaled by its rail riders' mean load factor that day.
     pub fn transfers_day(&self, sel: &[u8], day: u32) -> Vec<f32> {
+        let Some(svc) = self.engine.svc.as_ref() else { return vec![] };
+        let dsel = svc.in_any(sel);
         let mut out = vec![];
         for (q, st) in self.per.iter().enumerate() {
             let Some(st) = st else { continue };
             let at = out.len();
-            transfer_pairs(&st.g, &st.xi, &st.xfer, sel, &mut out);
+            transfer_pairs(&st.g, &st.xi, &st.xfer, &dsel, &mut out);
             if day as usize != WEEKDAY {
                 let k = self.kind_totals(q);
                 let (mut rail, mut weighted) = (0.0, 0.0);
@@ -2578,7 +2785,7 @@ impl EverydayApi {
                 scale_triples(&mut out[at..], if rail > 0.0 { (weighted / rail) as f32 } else { 0.0 });
             }
         }
-        out
+        svc.out_pairs(out, sel)
     }
 }
 

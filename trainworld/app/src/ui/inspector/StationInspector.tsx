@@ -3,6 +3,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { clock } from "../../game/clock";
 import { t as tr, tNumber } from "../../i18n";
+import { tipMutedLine } from "../tip";
 import { mobileDevice } from "../../workers/deviceMemory";
 import { lineDemand } from "../../game/demand";
 import { area, count, distance, duration, levelLabel, money, roughDistance } from "../../game/format";
@@ -18,15 +19,17 @@ import { complexNow, waitToward, type ComplexNow } from "../../game/complexLive"
 import { LINK_MAX_M } from "../../game/complexes";
 import { linking, linksAmong, unlink } from "../../game/links";
 import { selection, TRAM_PLATFORM } from "../../game/ui";
+import { TRAM_STOP_UPKEEP } from "../../game/trackKinds";
 import { vehicleOf } from "../../game/vehicle";
 import { edit, linesAt, say, stationNames, stationsById, world } from "../../game/world";
 import { live } from "../../map/live";
 import { removeThing } from "../../game/remove";
+import { shownStation } from "../../map/stationAhead";
 import { CAR_M, nextLeavingAt, platformsAt, stepPlatform } from "../../game/boarding";
 import { carsText } from "./schedule";
 import { today, useToday, type LineToday } from "../../game/today";
 import { moneyState } from "../../game/money";
-import { stationUpkeepOf } from "../../game/regionMoney";
+import { nodeUpkeepOf } from "../../game/regionMoney";
 import { Actions, Built, Chip, Icon, Row, Stepper } from "../widgets";
 import { nextSuggestion } from "../../map/stationNames";
 import { NameEdit } from "./NameEdit";
@@ -196,12 +199,15 @@ export function StationInspector({ id }: { id: string }) {
   const w = world.value;
   const [cycling, setCycling] = useState(false);
   useToday(); // T-446: boardings in the past 24 hours, kept fresh while the panel is open
-  const s = w && stationsById(w).get(id);
-  if (!w || !s) return null;
+  const s0 = w && stationsById(w).get(id);
+  if (!w || !s0) return null;
+  // T-4146: its figures as edited, before the world holds them
+  const s = shownStation(s0);
   // a station complex (T-146): the switch shows only when there is more than this station
   const members = complexOf(id);
   const asComplex = members.length > 1 && inComplexView(id);
   const lines = linesAt(id);
+  // T-4146: the platform drawn and shown at its new length at the click (map/stationAhead.ts); what it costs comes off with the worker's word
   const props = (platform: number, name = s.name) => edit({ op: "stationProps", node: s.num, platform, name }).then((a) => a.ok);
   // T-3759: the complex view names the complex (its unbound stations keep theirs); a station on its own
   // takes the name alone when unbound, else renames its complex (T-3750)
@@ -227,7 +233,7 @@ export function StationInspector({ id }: { id: string }) {
     if (a.ok) say(tr("stationInspector.constructed", { name: (world.peek() && stationNames(world.peek()!).get(s.id)) || s.name, price: money(a.charge * 1e6) }));
   };
   // constructed: asks first above the bottom bar (T-096)
-  const remove = () => void removeThing({ kind: "station", node: s.num });
+  const remove = (e: MouseEvent) => void removeThing({ kind: "station", node: s.num }, e.shiftKey);
   return (
     <>
       <div class="title">
@@ -252,7 +258,7 @@ export function StationInspector({ id }: { id: string }) {
           complex's list goes back to it from here */}
       {!asComplex && (
         <div class="sub muted">
-          {s.port ? tr("stationInspector.port") : tr("stationInspector.sub", { level: levelLabel(s.level) })}
+          {s.port ? tr("stationInspector.port") : s.brt ? tr("stationInspector.brtStation") : tr("stationInspector.sub", { level: levelLabel(s.level) })}
           {members.length > 1 && (
             <>
               {" · "}
@@ -278,8 +284,8 @@ export function StationInspector({ id }: { id: string }) {
       )}
       <ClosestStations lng={s.lng} lat={s.lat} exclude={new Set(members)} own={s.name} />
       <StationLinks id={id} members={asComplex ? members : [id]} />
-      {!s.port && <StationBuilding id={id} members={members} />}
-      {!asComplex && <Actions><button class="btn text danger" onClick={remove}>{tr(s.port ? "stationInspector.removePort" : "stationInspector.removeStation")}</button></Actions>}
+      {!s.port && !s.brt && <StationBuilding id={id} members={members} />}
+      {!asComplex && <Actions><button class="btn text danger" data-tip={tipMutedLine(tr("common.shiftSkip"))} onClick={remove}>{tr(s.port ? "stationInspector.removePort" : "stationInspector.removeStation")}</button></Actions>}
     </>
   );
 }
@@ -346,7 +352,7 @@ function StationBuilding({ id, members }: { id: string; members: string[] }) {
       </ul>
       <Actions>
         <button class="btn text" onClick={() => live.tools?.building.begin(b.corners, b.id, id)}>{tr("stationInspector.editOutline")}</button>
-        <button class="btn text danger" onClick={() => void removeThing({ kind: "building", id: b.id })}>{tr("stationInspector.removeBuilding")}</button>
+        <button class="btn text danger" data-tip={tipMutedLine(tr("common.shiftSkip"))} onClick={(e) => void removeThing({ kind: "building", id: b.id }, e.shiftKey)}>{tr("stationInspector.removeBuilding")}</button>
       </Actions>
     </>
   );
@@ -382,7 +388,7 @@ function StationDetails({ s, lines, props }: {
     <>
       <Built built={s.built} />
       <ul class="rows">
-        {!s.port && <li>
+        {!s.port && !s.brt && <li>
           <span class="grow">{tr("stationInspector.platforms")}</span>
           <Stepper value={carsText(Math.round(s.length / CAR_M))} wide label={tr("stationInspector.platformLength")} onStep={(d) => {
             const to = s.tram ? Math.max(TRAM_PLATFORM.min, Math.min(TRAM_PLATFORM.max, s.length + d * TRAM_PLATFORM.step)) : stepPlatform(s.length, d);
@@ -392,7 +398,7 @@ function StationDetails({ s, lines, props }: {
         </li>}
         {/* T-3332: on double track the platform on the left track, both or the right track; on single track
             a stop with or without a passing loop */}
-        {!s.port && <li>
+        {!s.port && !s.brt && <li>
           <span class="grow">{tr("stationInspector.platformTracks")}</span>
           {doubleHere
             ? <StationSides s={s} />
@@ -402,9 +408,15 @@ function StationDetails({ s, lines, props }: {
         <FareZoneRow members={[s]} />
         {s.built && m && (
           <Row label={tr("trackInspector.upkeep")}>
-            {s.port
-              ? <span class="money-neg" data-tip={tr("stationInspector.portUpkeep", { price: money(m.upkeepPort * m.economy) })}>{tr("inspector.perDay", { value: money(m.upkeepPort * m.economy) })}</span>
-              : <span class="money-neg" data-tip={tr("stationInspector.stationUpkeep", { under: money(m.upkeepStationUnder * m.economy), other: money(m.upkeepStation * m.economy) })}>{tr("inspector.perDay", { value: money(stationUpkeepOf(m, s)) })}</span>}
+            {/* T-3922: what is bought on it included, named in the hover */}
+            <span class="money-neg" data-tip={[s.brt
+              ? tr("stationInspector.brtUpkeep", { price: money(TRAM_STOP_UPKEEP * m.economy) })
+              : s.port
+              ? tr("stationInspector.portUpkeep", { price: money(m.upkeepPort * m.economy) })
+              : tr("stationInspector.stationUpkeep", { under: money(m.upkeepStationUnder * m.economy), other: money(m.upkeepStation * m.economy) }),
+              ...(s.upgradeUpkeep ? [tr("stationInspector.upgradesUpkeep", { amount: money(s.upgradeUpkeep) })] : [])].join("\n")}>
+              {tr("inspector.perDay", { value: money(nodeUpkeepOf(m, s)) })}
+            </span>
           </Row>
         )}
       </ul>

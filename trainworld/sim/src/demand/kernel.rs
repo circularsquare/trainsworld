@@ -69,7 +69,7 @@ pub struct Params {
     pub transfer_min: f32,
     /// Anita, 2026-11-20 (T-3888, T-3910): perceived minutes a trip pays where its first boarding
     /// (`train_in_min`) and where its last ride leaves (`train_out_min`): a general boarding cost on a
-    /// train or tram at any level (`network::STAIRS_AT_GRADE`). Never
+    /// train or tram at any level but a tram stop on the street (T-4041, `Network::pays_ends`). Never
     /// at a change; buses and ferries pay neither (`Graph::rn_in`). In the
     /// station pair's cost (`DestSearch::run_by`), not in its real minutes (`Skims::walk`).
     pub train_in_min: f32,
@@ -208,6 +208,8 @@ pub struct Params {
     pub w_xfer: f32,
     /// Stations of the snapshot this close together are one demand station (`api::merge_stations`).
     pub station_merge_m: f32,
+    /// T-4094: a line's consecutive bus stops this close are one demand station (`busmerge`); 0 for none.
+    pub bus_merge_m: f32,
     /// Riders left behind by full trains wait longer (T-188, `left_behind`): each crowding round
     /// adds the average extra wait at each line, direction and stop to that boarding's cost.
     pub left_behind: bool,
@@ -399,6 +401,7 @@ impl Default for Params {
             xfer_mps: 1.2,
             w_xfer: 1.39,
             station_merge_m: 100.0,
+            bus_merge_m: super::busmerge::MERGE_M,
             left_behind: true,
             routes: None,
             parts: None,
@@ -461,6 +464,7 @@ impl Params {
             "xfer_walk_m" => self.xfer_walk_m = v,
             "walk_rule" => self.walk_rule = v,
             "station_merge_m" => self.station_merge_m = v,
+            "bus_merge_m" => self.bus_merge_m = v,
             // the gravity holds the walk's costs: `DemandApi::refresh_walk` after these
             "walk_trip_w" => self.walk_trip_w = v,
             "walk_bonus_min" => self.walk_bonus_min = v,

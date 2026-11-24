@@ -26,7 +26,7 @@ impl TrackApi {
         }
         let mut data = LineData {
             name, symbol: String::new(), colour, stops: vec![], path: vec![], tph: [0.0; 3], trains: Some([0; 3]), auto: Some([high, medium, low]),
-            dwell_s, turnaround_s, cars: 1, fast: false, bus: Some(BusRoute::new(pts, kinds, false)), ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: true, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], rows: 0, x: Default::default(), fare_dist: false,
+            dwell_s, turnaround_s, cars: 1, fast: false, bus: Some(BusRoute::new(pts, kinds, false)), ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: true, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], only: vec![], rows: 0, x: Default::default(), fare_dist: false,
         };
         // T-3767: in a game of four or five rows its high headway runs at midday and in the afternoon too
         data.x = crate::track::net::Extra::of_high(&data);
@@ -41,10 +41,10 @@ impl TrackApi {
         if !bus::route_ok(&self.w.net, &pts, &kinds) {
             return self.refuse(Issue::LinePath { line: id });
         }
-        let (built, spacing, brt, hand, kept) = (r.built, r.spacing, r.brt, r.hand.take(), std::mem::take(&mut r.hand_kept));
+        let (built, spacing, brt, brt_bp, hand, kept, exact) = (r.built, r.spacing, r.brt, r.brt_bp, r.hand.take(), std::mem::take(&mut r.hand_kept), std::mem::take(&mut r.exact));
         *r = BusRoute::new(pts, kinds, built);
         r.spacing = spacing;
-        r.brt = brt;
+        (r.brt, r.brt_bp) = (brt, brt_bp);
         // T-2891: stops the new route still passes go onto it; the rest are gone with the old road
         let net = &self.w.net;
         let poly = bus::Poly::new(net, &r.points, &r.kinds);
@@ -54,6 +54,8 @@ impl TrackApi {
         };
         r.hand = hand.map(|h| h.iter().filter_map(onto).collect());
         r.hand_kept = kept.iter().filter_map(onto).collect();
+        // T-4069: a pinned stop stays pinned if the stop it was moves onto the new route
+        r.exact = exact.iter().filter_map(onto).collect();
         if built { self.run_charged(Op::Line { id, data: Some(d) }) } else { self.run(Op::Line { id, data: Some(d) }) }
     }
     /// Set how far apart a bus line's stops are, m (T-2885); 0 leaves them to place themselves. Free,
@@ -71,17 +73,38 @@ impl TrackApi {
         }
         self.run(Op::Line { id, data: Some(d) })
     }
-    /// T-3907: put a bus line on BRT or take it off, one undoable edit. On a constructed line switching it on is
-    /// paid at once (the rise in built value, `BRT_COST_PER_KM` a road-km); off gives nothing back, nor does an
-    /// undo. On a planned line it is in the blueprint, paid on Construct.
+    /// T-3907: put a bus line on BRT or take it off, one undoable edit. T-3944: on puts its lanes in the blueprint,
+    /// free (on a constructed line `BusRoute::brt_bp`), paid on Construct (`construct_ops`); off takes a blueprint's
+    /// out, or takes constructed lanes away, giving nothing back (nor does an undo) and costing nothing.
     pub fn set_bus_brt(&mut self, id: u32, on: bool) -> u32 {
         let Some(mut d) = self.w.net.line_data(id) else { return self.refuse(Issue::NoSuchLine { line: id }) };
         let Some(r) = d.bus.as_mut() else { return self.refuse(Issue::LinePath { line: id }) };
-        if r.brt == on {
+        if r.brt_any() == on {
             return 0;
         }
-        r.brt = on;
-        self.run(Op::Line { id, data: Some(d) })
+        if on {
+            if r.built { r.brt_bp = true } else { r.brt = true }
+            self.run(Op::Line { id, data: Some(d) })
+        } else if r.brt_bp {
+            r.brt_bp = false;
+            self.run(Op::Line { id, data: Some(d) })
+        } else {
+            r.brt = false;
+            self.run_free(Op::Line { id, data: Some(d) }, false)
+        }
+    }
+    /// T-3944: whether a constructed bus line's BRT lanes are in the blueprint, not yet built.
+    pub fn bus_brt_bp(&self, line: u32) -> bool {
+        self.w.net.brt_bp(line)
+    }
+    /// T-3944: a bus line's BRT lanes for the map, runs of `[kind, points, x, y, ...]` (`Network::brt_marks`).
+    pub fn bus_lane_marks(&self, line: u32) -> Vec<f64> {
+        self.w.net.brt_marks(line)
+    }
+    /// T-3378: a bus line's lanes, road metres: [in town, shared with no other BRT line, its part of the lanes'
+    /// upkeep] (`Network::brt_split`).
+    pub fn bus_lanes(&self, line: u32) -> Vec<f64> {
+        self.w.net.brt_split(line).to_vec()
     }
     /// Whether a bus line is on BRT (T-3907).
     pub fn bus_brt(&self, line: u32) -> bool {
@@ -116,6 +139,14 @@ impl TrackApi {
     /// the stop nearest (x, y). The ends stay, a loop keeps one stop between (T-3123), and a click that
     /// changes no stop is no edit.
     pub fn set_bus_stop(&mut self, id: u32, x: f64, y: f64, on: bool) -> u32 {
+        self.bus_stop_edit(id, x, y, on, false)
+    }
+    /// T-4069: as `set_bus_stop` putting a stop on, but exactly where the route is nearest (x, y), never
+    /// as a station's stop (`BusRoute::exact`).
+    pub fn set_bus_stop_exact(&mut self, id: u32, x: f64, y: f64) -> u32 {
+        self.bus_stop_edit(id, x, y, true, true)
+    }
+    fn bus_stop_edit(&mut self, id: u32, x: f64, y: f64, on: bool, exact: bool) -> u32 {
         let Some(mut d) = self.w.net.line_data(id) else { return self.refuse(Issue::NoSuchLine { line: id }) };
         let Some(r) = d.bus.as_mut().filter(|r| r.hand.is_some()) else { return self.refuse(Issue::LinePath { line: id }) };
         let net = &self.w.net;
@@ -134,6 +165,8 @@ impl TrackApi {
             }
             let (px, py) = poly.at_road(poly.project(net, x, y).0);
             hand.push([quant(px), quant(py)]);
+            // T-4069: Ctrl+click puts the stop where it is, not on a station near it
+            if exact { r.exact.push([quant(px), quant(py)]) }
         } else {
             let n = plan.stops.len();
             let far = |k: usize| (plan.stops[k].x - x).hypot(plan.stops[k].y - y);
@@ -148,6 +181,7 @@ impl TrackApi {
                 return 0;
             }
         }
+        r.exact.retain(|p| hand.contains(p));
         r.hand = Some(hand);
         // T-3123: compared stop by stop, as a loop's first placed stop takes the place of its stop at half its length
         let same = |a: &bus::Plan, b: &bus::Plan| a.stops.len() == b.stops.len() && a.stops.iter().zip(&b.stops).all(|(p, q)| p.s == q.s && p.station == q.station);
@@ -226,8 +260,8 @@ impl TrackApi {
         let road = if pts.len() >= 2 { poly.road_len() } else { 0.0 };
         let rule = net.line_bus.get(line as usize).and_then(|b| b.as_ref()).map_or(bus::StopRule::Auto, |r| r.rule());
         let plan = bus::plan_by(net, line, &pts, &kinds, false, rule);
-        // T-3907: a BRT line's route pays its lanes in town too
-        let town = if net.is_brt(line) { bus::town_m(net, &pts, &kinds) } else { 0.0 };
+        // T-3907: a BRT line's route pays its lanes in town too; T-3378: not where another BRT line has them
+        let town = if net.is_brt(line) { net.brt_new_m(line, &pts, &kinds) } else { 0.0 };
         let mut out = vec![road, road / 1000.0 * BUS_ROUTE_COST_PER_KM + town / 1000.0 * BRT_COST_PER_KM, (ok && plan.stops.len() >= 2) as u8 as f64, plan.stops.len() as f64];
         for s in &plan.stops {
             out.extend([s.x, s.y, s.kind as f64]);
@@ -244,6 +278,36 @@ impl TrackApi {
             out.extend([a, b, kmh, trunk as u8 as f64]);
         }
         out
+    }
+
+    /// T-3378: add a blueprint BRT station at (x, y), on no track, its platform along a road running on `heading`
+    /// (plane radians; the app found the road). 0 when added; `last_brt_station` is then its node.
+    pub fn add_brt_station(&mut self, x: f64, y: f64, heading: f64, name: String) -> u32 {
+        let node = self.w.net.alloc_node();
+        let fare = self.neighbour_fare(x, y);
+        let st = StationData { platform: BRT_STATION_PLATFORM, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare, own: String::new(), road: Some(heading as f32 as f64) };
+        let op = Op::Batch(vec![Op::Node { id: node, data: Some(NodeData { x: quant(x), y: quant(y), level: 0, flying: false }) }, Op::Station { node, data: Some(st) }]);
+        let r = self.run(op);
+        if r == 0 {
+            self.last_brt_station = node;
+        } else {
+            self.w.net.release_node(node);
+            self.last_brt_station = u32::MAX;
+        }
+        r
+    }
+    /// The node of the BRT station the last `add_brt_station` added (`u32::MAX` if it was refused).
+    pub fn last_brt_station(&self) -> u32 {
+        self.last_brt_station
+    }
+    /// T-3378: whether a node is a BRT station.
+    pub fn is_brt_station(&self, node: u32) -> bool {
+        self.w.net.is_brt_station(node)
+    }
+    /// T-3378: the live BRT stations.
+    pub fn brt_stations(&self) -> Vec<u32> {
+        let n = &self.w.net;
+        (0..n.node_count() as u32).filter(|&k| n.is_brt_station(k)).collect()
     }
 }
 

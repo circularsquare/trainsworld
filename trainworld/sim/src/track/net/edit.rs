@@ -31,6 +31,16 @@ impl Network {
     pub fn edge_tram(&self, e: u32) -> bool {
         self.edge_kind[e as usize].spec().family == 1
     }
+    /// T-3378: a busway, which no train or tram runs on.
+    pub fn edge_busway(&self, e: u32) -> bool {
+        self.edge_kind[e as usize].is_busway()
+    }
+    /// Whether a train line's path (a tram line's: `tram`) keeps off edge `e`: tram track for a train (T-3889), a
+    /// busway for both (T-3378).
+    pub fn edge_barred(&self, e: u32, tram: bool) -> bool {
+        let k = self.edge_kind[e as usize].spec().family;
+        k == 2 || (!tram && k == 1)
+    }
     pub fn edge_section_s(&self, e: u32) -> f64 {
         self.edge_kind[e as usize].spec().section_s
     }
@@ -223,6 +233,9 @@ impl Network {
             }
         }
         self.touch.edges.push(id);
+        if old.as_ref().is_some_and(|o| o.kind.is_busway()) || self.edge_alive[id as usize] && self.edge_kind[id as usize].is_busway() {
+            self.touch.busways = true;
+        }
         Ok(old)
     }
 
@@ -303,6 +316,7 @@ impl Network {
                 self.line_fast[i] = d.fast;
                 self.line_hand[i] = d.hand && d.bus.is_none() && d.ferry.is_none();
                 self.line_ones[i] = if d.bus.is_some() || d.ferry.is_some() { vec![] } else { d.ones.iter().copied().filter(|x| d.stops.contains(&x.0)).collect() };
+                self.line_only[i] = if d.bus.is_some() || d.ferry.is_some() { vec![] } else { d.only.iter().copied().filter(|x| matches!(x.1, BOARD_ONLY | ALIGHT_ONLY) && d.stops.contains(&x.0)).collect() };
                 self.line_one_way[i] = d.one_way;
                 self.line_limit[i] = d.limit;
                 self.line_fare_dist[i] = d.fare_dist;
@@ -326,6 +340,7 @@ impl Network {
                 self.line_day[i] = 0;
                 self.line_hand[i] = false;
                 self.line_ones[i].clear();
+                self.line_only[i].clear();
                 self.line_one_way[i] = false;
                 self.line_limit[i] = 0;
                 self.line_fare_dist[i] = false;

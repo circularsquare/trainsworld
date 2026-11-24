@@ -39,6 +39,11 @@ fn built_days(days: &[u32]) -> Vec<i32> {
 pub struct TrackApi {
     w: TrackWorld,
     last: Option<EditResult>,
+    /// T-4113: what the edits since `take_touched` touched
+    touched: touched::Touched,
+    /// T-4113: each line's stamp as `take_changed_lines` last took it (`TrackApi::stamped`)
+    stamps: Vec<Option<u64>>,
+    stamps_off: bool,
     issues: Vec<Issue>,
     /// Set when the last refusal was for money: (need, have).
     money_short: Option<(f64, f64)>,
@@ -95,6 +100,8 @@ pub struct TrackApi {
     /// T-3713: while a route is laid out again, a bare track end it would have to turn back to meet is
     /// met as a branch 5 m in instead (`route_op`).
     bare_slide: bool,
+    /// T-4185: while on, `run` makes each edit part of the player's edit before it (`join_edit`).
+    join: bool,
     /// T-3137: the points the next route's ends join double track nearest (`set_route_join`), and
     /// while one is laid out (`route_op`) the ones it uses; NaN for the nearer track.
     route_join: Option<[f64; 4]>,
@@ -165,6 +172,8 @@ pub struct TrackApi {
     link_charge: f64,
     /// The node of the port the last `add_port` added (T-2193), `u32::MAX` if refused.
     last_port: u32,
+    /// T-3378: the node the last `add_brt_station` added, `u32::MAX` if it was refused.
+    last_brt_station: u32,
     /// T-2669: per line id, its running cost over the world price list (its countries' prices,
     /// `set_line_run_factors`); 1 for a line not listed. Never saved: the app sends it.
     run_factor: Vec<f64>,
@@ -314,15 +323,18 @@ fn port_upkeep() -> f64 {
     UPKEEP_PORT * ECONOMY / 1e6
 }
 /// A constructed bus route's upkeep a game day, US$M, a BRT one's lanes included (T-3907); None for a
-/// planned one (T-1464).
-fn bus_upkeep(n: &Network, l: u32) -> Option<f64> {
+/// planned one (T-1464). `lanes`: each line's part of the lanes' upkeep, road metres (`Network::brt_upkeep_m`).
+fn bus_upkeep(n: &Network, l: u32, lanes: &[f64]) -> Option<f64> {
     n.line_bus.get(l as usize)?.as_ref().filter(|r| r.built && n.line_ok(l)).map(|_| {
-        // T-3907: a BRT route's road in town at street tram track's rate
-        let (road, town) = (n.bus_road_m(l), n.brt_town_m(l));
+        // T-3907: a BRT route's road in town at street tram track's rate; T-3378: a lane two lines share, half each
+        let (road, town) = (n.bus_road_m(l), lanes.get(l as usize).copied().unwrap_or(0.0));
         ((road - town) * UPKEEP_BUS_KM + town * UPKEEP_BRT_KM) / 1000.0 * ECONOMY / 1e6
     })
 }
 fn station_upkeep(n: &Network, i: usize) -> f64 {
+    if n.node_road[i].is_some() {
+        return UPKEEP_BRT_STATION * ECONOMY / 1e6;
+    }
     let share = if n.one_platform(i as u32) { UPKEEP_ONE_PLATFORM_SHARE } else { 1.0 };
     n.node_kind(i as u32).spec().station_upkeep.unwrap_or_else(|| super::cost::station_upkeep(n.node_level[i]) * share) * ECONOMY / 1e6
 }
@@ -386,6 +398,9 @@ impl TrackApi {
         TrackApi {
             w: TrackWorld::new(Network::new(origin_lon, origin_lat, right_hand)),
             last: None,
+            touched: Default::default(),
+            stamps: vec![],
+            stamps_off: false,
             issues: vec![],
             money_short: None,
             cash: 6000.0,
@@ -412,6 +427,7 @@ impl TrackApi {
             route_ramp: false,
             route_beside: None,
             bare_slide: false,
+            join: false,
             route_join: None,
             station_one: None,
             join_at: [f64::NAN; 4],
@@ -444,6 +460,7 @@ impl TrackApi {
             skipped: 0,
             link_charge: 0.0,
             last_port: u32::MAX,
+            last_brt_station: u32::MAX,
             run_factor: vec![],
             load_level: save::LEVEL,
             bind_new: true,
@@ -505,6 +522,10 @@ impl TrackApi {
     pub fn line_periods(&self, line: u32, day: u32) -> Vec<f64> {
         self.boarding.line_periods(&self.w.svc, line as usize, day as usize)
     }
+    /// T-4149: `line_periods` worked out with nothing kept (`Boarding::line_periods_whole`), for `?patch=check`.
+    pub fn line_periods_whole(&self, line: u32, day: u32) -> Vec<f64> {
+        self.boarding.line_periods_whole(&self.w.svc, line as usize, day as usize)
+    }
     /// Every line's day so far at game time `t` (T-293, `Boarding::today` has the layout).
     pub fn today(&self, t: f64) -> Vec<f64> {
         self.boarding.today(&self.w.svc, t)
@@ -512,6 +533,10 @@ impl TrackApi {
     /// Every line's past 24 hours at game time `t` (T-446, `Boarding::past_day`).
     pub fn past_day(&self, t: f64) -> Vec<f64> {
         self.boarding.past_day(&self.w.svc, t)
+    }
+    /// T-4149: `past_day` with no line's block kept from an earlier read (`Boarding::past_day_whole`), for `?patch=check`.
+    pub fn past_day_whole(&self, t: f64) -> Vec<f64> {
+        self.boarding.past_day_whole(&self.w.svc, t)
     }
     /// Forget the riders (a game was loaded: its demand comes later).
     pub fn clear_riders(&mut self) {
@@ -552,6 +577,7 @@ impl TrackApi {
         net.roads = self.w.net.roads.clone();
         net.streets = self.w.net.streets.clone();
         self.w = TrackWorld::new(net);
+        self.touched.everything();
         self.rebuild_water();
         true
     }
@@ -702,13 +728,20 @@ impl TrackApi {
     /// share of the car's street speed where zones say so, and the bus lines are timed again. The
     /// arrays are the pack's (`pop`, `jobs`, `zone` per cell; `zone_gx`, `zone_gy`, `zone_size`
     /// (or none), `zone_cells9` per zone), its grid from `gravity` in the header, and its origin.
-    /// False if they do not fit each other.
+    /// -1 if they do not fit each other, else how many bus lines were timed again: T-4155, only those whose route
+    /// meets the new speeds (all of them with the first speeds, which every bus samples from then on).
     #[allow(clippy::too_many_arguments)]
-    pub fn add_pack_streets(&mut self, zone_m: f64, x0: f64, y0: f64, w: u32, h: u32, pop: &[f32], jobs: &[f32], zone: &[u32], gx: &[u16], gy: &[u16], size: &[u8], cells9: &[u32], pack_lon: f64, pack_lat: f64) -> bool {
-        let Some(g) = StreetGrid::from_zones(zone_m, x0, y0, w, h, pop, jobs, zone, gx, gy, size, cells9, pack_lon, pack_lat) else { return false };
+    pub fn add_pack_streets(&mut self, zone_m: f64, x0: f64, y0: f64, w: u32, h: u32, pop: &[f32], jobs: &[f32], zone: &[u32], gx: &[u16], gy: &[u16], size: &[u8], cells9: &[u32], pack_lon: f64, pack_lat: f64) -> i32 {
+        let Some(g) = StreetGrid::from_zones(zone_m, x0, y0, w, h, pop, jobs, zone, gx, gy, size, cells9, pack_lon, pack_lat) else { return -1 };
+        let area = (!self.w.net.streets.is_empty()).then(|| g.lonlat_box());
         self.w.net.streets.grids.push(Arc::new(g));
-        self.w.rework_buses();
-        true
+        self.w.rework_buses(area) as i32
+    }
+
+    /// T-3913: the in-town squares of the street speeds last added (`add_pack_streets`), as polygons for the bus tool's
+    /// road hint (`streets::StreetGrid::town_outline` has the layout).
+    pub fn last_town_outline(&self) -> Vec<f64> {
+        self.w.net.streets.last_town_outline()
     }
 
     /// Metres of the last route or edge preview in each terrain class where it is charged (flat,
@@ -798,6 +831,7 @@ impl TrackApi {
                     }
                 }
                 self.w = TrackWorld::new(net);
+                self.touched.everything();
                 self.old_names = level <= save::OLD_BOUND_NAMES;
                 if level <= save::OLD_STATION_WAYS && self.w.net.pin_station_runs() {
                     self.w.reload();
@@ -930,6 +964,7 @@ mod buildings;
 mod twin;
 mod onetrack;
 mod legs;
+mod touched;
 
 /// What buying the cars the running lines need beyond `fleet` costs, US$M.
 fn trains_to_buy(w: &TrackWorld, fleet: [u32; FLEETS]) -> f64 {
@@ -1933,6 +1968,21 @@ fn lead_in(r: &Resolved, toward: (f64, f64), scaled: bool, cap: f64) -> Option<P
     lead_in_capped(r.x, r.y, r.level, nearer_dir(r, toward)?, toward, scaled, cap)
 }
 
+/// The lead-ins at the two ends of a stretch, a and b (`at_a`, `at_b`: that end's lead-in toward a
+/// point), with the corners `between`. With none, an end the other lies straight ahead of gets no
+/// lead-in, and the other end's lead-in would then move its straight off the heading, a kink at the
+/// node (T-4152): such an end is aimed at the other's lead-in instead.
+fn end_leads(at_a: impl Fn((f64, f64)) -> Option<Pi>, at_b: impl Fn((f64, f64)) -> Option<Pi>, a: (f64, f64), b: (f64, f64), between: &[Pi]) -> (Option<Pi>, Option<Pi>) {
+    if let (Some(f), Some(l)) = (between.first(), between.last()) {
+        return (at_a((f.x, f.y)), at_b((l.x, l.y)));
+    }
+    match (at_a(b), at_b(a)) {
+        (None, Some(q)) => (at_a((q.x, q.y)), Some(q)),
+        (Some(p), None) => (Some(p), at_b((p.x, p.y))),
+        pair => pair,
+    }
+}
+
 /// Street corners `tram_ends` may drop at each end of a route.
 const TRAM_DROP: usize = 3;
 
@@ -1968,8 +2018,7 @@ fn tram_ends(ra: &Resolved, rb: &Resolved, pis: Vec<Pi>, scaled: bool, r_min: f6
                 continue;
             }
             let rest = &pis[da..n - db];
-            let la = lead(ra, rest.first().map_or((rb.x, rb.y), |p| (p.x, p.y)));
-            let lb = lead(rb, rest.last().map_or((ra.x, ra.y), |p| (p.x, p.y)));
+            let (la, lb) = end_leads(|t| lead(ra, t), |t| lead(rb, t), (ra.x, ra.y), (rb.x, rb.y), rest);
             let mut v = vec![Pi::new(ra.x, ra.y, 0.0, ra.level)];
             v.extend(la);
             v.extend_from_slice(rest);
@@ -1980,8 +2029,7 @@ fn tram_ends(ra: &Resolved, rb: &Resolved, pis: Vec<Pi>, scaled: bool, r_min: f6
             }
         }
     }
-    let la = lead_in(ra, pis.first().map_or((rb.x, rb.y), |p| (p.x, p.y)), scaled, cap);
-    let lb = lead_in(rb, pis.last().map_or((ra.x, ra.y), |p| (p.x, p.y)), scaled, cap);
+    let (la, lb) = end_leads(|t| lead_in(ra, t, scaled, cap), |t| lead_in(rb, t, scaled, cap), (ra.x, ra.y), (rb.x, rb.y), &pis);
     (pis, la, lb)
 }
 
@@ -2050,6 +2098,45 @@ fn tangent_arc(x: f64, y: f64, level: i8, level_to: i8, dir: f64, to: (f64, f64)
         pis.push(Pi::new(px, py, 0.0, if j < n / 2 { level } else { level_to }).quantised());
     }
     (Ok(pis), circle)
+}
+
+/// A design speed as the drawing tool takes it, km/h (`set_design_speed`).
+fn design_kmh(kmh: f64) -> f64 {
+    if kmh.is_finite() { kmh.clamp(DESIGN_MIN_KMH, DESIGN_SPEEDS[DESIGN_SPEEDS.len() - 1]) } else { DESIGN_SPEEDS[0] }
+}
+
+/// T-4210: the track tool's ghost of a tangent segment (`route_op_as` with tangent drawing, no corners clicked, a free
+/// end): from (x, y) at `level`, leaving on plane heading `dir` (rad), to (tx, ty) at the same level, laid as that
+/// route is (`tangent_arc`, `design_radii`, the fit) for the design speed `kmh` and track kind (`kind` as
+/// `set_route_kind`, `hsr` as `set_route_hsr`), and drawn as its preview is. Nothing of the network is read, so the
+/// page draws it at once while the clock worker checks and prices the same route; where the route meets water,
+/// a ramp or other track the worker's answer differs and replaces it. Returns [end heading (plane rad), the curve's
+/// circle (x, y, ground radius; NaN for a straight), speeds count n, n speeds (km/h per drawn step), then
+/// `preview_route`'s layout with ok 1 and no cost (NaN)]; empty where the route is refused (behind the heading).
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen]
+pub fn ghost_tangent(x: f64, y: f64, dir: f64, tx: f64, ty: f64, level: i8, scaled: bool, kmh: f64, kind: u8, hsr: bool) -> Vec<f64> {
+    let kind = TrackKind::from_u8(kind).filter(|k| k.spec().family != 0).unwrap_or_else(|| TrackKind::from_hsr(hsr));
+    let cap = design_radius(design_kmh(kmh)).max(kind.spec().min_radius);
+    // a free end is placed on the millimetre grid (`resolve`)
+    let to = Pi::new(tx, ty, 0.0, level).quantised();
+    let (pis, circle) = tangent_arc(x, y, level, level, dir, (to.x, to.y), scaled, cap);
+    let Ok(pis) = pis else { return vec![] };
+    let mut verts = vec![Pi::new(x, y, 0.0, level)];
+    verts.extend(pis);
+    verts.push(to);
+    let made: Vec<usize> = (1..verts.len() - 1).collect();
+    design_radii(&mut verts, &made, cap, scaled);
+    let f = geom::fit_in(&verts, scaled);
+    let speeds = render_speeds(&f.pieces, &f.vert, kind.v_cap(), geom::ramps().old);
+    let end = f.pieces.last().map_or(dir, |p| p.th0 + p.k * p.plen);
+    let c = circle.unwrap_or([f64::NAN; 3]);
+    let mut out = vec![end, c[0], c[1], c[2], speeds.len() as f64];
+    out.extend(speeds.iter().map(|&v| v as f64));
+    out.extend([1.0, f64::NAN, f.len, verts.len() as f64, f64::NAN]);
+    vertex_rows(&f, &verts, &mut out, kind.v_cap());
+    render_samples(&f.pieces, &f.vert, &mut out);
+    out
 }
 
 /// A lead-in PI leaving (x, y) on heading `dir` towards `toward` (`lead_in`), or None when the
@@ -2237,7 +2324,7 @@ impl TrackApi {
         self.run(Op::Edge { id, data: Some(EdgeData { a, b, tracks, pis: pis_from(pis), built: false, off: false, thru: vec![], crossover: false, kind: TrackKind::Regular, sep: false, day: 0, oneway: 0, join: [0; 2], limit: 0, ramp: 0 }) })
     }
     pub fn set_station(&mut self, node: u32, platform: u16, name: String) -> u32 {
-        self.run(Op::Station { node, data: Some(StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new() }) })
+        self.run(Op::Station { node, data: Some(StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None }) })
     }
     /// What constructing these would cost now, US$M (junctions and crossings they complete
     /// included).
@@ -2295,20 +2382,6 @@ impl TrackApi {
 
 #[cfg(test)]
 impl TrackApi {
-    /// Tests only: add or replace a line at trains per hour; its path is the fastest route through
-    /// the stops, and the next settle gives it whole trains (T-1146).
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn set_line(&mut self, id: u32, stops: &[u32], high: f32, medium: f32, low: f32, dwell_s: f32, turnaround_s: f32, cars: u8, colour: u32, name: String) -> u32 {
-        let Some(path) = self.w.net.route(stops, &[]) else {
-            return self.refuse(Issue::LinePath { line: id });
-        };
-        let mut d = LineData { rows: 0, x: Default::default(), symbol: String::new(), trains: None, auto: None, name, colour, stops: stops.to_vec(), path, tph: [high, medium, low], dwell_s, turnaround_s, cars, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], fare_dist: false };
-        d.x = crate::track::net::Extra::of_high(&d);
-        self.run(Op::Line { id, data: Some(d) })
-    }
-    pub(crate) fn set_schedule(&mut self, id: u32, high: f32, medium: f32, low: f32) -> u32 {
-        self.run(Op::Schedule { id, tph: [high, medium, low] })
-    }
     /// Detailed refusal text for native test failures; absent from the production WASM API.
     fn issues(&self) -> String {
         self.issues.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>().join("\n")
@@ -2414,6 +2487,14 @@ mod water_gap_tests;
 #[cfg(test)]
 mod built_day_tests;
 #[cfg(test)]
+mod streets_rework_tests;
+#[cfg(test)]
 mod lane_preview_tests;
 #[cfg(test)]
 mod twin_tests;
+/// T-4112: stations placed away from a piece's ramps leave them where they were.
+#[cfg(test)]
+mod t4112_tests;
+/// T-4152: joining onto the end of other track.
+#[cfg(test)]
+mod t4152_tests;

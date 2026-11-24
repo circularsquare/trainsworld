@@ -6,6 +6,7 @@ import { useEffect, useState } from "preact/hooks";
 import { speed } from "../../game/format";
 import { t } from "../../i18n";
 import { edit } from "../../game/world";
+import { withShown } from "../../game/pieceAhead";
 import { TRACK_SPECS } from "../../game/trackKinds";
 import type { TrackEdge } from "../../game/types";
 import { Row } from "../widgets";
@@ -13,7 +14,7 @@ import { Row } from "../widgets";
 import { LIMIT_MIN as MIN, nextLimit } from "../../game/pieceLimit";
 
 /** The top speed of a piece's kind of track, km/h (the sim's `TrackKind::v_cap`). */
-export const kindTop = (e: TrackEdge) => (e.kind ? TRACK_SPECS[e.kind === 2 ? "streetTram" : "tram"].vCapKmh : e.hsr ? 320 : 160);
+export const kindTop = (e: TrackEdge) => (e.kind ? TRACK_SPECS[e.kind === 4 ? "busway" : e.kind === 2 ? "streetTram" : "tram"].vCapKmh : e.hsr ? 320 : 160);
 
 /** What a piece keeps when `kmh` is asked (the sim's `piece_limit`): a limit at or over its top is none (T-3525). */
 const kept = (e: TrackEdge, kmh: number) => (kmh <= 0 || kmh >= kindTop(e) ? 0 : Math.max(MIN, kmh));
@@ -59,7 +60,8 @@ export function usePieceLimit(edges: readonly TrackEdge[]) {
 }
 
 /** The track panel's top speed and the piece's limit, if any; T-3746: set in the selection bar. */
-export function PieceLimit({ e }: { e: TrackEdge }) {
+export function PieceLimit({ e: edge }: { e: TrackEdge }) {
+  const e = withShown([edge])[0];
   // the hover says what the kind of track allows; with a limit on, the row below says otherwise
   const tip = e.kind || e.limit ? undefined : t(e.hsr ? "trackInspector.speedHsr" : "trackInspector.speedNormal");
   return (

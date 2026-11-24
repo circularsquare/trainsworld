@@ -26,7 +26,7 @@ pub fn edge(w: &mut TrackWorld, a: u32, b: u32, pis: &[(f64, f64)], level: i8) -
 }
 
 pub fn station(w: &mut TrackWorld, n: u32, platform: u16) {
-    w.apply(Op::Station { node: n, data: Some(StationData { platform, name: format!("S{n}"), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new() }) }).unwrap();
+    w.apply(Op::Station { node: n, data: Some(StationData { platform, name: format!("S{n}"), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None }) }).unwrap();
 }
 
 /// T-2986: a terminal at every station that is a dead end, so its lines turn on both platforms (a
@@ -42,12 +42,67 @@ pub fn terminals_at_dead_ends(w: &mut TrackWorld) {
     }
 }
 
+/// A line at about `tph` trains an hour a level, as whole trains: the rate times the round trip
+/// it has with none, rounded, at least one wherever the rate is above 0. One edit, so one undo.
 pub fn line(w: &mut TrackWorld, stops: &[u32], tph: [f32; 3]) -> u32 {
-    let path = w.net.route(stops, &[]).expect("no route");
+    line_with(w, stops, tph, false)
+}
+
+/// A line set by headway at exactly `tph` trains an hour a level (3600 / tph seconds, which these
+/// rates divide), its counts the fewest that keep it (T-625): for a test that pins rates, where
+/// whole trains on a short round trip would be far off them.
+pub fn headway_line(w: &mut TrackWorld, stops: &[u32], tph: [f32; 3]) -> u32 {
+    line_with(w, stops, tph, true)
+}
+
+/// A line at a fixed \`tph\` and no trains, as saves before T-1146 hold them; only for the test that
+/// such a save is given trains when it loads.
+pub fn rate_line(w: &mut TrackWorld, stops: &[u32], tph: [f32; 3]) -> u32 {
     let id = w.net.alloc_line();
-    let d = LineData { rows: 0, x: Default::default(), symbol: String::new(), trains: None, auto: None, name: format!("L{id}"), colour: 0, stops: stops.to_vec(), path, tph, dwell_s: 30.0, turnaround_s: 180.0, cars: 0, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], fare_dist: false };
+    let mut d = line_data(w, stops, id, None);
+    d.tph = tph;
     w.apply(Op::Line { id, data: Some(d) }).unwrap();
     id
+}
+
+/// Switches line `id` to headways for exactly `tph` an hour a level (`headway_line`), as the
+/// game does (T-625): a level with trains keeps them, one with none takes its headway's count.
+pub fn set_headway(w: &mut TrackWorld, id: u32, tph: [f32; 3]) {
+    let trains = w.net.line_trains[id as usize];
+    w.apply(Op::AutoTrains { id, auto: Some(headways(tph)), trains }).unwrap();
+}
+
+fn headways(tph: [f32; 3]) -> [u32; 3] {
+    tph.map(|t| if t > 0.0 { (3600.0 / t).round() as u32 } else { 0 })
+}
+
+fn line_with(w: &mut TrackWorld, stops: &[u32], tph: [f32; 3], headway: bool) -> u32 {
+    let id = new_line(w, stops, [0; 3]);
+    let trains = trains_for(w, id, tph);
+    w.undo().unwrap().unwrap();
+    let mut d = line_data(w, stops, id, Some(trains));
+    d.tph = tph;
+    if headway {
+        d.auto = Some(headways(tph));
+    }
+    w.apply(Op::Line { id, data: Some(d) }).unwrap();
+    id
+}
+
+/// Whole trains that run line `id` at about `tph` an hour a level over its round trip now.
+fn trains_for(w: &TrackWorld, id: u32, tph: [f32; 3]) -> [u32; 3] {
+    let trip = w.svc.lines[id as usize].round_trip;
+    std::array::from_fn(|row| {
+        let n = (tph[row] as f64 * trip[ROW_SLOT[row]] / 3600.0).round() as u32;
+        if tph[row] > 0.0 { n.max(1) } else { 0 }
+    })
+}
+
+/// Sets line `id` to whole trains that run about `tph` an hour a level (`trains_for`), for a
+/// line whose round trip others on its track have lengthened.
+pub fn set_rate(w: &mut TrackWorld, id: u32, tph: [f32; 3]) {
+    let trains = trains_for(w, id, tph);
+    set_counts(w, id, trains);
 }
 
 #[test]
@@ -314,6 +369,11 @@ fn a_partly_built_one_way_loop_arc_is_one_of_back_lines() {
 
 /// A - B - C, stations at all three; B-C bends at a PI.
 fn simple() -> (TrackWorld, [u32; 3], [u32; 2], u32) {
+    simple_with(line)
+}
+
+/// \`simple\` with its line made by \`make\` (\`line\`, \`headway_line\`, \`rate_line\`).
+fn simple_with(make: fn(&mut TrackWorld, &[u32], [f32; 3]) -> u32) -> (TrackWorld, [u32; 3], [u32; 2], u32) {
     let mut w = world();
     let a = node(&mut w, 0.0, 0.0, 0);
     let b = node(&mut w, 3000.0, 0.0, 0);
@@ -323,13 +383,15 @@ fn simple() -> (TrackWorld, [u32; 3], [u32; 2], u32) {
     for n in [a, b, c] {
         station(&mut w, n, 200);
     }
-    let l = line(&mut w, &[a, b, c], [12.0, 6.0, 3.0]);
+    let l = make(&mut w, &[a, b, c], [12.0, 6.0, 3.0]);
     (w, [a, b, c], [e0, e1], l)
 }
 
 #[test]
 fn a_line_runs_with_times_and_fleet() {
-    let (w, _, _, l) = simple();
+    // by headway, at exactly 12 an hour; the ends turn on both platforms, as one takes only 15
+    let (mut w, _, _, l) = simple_with(headway_line);
+    terminals_at_dead_ends(&mut w);
     let ls = &w.svc.lines[l as usize];
     assert!(ls.ok);
     assert_eq!(ls.cars, 10);
@@ -342,7 +404,8 @@ fn a_line_runs_with_times_and_fleet() {
     // Both directions take the same time on a symmetric free run.
     let rt = ls.round_trip[HIGH];
     assert!((rt - (ls.runs[0].prof[HIGH].duration + ls.runs[1].prof[HIGH].duration + 360.0)).abs() < 1e-9);
-    assert_eq!(ls.trains[HIGH], (rt * 12.0 / 3600.0).ceil() as u32);
+    // set by headway: the fewest trains that keep it (T-625)
+    assert_eq!(ls.trains[HIGH], super::world::auto_trains(rt, 300));
     // Trips in the 8:00 hour of a weekday (day 0 is a Sunday, T-1720): 12 per direction start,
     // plus those still running from before.
     let mon = 86400.0;
@@ -361,7 +424,7 @@ fn a_line_runs_with_times_and_fleet() {
 /// them, and a save in a format older than TWT4 is refused.
 #[test]
 fn a_frequency_line_is_given_trains_on_load() {
-    let (w, _, _, l) = simple();
+    let (w, _, _, l) = simple_with(rate_line);
     let i = l as usize;
     assert!(w.net.line_trains[i].is_none());
     let want = w.svc.lines[i].trains;
@@ -381,6 +444,26 @@ fn a_frequency_line_is_given_trains_on_load() {
     let mut old = again.clone();
     old[..4].copy_from_slice(b"TWT2");
     assert!(super::save::decode(&old).is_err());
+}
+
+/// T-3948: a network in the track rework's format (TWT7 or later) is refused as a newer save, never read as a
+/// damaged one; TWT4-6 are not.
+#[test]
+fn a_newer_network_format_is_refused_as_newer() {
+    let (w, ..) = simple();
+    let bytes = super::save::encode(&w.net);
+    assert!(!super::save::is_newer_magic(&bytes));
+    for m in [b"TWT7", b"TWT9", b"TWTA"] {
+        let mut b = bytes.clone();
+        b[..4].copy_from_slice(m);
+        assert!(super::save::is_newer_magic(&b));
+        assert_eq!(super::save::decode(&b).err().as_deref(), Some(super::save::NEWER_FORMAT));
+    }
+    for m in [b"TWT2", b"TWT4", b"TWT5", b"TWT6", b"PNG\x89"] {
+        let mut b = bytes.clone();
+        b[..4].copy_from_slice(m);
+        assert!(!super::save::is_newer_magic(&b), "{m:?}");
+    }
 }
 
 #[test]
@@ -495,6 +578,10 @@ fn two_separated_edges_make_no_crossing_and_the_flag_is_saved() {
 
 /// Y junction: trunk T-J, main J-M, branch J-Br. Line A runs T-Br, line B T-M.
 fn y_junction(tph: [f32; 3], flying: bool) -> (TrackWorld, u32, u32, u32) {
+    y_junction_with(tph, flying, line)
+}
+
+fn y_junction_with(tph: [f32; 3], flying: bool, make: fn(&mut TrackWorld, &[u32], [f32; 3]) -> u32) -> (TrackWorld, u32, u32, u32) {
     let mut w = world();
     let t = node(&mut w, 0.0, 0.0, 0);
     let j = node(&mut w, 3000.0, 0.0, 0);
@@ -509,25 +596,26 @@ fn y_junction(tph: [f32; 3], flying: bool) -> (TrackWorld, u32, u32, u32) {
     if flying {
         w.apply(Op::Node { id: j, data: Some(NodeData { x: 3000.0, y: 0.0, level: 0, flying: true }) }).unwrap();
     }
-    let a = line(&mut w, &[t, br], tph);
-    let b = line(&mut w, &[t, m], tph);
+    let a = make(&mut w, &[t, br], tph);
+    let b = make(&mut w, &[t, m], tph);
     (w, a, b, j)
 }
 
 #[test]
 fn junction_delay_matches_the_spec_example() {
-    // Each move of the crossing pair sees 12 + 12 trains at 120 s (T-3125): 80% (high), and
-    // 14 + 14: 93% (medium); the delay is the Kingman figure for those.
-    let (w, a, b, j) = y_junction([12.0, 14.0, 0.0], false);
+    // Each move of the crossing pair sees 12 + 12 trains at 120 s (T-3125): 80% (high), and one
+    // every 270 s each: 89% (medium); the delay is the Kingman figure for those. Set by headway.
+    let (w, a, b, j) = y_junction_with([12.0, 3600.0 / 270.0, 0.0], false, headway_line);
     let cap = &w.svc.cap;
     let jr: Vec<usize> = (0..cap.res.len()).filter(|&r| cap.res[r].kind == ResKind::Junction).collect();
     assert_eq!(jr.len(), 2, "one crossing pair, one resource per move");
     for &r in &jr {
         assert_eq!(cap.res[r].node, j);
-        assert!((cap.rho[r][HIGH] - 0.8).abs() < 1e-9);
-        assert_eq!(cap.delay[r][HIGH], super::capacity::kingman(0.8, 0.5, 120.0).round());
-        assert!((cap.rho[r][MEDIUM] - 28.0 / 30.0).abs() < 1e-9);
-        assert_eq!(cap.delay[r][MEDIUM], super::capacity::kingman(28.0 / 30.0, 0.5, 120.0).round());
+        // (rates are f32)
+        let medium = 2.0 * 120.0 / 270.0;
+        assert!((cap.rho[r][HIGH] - 0.8).abs() < 1e-6 && (cap.rho[r][MEDIUM] - medium).abs() < 1e-6, "{:?}", cap.rho[r]);
+        assert!((cap.delay[r][HIGH] - super::capacity::kingman(0.8, 0.5, 120.0)).abs() < 1e-3);
+        assert!((cap.delay[r][MEDIUM] - super::capacity::kingman(medium, 0.5, 120.0)).abs() < 1e-3);
         assert_eq!(cap.delay[r][LOW], 0.0);
     }
     // The crossing pair is A towards the branch and B in from the main line (right-hand running).
@@ -560,7 +648,7 @@ fn junction_delay_matches_the_spec_example() {
 #[test]
 fn merge_waits_are_at_the_join() {
     for flying in [false, true] {
-        let (w, a, b, j) = y_junction([12.0, 4.0, 0.0], flying);
+        let (w, a, b, j) = y_junction_with([12.0, 4.0, 0.0], flying, headway_line);
         let cap = &w.svc.cap;
         let merges: Vec<usize> = (0..cap.res.len()).filter(|&r| cap.wire_kind(r) == 12).collect();
         assert_eq!(merges.len(), 1, "flying {flying}");
@@ -576,10 +664,9 @@ fn merge_waits_are_at_the_join() {
         // Kingman's delay for two equal lines, held just short of J
         let s = cap.users_of(r).iter().map(|u| u.occ).sum::<f64>() / 2.0;
         let rho = cap.rho[r][HIGH];
-        assert!((rho - 24.0 * s / 3600.0).abs() < 1e-9 && rho >= 0.75, "{rho}");
+        assert!((rho - 24.0 * s / 3600.0).abs() < 1e-6 && rho >= 0.75, "{rho}");
         assert!(cap.rho[r][MEDIUM] < 0.75);
-        // (a schedule by frequency rounds its waits to the second)
-        assert_eq!(cap.delay[r][HIGH], super::capacity::kingman(rho, 0.5, s).round());
+        assert!((cap.delay[r][HIGH] - super::capacity::kingman(rho, 0.5, s)).abs() < 1e-9);
         assert!(w.busy(HIGH).iter().any(|m| m.0 == r && m.1 == ResKind::Section));
         assert!(!w.busy(MEDIUM).iter().any(|m| m.0 == r));
         for l in [a, b] {
@@ -609,11 +696,12 @@ fn blueprint_quote_accounts_for_partial_junctions_and_flyovers() {
 #[test]
 fn schedule_change_dirties_shared_lines_and_demand() {
     let (mut w, a, b, _) = y_junction([10.0, 6.0, 3.0], false);
-    let r = w.apply(Op::Schedule { id: a, tph: [16.0, 6.0, 3.0] }).unwrap();
+    let (trains, tph) = (w.net.line_trains[a as usize].unwrap(), w.net.line_tph[a as usize]);
+    let r = w.apply(Op::TrainCounts { id: a, trains: Some([trains[0] * 2, trains[1], trains[2]]), tph: slots_to_rows(tph) }).unwrap();
     assert!(r.dirty.service.shared.contains(&b));
     assert!(r.dirty.service.demand.contains(&a));
     w.undo().unwrap().unwrap();
-    assert_eq!(slots_to_rows(w.net.line_tph[a as usize]), [10.0, 6.0, 3.0]);
+    assert_eq!((w.net.line_trains[a as usize], w.net.line_tph[a as usize]), (Some(trains), tph));
 }
 
 #[test]
@@ -764,7 +852,9 @@ fn station_links_save_and_load() {
     assert!(w.net.link(a, b), "linking again is fine");
     assert_eq!(w.net.links, vec![[a.min(b), a.max(b)]]);
     let bytes = super::save::encode(&w.net);
-    assert_eq!(&bytes[..plain.len()], &plain[..], "the block is appended at the end");
+    // the block goes in whole, nothing else moves
+    let k = bytes.windows(4).position(|x| x == b"LNK1").unwrap();
+    assert!(bytes[..k] == plain[..k] && bytes[bytes.len() - (plain.len() - k)..] == plain[k..], "the block is added and nothing else changes");
     let back = TrackWorld::new(super::save::decode(&bytes).unwrap());
     let at = |net: &super::net::Network, n: u32| (net.node_x[n as usize], net.node_y[n as usize]);
     let got: Vec<_> = back.net.links_live().map(|[p, q]| (at(&back.net, p), at(&back.net, q))).collect();
@@ -827,7 +917,7 @@ fn write_bench_save() {
 fn whole_line_counts_survive_route_changes_save_and_undo() {
     let (mut w, nodes, _, id) = simple();
     terminals_at_dead_ends(&mut w);
-    let tph = slots_to_rows(w.net.line_tph[id as usize]);
+    let (tph, first) = (slots_to_rows(w.net.line_tph[id as usize]), w.net.line_trains[id as usize]);
     w.apply(Op::TrainCounts { id, trains: Some([5, 3, 0]), tph }).unwrap();
     for (row, lev) in ROW_SLOT.into_iter().enumerate() {
         assert_eq!(w.svc.lines[id as usize].trains[lev], [5, 3, 0][row]);
@@ -845,7 +935,7 @@ fn whole_line_counts_survive_route_changes_save_and_undo() {
     assert_eq!(super::save::encode(&reloaded.net), bytes);
     w.undo().unwrap().unwrap();
     w.undo().unwrap().unwrap();
-    assert_eq!(w.net.line_trains[id as usize], None);
+    assert_eq!(w.net.line_trains[id as usize], first);
     assert_eq!(slots_to_rows(w.net.line_tph[id as usize]), tph);
     w.redo().unwrap().unwrap();
     assert_eq!(slots_to_rows(w.svc.lines[id as usize].trains), [5, 3, 0]);
@@ -1156,7 +1246,7 @@ pub(super) fn corridor(n: usize) -> (TrackWorld, Vec<u32>) {
     (w, ns)
 }
 
-fn set_counts(w: &mut TrackWorld, id: u32, trains: [u32; 3]) {
+pub(super) fn set_counts(w: &mut TrackWorld, id: u32, trains: [u32; 3]) {
     let tph = slots_to_rows(w.net.line_tph[id as usize]);
     w.apply(Op::TrainCounts { id, trains: Some(trains), tph }).unwrap();
 }
@@ -1215,11 +1305,16 @@ fn shared_track_splits_its_capacity() {
 
 /// A line as the game adds one (`TrackApi::set_line_with_trains`): its trains and a starting rate.
 pub(super) fn new_line(w: &mut TrackWorld, stops: &[u32], trains: [u32; 3]) -> u32 {
-    let path = w.net.route(stops, &[]).expect("no route");
     let id = w.net.alloc_line();
-    let d = LineData { rows: 0, x: Default::default(), symbol: String::new(), trains: Some(trains), auto: None, name: format!("L{id}"), colour: 0, stops: stops.to_vec(), path, tph: [6.0, 3.0, 1.0], dwell_s: 30.0, turnaround_s: 180.0, cars: 0, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], fare_dist: false };
+    let d = line_data(w, stops, id, Some(trains));
     w.apply(Op::Line { id, data: Some(d) }).unwrap();
     id
+}
+
+/// Line `id`'s data along `stops`, at the game's starting rate.
+pub(super) fn line_data(w: &TrackWorld, stops: &[u32], id: u32, trains: Option<[u32; 3]>) -> LineData {
+    let path = w.net.route(stops, &[]).expect("no route");
+    LineData { rows: 0, x: Default::default(), symbol: String::new(), trains, auto: None, name: format!("L{id}"), colour: 0, stops: stops.to_vec(), path, tph: [6.0, 3.0, 1.0], dwell_s: 30.0, turnaround_s: 180.0, cars: 0, fast: false, bus: None, ferry: None, group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: false, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], only: vec![], fare_dist: false }
 }
 
 #[test]
@@ -1424,7 +1519,7 @@ pub fn reversal_fixture_with(x_station: bool) -> (TrackWorld, [u32; 5]) {
 #[test]
 fn a_line_reversing_at_a_mid_stop_runs() {
     let (mut w, [_, t, _, m, br]) = reversal_fixture();
-    let l = line(&mut w, &[br, t, m], [6.0, 3.0, 0.0]);
+    let l = headway_line(&mut w, &[br, t, m], [6.0, 3.0, 0.0]);
     assert!(w.net.check_line(l).is_ok());
     assert_eq!(w.net.path_reversals(w.net.line_path(l)).len(), 1);
     let ls = &w.svc.lines[l as usize];
@@ -1574,18 +1669,19 @@ fn a_line_reversing_at_a_bare_track_end_runs() {
     }
     let rt = ls.round_trip[HIGH];
     assert!((rt - (ls.runs[0].prof[HIGH].duration + ls.runs[1].prof[HIGH].duration + 360.0)).abs() < 1e-9);
-    // X is a one-track terminus: 15 turns an hour at 240 s, both directions counted
+    // X is a one-track terminus: 15 turns an hour at 240 s, half a turn each way (T-4178)
     let cap = &w.svc.cap;
     let lim: Vec<usize> = (0..cap.res.len()).filter(|&r| cap.res[r].node == x && cap.res[r].kind == ResKind::Terminus).collect();
     assert_eq!(lim.len(), 1);
     let r = lim[0];
     assert_eq!((cap.wire_kind(r), cap.users_of(r).len()), (3, 2));
-    assert!((cap.fill(&w.net, &[(l, 10.0)], HIGH)[0] - 7.5).abs() < 1e-9);
+    assert!((cap.fill(&w.net, &[(l, 10.0)], HIGH)[0] - 10.0).abs() < 1e-9);
+    assert!(cap.fill(&w.net, &[(l, 20.0)], HIGH)[0] <= 15.0 + 1e-9);
     assert!((0..cap.res.len()).any(|r| cap.res[r].node == x && cap.res[r].kind == ResKind::Terminus && cap.wire_kind(r) == ResKind::Terminus as u8));
     assert!(!(0..cap.res.len()).any(|r| cap.res[r].node == t && cap.res[r].kind == ResKind::Platform && cap.users_of(r).iter().any(|u| u.stop >= 0)));
     // more trains than the end takes are held at the ends of the line
     set_counts(&mut w, l, [40, 3, 0]);
-    assert!(w.net.line_tph[l as usize][HIGH] <= 7.5 + 1e-6, "{:?}", w.net.line_tph[l as usize]);
+    assert!(w.net.line_tph[l as usize][HIGH] <= 15.0 + 1e-6, "{:?}", w.net.line_tph[l as usize]);
     // saves round trip
     let bytes = super::save::encode(&w.net);
     let back = TrackWorld::new(super::save::decode(&bytes).unwrap());
@@ -1621,7 +1717,7 @@ fn day_count(tph: [f32; SLOTS]) -> f64 {
 #[test]
 fn the_middle_of_a_long_line_changes_period_on_time() {
     let (mut w, ns) = corridor(31);
-    let id = line(&mut w, &ns, [12.0, 6.0, 3.0]);
+    let id = headway_line(&mut w, &ns, [12.0, 6.0, 3.0]);
     let ls = &w.svc.lines[id as usize];
     let lat = w.svc.lattice(&w.net, id as usize).unwrap();
     let run = 0.5 * (ls.runs[0].prof[MEDIUM].duration + ls.runs[1].prof[MEDIUM].duration);
@@ -1836,9 +1932,9 @@ fn a_weekend_count_leaves_its_neighbours_weekdays() {
 fn sparse_and_reversing_lines_lead_too() {
     // two trains a period on a long line with no night service, and a line reversing at a mid stop
     let (mut w, ns) = corridor(31);
-    let sparse = line(&mut w, &ns, [0.5, 0.25, 0.0]);
+    let sparse = headway_line(&mut w, &ns, [0.5, 0.25, 0.0]);
     let (mut v, [_, t, _, m, br]) = reversal_fixture();
-    let rev = line(&mut v, &[br, t, m], [6.0, 3.0, 0.0]);
+    let rev = headway_line(&mut v, &[br, t, m], [6.0, 3.0, 0.0]);
     let day = 2.0 * 86400.0;
     for (w, id) in [(&w, sparse), (&v, rev)] {
         let lat = w.svc.lattice(&w.net, id as usize).unwrap();
@@ -1856,8 +1952,10 @@ fn sparse_and_reversing_lines_lead_too() {
                 (len * tph[PERIOD_SLOT_3[first]] as f64 / 3600.0 - 1e-9).ceil().max(0.0)
             }).sum();
             assert!((today.len() as f64 - want).abs() <= 1.0, "line {id} run {r}: {} departures, want {want}", today.len());
-            // the day's first train leaves half a run before 06:00; the evening runs to midnight
-            assert!((today[0].dep - (day + 6.0 * 3600.0 - lat.lead)).abs() < 1.0, "line {id} run {r}: {:?}", today[0]);
+            // the day's first train leaves half a run before 06:00, the return run where the first
+            // trip's round trip leaves it (T-2607); the evening runs to midnight
+            let off = if r == 1 { lat.off[HIGH] } else { 0.0 };
+            assert!((today[0].dep - (day + 6.0 * 3600.0 - lat.lead + off)).abs() < 1.0, "line {id} run {r}: {:?}", today[0]);
             let last = today.last().unwrap();
             let hw = 3600.0 / tph[MEDIUM] as f64;
             assert!(last.dep > day + 86400.0 - hw - 1.0 && last.dep < day + 86400.0, "line {id} run {r}: {last:?}");
@@ -2040,7 +2138,7 @@ fn closed(ns: &[u32]) -> Vec<u32> {
 fn a_circle_runs_both_ways_with_its_own_trains() {
     use super::net::LoopKind;
     let (mut w, ns) = ring_fixture();
-    let id = line(&mut w, &closed(&ns), [12.0, 6.0, 3.0]);
+    let id = headway_line(&mut w, &closed(&ns), [12.0, 6.0, 3.0]);
     assert!(w.net.check_line(id).is_ok());
     assert_eq!(w.net.line_loop(id), LoopKind::Circle);
     assert!(w.net.path_reversals(w.net.line_path(id)).is_empty());

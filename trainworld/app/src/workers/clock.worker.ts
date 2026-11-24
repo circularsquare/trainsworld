@@ -20,26 +20,29 @@ import { foldLedger } from "./ledgerFold";
 import { shiftAt } from "../game/localTime";
 import { strengths } from "../game/moneyTiming";
 import { setBandCheck, setBandMode } from "../map/lineBands";
-import { readOutlinesForPlaces } from "../map/coarseOutlines";
+import { placeOutlines, readOutlinesForPlaces } from "../map/coarseOutlines";
 import { canvasReadsTrue } from "../map/canvasRead";
 import { UPGRADE, UPGRADE_BITS } from "../game/upgrades";
 import { saveNetKey } from "./demandCache";
-import { currentZones, decodeSave, encodeSave, encodeSaveParts, refuseSaveBuffers, isThisWorld, isRetiredTrackFormat, trackFrameKind, readStored, failReads, StorageReadError, SAVE_FORMAT, START_CASH, NEW_LINE_CARS, START_CLOCK, writeStored, listSlots, leaseSlot, ORIGINAL_SLOT, SAVE_DAMAGED, NO_CITIES, isDamagedError, unreadableKey, setNetworkCheck, markDamaged, rescueGood, BACKUP_STEPS, headerUnread, newGameName, slotName, backupSlot, takePending, sweepDeleted, WHOLE_PANEL, type NewGameSpec, type SlotSummary, type SaveHeader, cleanNewHeadways } from "./saveFile";
+import { currentZones, decodeSave, encodeSave, encodeSaveParts, refuseSaveBuffers, isThisWorld, isRetiredTrackFormat, isNewerError, SAVE_LEVEL, SAVE_NEWER, trackFrameKind, readStored, failReads, StorageReadError, SAVE_FORMAT, START_CASH, NEW_LINE_CARS, START_CLOCK, writeStored, listSlots, leaseSlot, ORIGINAL_SLOT, SAVE_DAMAGED, NO_CITIES, isDamagedError, unreadableKey, setNetworkCheck, markDamaged, rescueGood, BACKUP_STEPS, newGameName, slotName, backupSlot, takePending, sweepDeleted, WHOLE_PANEL, type NewGameSpec, type SlotSummary, type SaveHeader, cleanNewHeadways } from "./saveFile";
 import { lineProfile } from "./lineProfile";
 import type { EditOp, RouteAsk, ToClock } from "./protocol";
 import { stampAll } from "./cloud";
 import { isMemoryFailure, loadFailKey } from "../game/loadText";
 import { autosave, bindSlots, CLOUD_RETRY_MS, cloudFlush, cloudKick, cloudUp, heldFrom, heldNew, hold, intoNewSlot, intoView, leave, letGoSlot, manageSlot, NO_MEMORY_TO_SAVE, noteUnsaved, pendingGame, publishSlots, saveConverted, saves } from "./slots";
-import { BOARDING_STEP_LINES, bookCharge, buildSnapshot, busQuoteLL, complexOfNodes, nameOnly, putPreviewAt, putXferSet, sameFloats, scheduleSnapshot, sendTrips, snapStations, stationsKey, stepBoarding, turnHour, xferSet } from "./clockDemand";
+import { rowsFirst } from "./clockWordLines";
+import { bookCharge, buildSnapshot, busQuoteLL, complexOfNodes, editSteps, nameOnly, putPreviewAt, putXferSet, sameFloats, scheduleSnapshot, sendTrips, snapStations, stationsKey, stepBoarding, turnHour, xferSet } from "./clockDemand";
 import { apply, buildingQuoteAnswer, designOf, doubleUpAnswer, DROP_REFUSED, freeEnds, INSERT_REFUSED, issues, newLineShape, ORDER_REFUSED, paidFor, pisArr, rebuildQuoteAnswer, routeArgs, savedHidden, savedShapes } from "./clockEdits";
 import { goneLineFares, loadFares, newLineFare, pinFareRef, startFares, tidyLineFares, tidyStationFares } from "./clockFares";
 import { EARLY_WAIT_MS, followTimer, followUp, goesAhead, guardedFollowUp, heldEdges, HOLD_MS, holdOn, isPreview, isServiceOp, jumpsAhead, later, passesHeld, previewStaleSeq, putPreviewStaleSeq, sendStale, stale, standAside, startNow, stepThenRun, Waiting } from "./clockFollowUp";
+import { putLoadMaskWait } from "./clockGround";
 import { blocksIn, blueprintPolylines, ensureBlocks, ensureMasks, ensureStreets, fetchWater, groundForBlueprint, masksComplete, masksIn, nodePoints, openNetwork, pumpBlocks, putPackBase, putTerrainBase, putViewBlocks, putViewZones, retryGroundNow, roadFeed, roadsUnder, routePoints, terrainIndexIntoModel, tintSent, VIEW_MARGIN_M, VIEW_SPAN_M, viewBlocks, viewZones, wakeStale, WaterRaster, withMasks, worldWaterIntoModel, zonesOfPoints } from "./clockGround";
-import { anchorMoves, drawnEdge, drawnLine, edgeDrawn, forget, game, hex, lineDrawn, previewMarkRows, putAnchorMoves, putConvertedOnLoad, putShiftFrom, putShiftWas, restart, sendHome, sendOpened, sendRows, sendState, SHIFT_REACH, shiftFrom, SHIFTS_EXACT } from "./clockMain";
+import { anchorMoves, drawnEdge, drawnLine, edgeDrawn, forget, game, hex, lineDrawn, previewMarkRows, putAnchorMoves, putConvertedOnLoad, putShiftFrom, putShiftWas, putView, restart, rowsCanGo, sendHome, sendOpened, sendRows, sendState, SHIFT_REACH, shiftFrom, SHIFTS_EXACT } from "./clockMain";
 import { gameNow, lineDays, linesPeriods, loadLineDays, loadRegions, mergeLedger, putTodayGen, putTodayLast, regionEntries, regions, rounded, savedLineDays, savedRegions, sendCash, sendMoney, serviceLeadS, settle, today, todayGen, unsettleAfter } from "./clockMoney";
-import { afterLoadPanic, EDIT_UNDONE, isPanic, keep, MODEL_RESTORED, modelDown, newModel, openFailReason, panicAfterEdit, panicLater, panicNow, panicOnLoad, panicWhy, putModelDown, putPanicAfterEdit, putPanicOnLoad, recover, SAVE_PANIC } from "./clockPanic";
+import { afterLoadPanic, downTold, EDIT_UNDONE, kept, putDownTold, isPanic, keep, MODEL_DOWN, MODEL_RESTORED, modelDown, newModel, openFailReason, panicAfterEdit, panicLater, panicNow, panicOnLoad, panicWhy, putModelDown, putPanicAfterEdit, putPanicOnLoad, recover, SAVE_PANIC } from "./clockPanic";
+import { wordAfter, wordBefore } from "./clockWord";
 import { diagramOn, patchMode, postDiagram, posted, postWhole, putDiagramOn, putDiagramWhole, putPatchMode, sender } from "./clockPost";
-import { achievements, api, applyRunFactors, AUTOSAVE_MS, city, clk, copyOf, dayPinned, dayShift, demandBuilt, demandFine, diagramCities, emptyTrack, epoch, failInPlace, fares, frameSpec, freezeCheckpoint, freezePort, freezeTimer, goals, guide, guideWanted, heldCharges, home, hourLedger, initIncoming, ledger, ledgerDay, lineNotes, lineShapes, loadHolidays, loan, loanOp, messages, modded, mode, newLineCars, newLineHeadway, newLineWeekendShare, opened, outlinesGot, outlinesIn, outlinesRead, packLngLat, packLocal, pageModded, peakC, placeLineCountries, pricesOf, putAchievements, putClk, putCopyOf, putDemandBuilt, putDemandFine, putDiagramCities, putDiagramInside, putEmptyTrack, putEpoch, putFares, putFreezeMemory, putFreezePort, putFreezeTimer, putGoals, putGuide, putGuideWanted, putHiddenLines, putHome, putHourLedger, putIncomePerHour, putInitIncoming, putLedger, putLineIncome, putLineNotes, putLinePoints, putLineRides, putLineShapes, putLineShares, putLoan, putMessages, putMidLoad, putModded, putNewLineCars, putNewLineHeadway, putNewLineWeekendShare, putOpened, putOutlinesRead, putPageModded, putPrices, putRidesPerHour, putRowsSent, putStars, putTiming, putTrackVersion, putUpkeepRegions, send, setMode, setStartZone, stars, startZone, syncHolidays, timing, trackVersion, withModded } from "./clockState";
+import { achievements, api, applyRunFactors, AUTOSAVE_MS, city, clk, copyOf, dayPinned, dayShift, demandBuilt, demandFine, diagramCities, emptyTrack, epoch, failInPlace, fares, frameSpec, freezeCheckpoint, freezePort, freezeTimer, goals, guide, guideWanted, heldCharges, home, hourLedger, initIncoming, ledger, ledgerDay, lineNotes, lineShapes, loadHolidays, loan, loanOp, messages, modded, mode, newLineCars, newLineHeadway, newLineWeekendShare, opened, outlinesGot, outlinesIn, outlinesRead, packLngLat, packLocal, pageModded, peakC, placeLineCountries, pricesOf, putAchievements, putClk, putCopyOf, putDemandBuilt, putDemandFine, putDiagramCities, putDiagramInside, putEmptyTrack, putEpoch, putFares, putFreezeMemory, putFreezePort, putFreezeTimer, putGoals, putGuide, putGuideWanted, putHiddenLines, putHome, putHourLedger, putIncomePerHour, putInitIncoming, putLedger, putLineIncome, putLineNotes, putLinePoints, putLineRides, putLineShapes, putLineShares, putLoan, putMessages, putMidLoad, putModded, putMoneyFrozen, putNewLineCars, putNewLineHeadway, putNewLineWeekendShare, putOpened, putOutlinesRead, putPageModded, putPrices, putRidesPerHour, putRowsSent, putStars, putTiming, putTrackVersion, putUpkeepRegions, send, setMode, setStartZone, stars, startZone, syncHolidays, timing, trackVersion, withModded } from "./clockState";
 
 // T-3734: the save slot (slots.ts) and what it needs of the game in hand
 bindSlots({ api: () => api, game: () => game, send, gameNow, saveBytes, slotSummary, roomFor, outOfRoom, loadGame, inQueue: (f) => (putMessages(messages.then(f).catch((err) => send({ kind: "error", message: String(err) }))), messages), isPanic, panicLater, openFailed: failInPlace });
@@ -57,8 +60,10 @@ addEventListener("unhandledrejection", (e) => {
 
 // ---------------------------------------------------------------- saves (T-029)
 
-function header(): SaveHeader {
-  return { game: "anitabuilder", format: SAVE_FORMAT, level: TrackApi.save_level(), city, region: WORLD_ID, cities: CITIES.map(c => c.id), clock: gameNow(), cash: api!.cash(), ...loanToSave(loan), fleet: api!.fleet(), fleetFast: api!.fleet_fast(), ...(api!.fleet_bus() ? { fleetBus: api!.fleet_bus() } : {}), ...(api!.fleet_ferry() ? { fleetFerry: api!.fleet_ferry() } : {}), ...(api!.fleet_ferry_small() ? { fleetFerrySmall: api!.fleet_ferry_small() } : {}), ...(api!.fleet_ferry_large() ? { fleetFerryLarge: api!.fleet_ferry_large() } : {}), ...(api!.fleet_tram() ? { fleetTram: api!.fleet_tram() } : {}), fares: { ...fares }, ledger: ledger.map(rounded), hours: hourLedger.map(rounded), regions: savedRegions(rounded), ...(lineDays.size ? { lineDays: savedLineDays(true) } : {}), stars: Object.fromEntries(stars), goals: Object.fromEntries(goals), notes: Object.fromEntries(lineNotes), ...savedShapes(), ...savedHidden(), ...(diagramCities.length ? { schematic: [...diagramCities] } : {}), mode, start: startZone, ...(dayPinned ? { dayShift } : {}), opened: opened && [...opened], ...(demandFine ? { demandFine } : {}), ...(demandBuilt?.length ? { demandBuilt } : {}), newCars: newLineCars, ...(Object.keys(newLineHeadway).length ? { newHeadway: newLineHeadway } : {}), ...(newLineWeekendShare !== null ? { newWeekendShare: newLineWeekendShare } : {}), ...(guide ? { guide } : {}), ...(achievements ? { achievements: Object.fromEntries(achievements) } : {}), ...(home ? { home } : {}), ...(copyOf ? { copy: copyOf } : {}), ...(modded ? { modded } : {}) };
+/** `m`: the network and counts kept after the last edit, for a model that has stopped (a download still works) */
+function header(m: typeof kept = null): SaveHeader {
+  const fleetBus = m ? m.fleetBus : api!.fleet_bus(), fleetFerry = m ? m.fleetFerry : api!.fleet_ferry(), fleetFerrySmall = m ? m.fleetFerrySmall : api!.fleet_ferry_small(), fleetFerryLarge = m ? m.fleetFerryLarge : api!.fleet_ferry_large(), fleetTram = m ? m.fleetTram : api!.fleet_tram();
+  return { game: "anitabuilder", format: SAVE_FORMAT, level: TrackApi.save_level(), city, region: WORLD_ID, cities: CITIES.map(c => c.id), clock: gameNow(), cash: m?.cash ?? api!.cash(), ...loanToSave(loan), fleet: m?.fleet ?? api!.fleet(), fleetFast: m?.fleetFast ?? api!.fleet_fast(), ...(fleetBus ? { fleetBus } : {}), ...(fleetFerry ? { fleetFerry } : {}), ...(fleetFerrySmall ? { fleetFerrySmall } : {}), ...(fleetFerryLarge ? { fleetFerryLarge } : {}), ...(fleetTram ? { fleetTram } : {}), fares: { ...fares }, ledger: ledger.map(rounded), hours: hourLedger.map(rounded), regions: savedRegions(rounded), ...(lineDays.size ? { lineDays: savedLineDays(true) } : {}), stars: Object.fromEntries(stars), goals: Object.fromEntries(goals), notes: Object.fromEntries(lineNotes), ...savedShapes(), ...savedHidden(), ...(diagramCities.length ? { schematic: [...diagramCities] } : {}), mode, start: startZone, ...(dayPinned ? { dayShift } : {}), opened: opened && [...opened], ...(demandFine ? { demandFine } : {}), ...(demandBuilt?.length ? { demandBuilt } : {}), newCars: newLineCars, ...(Object.keys(newLineHeadway).length ? { newHeadway: newLineHeadway } : {}), ...(newLineWeekendShare !== null ? { newWeekendShare: newLineWeekendShare } : {}), ...(guide ? { guide } : {}), ...(achievements ? { achievements: Object.fromEntries(achievements) } : {}), ...(home ? { home } : {}), ...(copyOf ? { copy: copyOf } : {}), ...(modded ? { modded } : {}) };
 }
 
 /** The game as file bytes. The network and header are taken at once, before anything awaits. */
@@ -68,6 +73,10 @@ function saveBytes(): Promise<Uint8Array> {
 }
 /** T-3869: the same in parts of at most 64 KB, never joined (a download) */
 function saveParts(): Uint8Array[] {
+  if (modelDown) {
+    if (!kept) throw new Error("no network was kept");
+    return encodeSaveParts(header(kept), kept.net);
+  }
   settle();
   return encodeSaveParts(header(), api!.save());
 }
@@ -295,6 +304,7 @@ async function openSave(bytes: Uint8Array, from: "autosave" | "file" | "new", fr
   putTodayGen(todayGen + 1);
   putTodayLast(null);
   putRowsSent(""); // a load's service starts with no line calendars (`TrackApi.set_line_rows`)
+  send({ kind: "loadStep", step: "decoding the save" }); // i18n-ignore (T-4072)
   const decoded = await decodeSave(bytes);
   const { track } = decoded;
   const h: SaveHeader = currentZones(fresh
@@ -302,8 +312,9 @@ async function openSave(bytes: Uint8Array, from: "autosave" | "file" | "new", fr
     : decoded.header);
   if (!isThisWorld(h)) throw new Error("This save is for another world.");
   if (isRetiredTrackFormat(track)) throw new Error("This save is from an older version of the game and no longer opens.");
-  // T-1826: before any conversion, which would write only what this build read
-  const unread = !fresh && (headerUnread(decoded.header, TrackApi.save_level()) || TrackApi.save_unread(track) > 0);
+  // T-4014: a newer build's blocks or flag bits (`decodeSave` has refused its level, header and magic already); before
+  // any conversion or write, which would keep only what this build read
+  if (TrackApi.save_unread(track) > 0) throw new Error(SAVE_NEWER);
   let net = track, converted = false;
   if (trackFrameKind(track) !== NEW_GAME_FRAME.kind) {
     const c = TrackApi.convert_save_frame(track, frameKindNumber(NEW_GAME_FRAME.kind));
@@ -317,7 +328,10 @@ async function openSave(bytes: Uint8Array, from: "autosave" | "file" | "new", fr
   if (st.length > 3) send({ kind: "stationsAhead", frame: { kind: frameKindName(st[0]), lon: st[1], lat: st[2] }, xy: st.slice(3), fine: demandFine ?? null, built: demandBuilt ?? null, home: h.home });
   // T-1539: the demand result kept for this save's network can show while the network is worked out
   // (China's 17-42 s); awaited here, since the load below holds the worker
-  if (st.length > 3) await saveNetKey(net, h).then((key) => send({ kind: "netAhead", key }), () => {});
+  if (st.length > 3) {
+    send({ kind: "loadStep", step: "kept trips' key" }); // i18n-ignore
+    await saveNetKey(net, h).then((key) => send({ kind: "netAhead", key }), () => {});
+  }
   // T-3647: a player's game saved before 0.4 keeps the way its single track ran then
   if (import.meta.env.DEV && panicOnLoad) { putPanicOnLoad(false); panicNow(); }
   await openNetwork(net, fresh ? undefined : decoded.header.level ?? 0);
@@ -360,11 +374,9 @@ async function openSave(bytes: Uint8Array, from: "autosave" | "file" | "new", fr
   setMode(h.mode === "sandbox" ? "sandbox" : "normal");
   putLoan(mode === "sandbox" ? null : loanFromSave(h));
   putOpened(h.opened);
-  saves.newer = unread;
-  saves.newerFile = unread ? bytes : null;
   putConvertedOnLoad(converted);
   restart(h.clock, from);
-  return converted && !unread;
+  return converted;
 }
 
 /** A new game's clock (T-728): the first time from day 1 07:00 on the game clock at which it is
@@ -403,8 +415,6 @@ async function newGame(spec?: NewGameSpec) {
   }
   setNewGame(spec);
   putLoan(null);
-  saves.newer = false;
-  saves.newerFile = null;
   api!.load(emptyTrack!);
   api!.set_right_hand(spec?.rightHand ?? true);
   api!.set_cash(START_CASH);
@@ -437,7 +447,7 @@ let ready: Promise<void> | null = null;
 
 function viewMasks(): Promise<void> {
   if (api && viewBlocks.size) void ensureBlocks(viewBlocks);
-  return api && viewZones.length ? ensureMasks(viewZones) : Promise.resolve();
+  return api && viewZones.length ? ensureMasks(viewZones).then(() => {}) : Promise.resolve();
 }
 
 /** T-3196: above 0 while the queue waits on a download with the track model at rest (an edit's or a
@@ -457,6 +467,27 @@ function tripsNow(e: number) {
     else send({ kind: "error", message: String(err) });
   }
 }
+/** T-4145: an accepted edit's word with nothing to draw (the money-only, link, building and loan edits), so the page's
+ * entry for it is armed and goes with the next state, as every other edit's; `noNet` (T-4214): no network follows (a
+ * fare or loan edit), so no map click waits for one */
+const plainWord = (seq: number, noNet: boolean) => send({ kind: "applied", seq, word: {}, ...(noNet ? { noNet: true as const } : {}) });
+/** T-4145: the newest edit refused since the last one accepted, -1 for none: an undo asked while it was unanswered is
+ * refused, so the step under it is not taken back instead */
+let refusedLast = -1;
+/** T-4114: the rows state stop clicks owe, a task later through the queue: clicks sent meanwhile are applied first and
+ * share it, and the newest click's own takes its place */
+let rowsGen = 0;
+function rowsSoon() {
+  const gen = ++rowsGen;
+  setTimeout(() => putMessages(messages.then(() => { if (gen === rowsGen) rowsOwed(); }).catch((err) => send({ kind: "error", message: String(err) }))), 0);
+}
+/** the rows for the edits of the follow-up still waiting for a world holding them, then their answers (none can go while
+ * the drawn pieces are to move: the full state answers them) */
+function rowsOwed() {
+  const f = followUp;
+  if (!api || modelDown || !f?.waiting.some((w) => w.owes()) || !sendRows()) return;
+  for (const w of f.waiting) w.worldSent();
+}
 onmessage = (e: MessageEvent<ToClock>) => {
   const msg = e.data;
   if (msg.kind === "freezeTrace") {
@@ -471,6 +502,7 @@ onmessage = (e: MessageEvent<ToClock>) => {
   // which would be lost), nor on an edit parked for its ground, whose network is at rest
   if (msg.kind === "leave" && (parked > 0 || (ready && !saves.initDone && !initIncoming))) return void leave(msg, !saves.initDone);
   if (msg.kind === "view") {
+    putView(msg.w, msg.s, msg.e, msg.n);
     // outside the queue, so the fetch starts at once; a mask is installed between messages
     const midLat = (msg.s + msg.n) / 2, wide = (msg.e - msg.w) * M_PER_DEG * Math.cos(midLat * Math.PI / 180) > VIEW_SPAN_M;
     const cx = (msg.w + msg.e) / 2;
@@ -503,8 +535,9 @@ onmessage = (e: MessageEvent<ToClock>) => {
     return;
   }
   // T-2802: at once, not behind init's queue, which a save's summary can wait on
-  if (msg.kind === "outlines") return outlinesIn(msg.packed);
+  if (msg.kind === "outlines") return outlinesIn(msg.packed && placeOutlines(msg.packed));
   // T-3707: at once, so a game loading now is marked too; the queue below marks the game in hand
+  if (msg.kind === "moneyFrozen") return putMoneyFrozen(true); // T-3851
   if (msg.kind === "modded") putPageModded([...new Set([...pageModded, ...msg.why.filter((x) => typeof x === "string")])].slice(0, 16));
   if (msg.kind === "previewStale") {
     putPreviewStaleSeq(Math.max(previewStaleSeq, msg.seq));
@@ -534,8 +567,13 @@ async function processMessage(msg: ToClock) {
       const t0 = performance.now();
       putFreezeMemory((await initWasm(() => init(), "clock worker")).memory); // i18n-ignore
       if (msg.heapStep) set_heap_step(msg.heapStep);
-      // T-3395: the save check here also decodes the network (TWT4-6; anything else is left to the load)
-      setNetworkCheck((track) => !/^TWT[456]$/.test(new TextDecoder().decode(track.subarray(0, 4))) || TrackApi.save_stations(track).length >= 3);
+      // T-4014: a track model built from other sources than this page (a stale WASM build) would write saves the page
+      // refuses as newer, or label newer bytes as its own
+      if (TrackApi.save_level() !== SAVE_LEVEL) console.error(`T-4014: the track model's save level ${TrackApi.save_level()} is not the page's ${SAVE_LEVEL}; rebuild the WASM`); // i18n-ignore: console text
+      // T-3395: the save check here also decodes the network (TWT4-6; anything else is left to the load); T-4014: bytes
+      // its decoder leaves over are a newer build's, as the load finds them
+      setNetworkCheck((track) => !/^TWT[456]$/.test(new TextDecoder().decode(track.subarray(0, 4))) ? "intact"
+        : TrackApi.save_stations(track).length < 3 ? "damaged" : TrackApi.save_unread(track) > 0 ? "other" : "intact");
       const model = newModel();
       loadHolidays();
       putEmptyTrack(model.save());
@@ -549,10 +587,12 @@ async function processMessage(msg: ToClock) {
       putGuideWanted(msg.guide === true);
       if (msg.backupMs && msg.backupMs > 0) saves.backupSteps = BACKUP_STEPS.map((s) => s / BACKUP_STEPS[0] * msg.backupMs!);
       if (msg.readFails) failReads(msg.readFails);
+      if (msg.maskWaitMs !== undefined) putLoadMaskWait(msg.maskWaitMs);
       if (import.meta.env.DEV && msg.loadPanic === true) putPanicOnLoad(true);
       if (import.meta.env.DEV && msg.saveRoom) { const all = msg.saveRoom === "all"; refuseSaveBuffers((n) => !roomMade && (all || n >= 1 << 20)); }
       // T-1196: the game picked in the saves panel before the page reloaded; a file or backup goes
       // into a slot of its own below, the slot it was picked from held until then (one that fails goes to the start menu, T-3773)
+      send({ kind: "loadStep", step: "saves in the browser" }); // i18n-ignore (T-4072)
       const pending = msg.pending ? await takePending() : null;
       await sweepDeleted(); // T-1827's leftovers, if any
       let incoming: Awaited<ReturnType<typeof pendingGame>> = null;
@@ -598,6 +638,7 @@ async function processMessage(msg: ToClock) {
         }
       }
       if (!msg.fresh && !msg.newSlot) await stampAll(null).catch(() => {}); // T-2037
+      send({ kind: "loadStep", step: "reading the save" }); // i18n-ignore
       const stored = msg.fresh || msg.newSlot ? null : await readStored(saves.activeSlot);
       if (!stored && saves.activeSlot) saves.unwritten = saves.activeSlot;
       if (stored) heldFrom(stored); else heldNew();
@@ -631,14 +672,14 @@ async function processMessage(msg: ToClock) {
       if (stored) {
         try {
           if (await loadGame(stored.bytes, "autosave") && saves.activeLease) await saveConverted(saves.activeSlot, stored);
-          if (saves.newer) await publishSlots();
           return;
         } catch (err) {
           // T-2820: first, so a panic's stopped model is out of the way of everything below
           const panicked = isPanic(err) ? afterLoadPanic(err) : null;
           const key = saves.activeSlot;
-          // Keep the unreadable save aside (T-743), its slot as it is
-          await writeStored(unreadableKey(key, stored.at), stored).catch(() => {});
+          // Keep the unreadable save aside (T-743), its slot as it is; T-3948: a newer version's save is not
+          // unreadable, only not readable here, so it stays in its slot alone
+          if (!isNewerError(err)) await writeStored(unreadableKey(key, stored.at), stored).catch(() => {});
           // T-3395: a damaged slot is marked so (never uploaded) and its last good copy found
           const damaged = isDamagedError(err);
           if (damaged && saves.activeLease) { await markDamaged(key, stored.at).catch(() => {}); await rescueGood(key).catch(() => {}); }
@@ -646,7 +687,7 @@ async function processMessage(msg: ToClock) {
           // menu, holding no slot meanwhile
           letGoSlot();
           send({ kind: "openFailed", from: "slot", slot: key, name: slotName(key, stored), ...openFailReason(err, panicked, damaged ? SAVE_DAMAGED : loadFailKey(String(err))) });
-          if (panicked === null) console.error("last game did not load:", err);
+          if (panicked === null && !isNewerError(err)) console.error("last game did not load:", err);
           return;
         }
       }
@@ -689,7 +730,15 @@ async function processMessage(msg: ToClock) {
   if (msg.kind === "release") return;
   if (msg.kind === "leave") return await leave(msg);
   if (!api) return;
-  if (modelDown) return failAnswer(msg);
+  if (modelDown) {
+    const asked = msg.kind === "edit" || msg.kind === "saveSlot" || msg.kind === "import" || msg.kind === "export" || msg.kind === "newGame";
+    // T-4109: the page's notice says it; a download still works, from the network kept after the last edit
+    if (msg.kind === "export" && !msg.share && kept) return await whole(msg);
+    if (asked && !(msg.kind === "edit" && downTold)) { putDownTold(true); send({ kind: "refused", notice: MODEL_DOWN }); }
+    if (msg.kind === "edit") send({ kind: "edited", seq: msg.seq, ok: false, issues: [], charge: 0 });
+    else failAnswer(msg, []);
+    return;
+  }
   // T-3734: a message made in a game no longer in hand (T-715's clock, a queued stop edit) is dropped here; an edit is
   // answered as refused with nothing to say, so nothing waits on it
   if ((msg.kind === "clock" || msg.kind === "edit") && msg.game !== undefined && msg.game !== game) {
@@ -727,11 +776,11 @@ let maskedRoute = "";
 const routeKey = (r: RouteAsk) => `${trackVersion}|${JSON.stringify([r.from, r.to, r.pis, !!r.single, !!r.quad, !!r.through, designOf(r), r.flyover ?? null, !!r.hsr, !!r.tram, !!r.street, r.street ? r.streetLine ?? null : null, !!r.ramp, r.beside ?? null])}`;
 
 /** An answer for a message the track model could not work out, so nothing waits on it for ever. */
-function failAnswer(msg: ToClock) { // i18n-ignore
-  if (msg.kind === "edit") send({ kind: "edited", seq: msg.seq, ok: false, issues: ["Internal"], charge: 0 }); // i18n-ignore
-  if (msg.kind === "previewStation") send({ kind: "stationCheck", seq: msg.seq, ok: false, issues: ["Internal"], cost: 0 }); // i18n-ignore
-  if (msg.kind === "previewCrossover") send({ kind: "crossoverCheck", seq: msg.seq, ok: false, issues: ["Internal"], cost: 0, parts: [] }); // i18n-ignore
-  if (isPreview(msg)) send({ kind: "preview", seq: msg.seq, ok: false, cost: 0, lengthM: 0, mult: 0, issues: ["Internal"], verts: new Float64Array(0), pts: new Float32Array(0) });
+function failAnswer(msg: ToClock, issues: string[] = ["Internal"]) { // i18n-ignore
+  if (msg.kind === "edit") send({ kind: "edited", seq: msg.seq, ok: false, issues, charge: 0 }); // i18n-ignore
+  if (msg.kind === "previewStation") send({ kind: "stationCheck", seq: msg.seq, ok: false, issues, cost: 0 }); // i18n-ignore
+  if (msg.kind === "previewCrossover") send({ kind: "crossoverCheck", seq: msg.seq, ok: false, issues, cost: 0, parts: [] }); // i18n-ignore
+  if (isPreview(msg)) send({ kind: "preview", seq: msg.seq, ok: false, cost: 0, lengthM: 0, mult: 0, issues, verts: new Float64Array(0), pts: new Float32Array(0) });
   if (msg.kind === "query" || msg.kind === "flipSide") send({ kind: "answer", seq: msg.seq, data: new Float64Array(0) });
 }
 
@@ -757,11 +806,7 @@ async function whole(msg: Extract<ToClock, { kind: "import" | "export" | "newGam
   if (msg.kind === "export") {
     const day = Math.floor(gameNow() / 86400), share = msg.share ? { share: true as const } : {};
     try {
-      // T-1826: a newer game downloads as the newer build saved it, with everything this one cannot read
-      if (saves.newer && saves.newerFile) {
-        const bytes = saves.newerFile.slice();
-        send({ kind: "exported", bytes, day, ...share }, [bytes.buffer]);
-      } else if (msg.share) {
+      if (msg.share) {
         const bytes = await roomFor(saveBytes, true);
         send({ kind: "exported", bytes, day, ...share }, [bytes.buffer]);
       } else {
@@ -864,9 +909,10 @@ async function handleMessage(msg: ToClock) {
       // T-3567: a line's own multiple for a line that is gone is refused
       const ok = apply(msg.op).r === 0 || msg.op.op !== "fareLine";
       if (ok) {
-        saves.dirty = saves.edited = true; saves.editAt = Date.now();
         // T-3740: a removed area's stations come out of it, which the map and panels show
         const tidied = msg.op.op === "fareZones" && tidyStationFares(api) > 0;
+        plainWord(msg.seq, !tidied);
+        saves.dirty = saves.edited = true; saves.editAt = Date.now();
         if (tidied) { forget(); sendState(); }
         sendMoney();
         scheduleSnapshot();
@@ -877,13 +923,14 @@ async function handleMessage(msg: ToClock) {
     if (msg.op.op === "fareRef") {
       // T-2679: no fare changes, so demand is not asked again
       const r = apply(msg.op).r;
-      if (r === 0) { saves.dirty = saves.edited = true; saves.editAt = Date.now(); sendMoney(); }
+      if (r === 0) { plainWord(msg.seq, true); saves.dirty = saves.edited = true; saves.editAt = Date.now(); sendMoney(); }
       send({ kind: "edited", seq: msg.seq, ok: r === 0, issues: [], charge: 0 });
       return;
     }
     if (msg.op.op === "borrow" || msg.op.op === "repay") {
       const r = loanOp(msg.op);
       if (r === 0) {
+        plainWord(msg.seq, true);
         saves.dirty = saves.edited = true; saves.editAt = Date.now();
         sendMoney();
         keep();
@@ -898,6 +945,7 @@ async function handleMessage(msg: ToClock) {
       // T-1281: a passage between constructed stations is paid at once
       const charge = r === 0 && msg.op.on ? api.link_charge() : 0;
       if (r === 0) {
+        plainWord(msg.seq, false);
         saves.dirty = saves.edited = true; saves.editAt = Date.now();
         if (charge > 0) bookCharge(msg.seq, charge, 0);
         sendState();
@@ -914,6 +962,7 @@ async function handleMessage(msg: ToClock) {
       const charge = r === 0 && (msg.op.op === "addBuilding" || msg.op.op === "reshapeBuilding") ? api.building_charge() : 0;
       const node = r === 0 && msg.op.op === "addBuilding" ? api.last_building() : undefined;
       if (r === 0) {
+        plainWord(msg.seq, false);
         saves.dirty = saves.edited = true; saves.editAt = Date.now();
         if (charge > 0) bookCharge(msg.seq, charge, 0);
         sendState();
@@ -941,7 +990,16 @@ async function handleMessage(msg: ToClock) {
       api.set_edit_lead(clk.rate * serviceLeadS());
     }
     const named = nameOnly(msg.op);
-    const { r, fault, line, node, skipped, charge: charged, trainCharge, why } = apply(msg.op);
+    // T-4145: an undo asked while the edit it meant was out, and that edit refused: nothing taken back (no notice)
+    if ((msg.op.op === "undo" || msg.op.op === "redo") && msg.op.after !== undefined && refusedLast >= 0 && refusedLast <= msg.op.after) {
+      refusedLast = -1;
+      api.set_edit_lead(0);
+      return void send({ kind: "edited", seq: msg.seq, ok: false, issues: [], charge: 0 });
+    }
+    const before = wordBefore(api, msg.op, posted);
+    const applied = apply(msg.op);
+    const { r, fault, line, node, skipped, charge: charged, trainCharge, why } = applied;
+    refusedLast = r === 0 ? -1 : msg.seq;
     api.set_edit_lead(0); // a refused edit leaves it set
     if (import.meta.env.DEV && panicAfterEdit) { putPanicAfterEdit(false); panicNow(); }
     const tB = performance.now();
@@ -951,6 +1009,10 @@ async function handleMessage(msg: ToClock) {
     const op = msg.op, seq = msg.seq;
     const answer = (early?: boolean, held?: Float32Array[]) => send({ kind: "edited", seq, ok: r === 0, issues: r === 0 ? why ?? [] : r === INSERT_REFUSED ? ["InsertStop"] : r === DROP_REFUSED ? ["DropStop"] : r === ORDER_REFUSED && fault ? [`StopOrder:${fault.join(":")}`] : issues(), charge, line, node, paid: paidFor(op), skipped, ms: { apply: tB - tA, ...timing, total: performance.now() - tA }, early, held }); // i18n-ignore
     if (r !== 0) return answer();
+    // T-4145: what the page can show of the edit, before its rows and network (a stop click's line path, T-4114)
+    // T-4170: and whether a network follows (`later`'s `net` below: none for a service edit or a rename sent as rows)
+    const noNet = service || (named && !msg.early && !msg.rows && rowsCanGo());
+    send({ kind: "applied", seq, word: wordAfter(api, op, applied, posted, before, charge), ...(noNet ? { noNet: true as const } : {}) });
     saves.dirty = saves.edited = true; saves.editAt = Date.now();
     if (line !== undefined) { newLineShape(op, line); newLineFare(op, line); }
     // T-3581: a line deleted or brought back by an undo or redo has its fare multiple dropped or given back in the
@@ -973,10 +1035,11 @@ async function handleMessage(msg: ToClock) {
     // charge's split off the next state)
     const hold = early && charge === 0;
     if (early) answer(true, hold ? heldEdges() : undefined);
-    // T-2766: a stop click's rows (the world, its money) now and its answer after them, so the next click reads the
-    // stops this one left; the network, trips and boarding wait for the clicks to stop
-    const stops = !!msg.rows && !early && !service && sendRows();
-    if (stops) answer();
+    // T-2766: a stop click's rows (the world, its money) and its answer after them, so the next click reads the stops
+    // this one left; the network, trips and boarding wait for the clicks to stop. T-4114: the rows a task later, after
+    // the clicks already queued, which share them (`rowsSoon`); the answers go with them (`Waiting.worldSent`)
+    const stops = !!msg.rows && !early && !service && rowsCanGo();
+    if (stops) rowsSoon();
     // T-3795: a change of periods redoes every line's boarding before the full state (about a second on New York's
     // real save), which the schedule window does not need: its rows go first. The answer stays after the full state,
     // and the follow-up is not held as a stop click's is.
@@ -984,26 +1047,30 @@ async function handleMessage(msg: ToClock) {
     // T-3793: a name edit's rows (the world: labels, panels, lists) now and its answer after them; its state follows
     // unheld. T-3803: that state leaves the renderer's network as it is, as a train count's does (nothing drawn in it
     // has a name, and on a big save building it took most of a second, which the next edit waited behind)
-    const renamed = named && !early && !service && !msg.rows && sendRows();
+    // T-4147: and a line edit's list and panel entries (`rowsFirst`), its network still to come
+    const renamed = (named || rowsFirst(op)) && !early && !service && !msg.rows && sendRows();
     if (renamed) answer();
     // T-1407: the state, the trips and the boarding hour (and the answer, so the world is up to
     // date when it arrives) after the previews asked meanwhile
     // T-3803: answered already, or once a world holding it went (a rows state when an edit comes before its own state);
     // an early answer's money split waits for the next state the page takes
-    let answered = early || stops || renamed, shares = early && charge > 0;
+    let answered = early || renamed, shares = early && charge > 0;
     const rest = () => {
-      // T-3758: a line's fare mode changes no train's run, yet demand reads it; T-3892: nor need a boat size (its riders, fares)
-      if (demand.length || op.op === "undo" || op.op === "redo" || op.op === "lineFareDist" || op.op === "ferryBoat" || stationsKey() !== snapStations) scheduleSnapshot();
+      // T-3758: a line's fare mode changes no train's run, yet demand reads it; T-3892: nor need a boat size (its riders, fares);
+      // T-3915: nor BRT on a route with no road in town (its fares); T-3944: which a Construct turns on
+      const brtOn = (op.op === "constructLine" || op.op === "constructAll" || op.op === "construct") && charge > 0;
+      if (demand.length || op.op === "undo" || op.op === "redo" || op.op === "lineFareDist" || op.op === "ferryBoat" || op.op === "busBrt" || brtOn || stationsKey() !== snapStations) scheduleSnapshot();
       if (!answered) { answered = true; answer(); }
       keep();
       // Paid for something: keep it (T-029, autosave on construct).
       if (charge > 0) void autosave();
     };
     const waiting: Waiting = { owes: () => !answered || shares, worldSent: () => { shares = false; if (!answered) { answered = true; answer(); } } };
-    later({ net: !service && !renamed, name: renamed, service, effectiveAt, trips, early, at: tA }, rest, () => { if (!answered) { answered = true; failAnswer(msg); } }, waiting, early ? EARLY_WAIT_MS : 0,
+    later({ net: !service && !(renamed && named), name: renamed && named, service, effectiveAt, trips, early, at: tA }, rest, () => { if (!answered) { answered = true; failAnswer(msg); } }, waiting, early ? EARLY_WAIT_MS : 0,
     // the boarding account's lines the edit moved (~1.5 ms a line; a train count on New York's
-    // real save moves ~90 of them), a few a task, so a ghost asked meanwhile waits for one step
-    trips && api.has_riders() ? () => (putTodayGen(todayGen + 1), api!.boarding_step(BOARDING_STEP_LINES)) : undefined,
+    // real save moves ~90 of them), a few a task, so a ghost asked meanwhile waits for one step;
+    // a service edit's first step only before its state (T-3655)
+    trips && api.has_riders() ? editSteps(service) : undefined,
     hold || stops, stops);
   } else if (msg.kind === "clock") {
     putClk({ t: msg.t, rate: msg.rate, at: msg.at });
@@ -1122,6 +1189,7 @@ async function handleMessage(msg: ToClock) {
     const t0 = performance.now();
     const data =
       q.what === "insertStop" ? api.insert_stop(q.line, q.station)
+      : q.what === "clickPath" ? api.click_path(q.line, q.station)
       : q.what === "stopTiers" ? api.stop_tiers(q.line)
       : q.what === "stopGap" ? api.stop_gap(q.line, q.station)
       : q.what === "passedStations" ? api.passed_stations(q.line)

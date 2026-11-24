@@ -205,6 +205,11 @@ pub fn one_for_travel(th: f64) -> u8 {
 /// built before recording began (an older save), else the game day + 2 (`Network::today`).
 pub const DAY_UNKNOWN: u32 = 1;
 
+/// T-4013: a stop where riders only board (`LineData::only`): nobody gets off there.
+pub const BOARD_ONLY: u8 = 1;
+/// T-4013: a stop where riders only get off: nobody boards there.
+pub const ALIGHT_ONLY: u8 = 2;
+
 /// The earlier of two build days, a day still unset (0) losing to any other.
 pub fn earliest_day(a: u32, b: u32) -> u32 {
     match (a, b) {
@@ -241,6 +246,9 @@ pub struct StationData {
     /// T-3759: the name it shows when it is not bound to its complex's name; empty while bound. `name`
     /// stays its part in the complex's name (the app's `nameSource`) either way.
     pub own: String,
+    /// T-3378: a BRT station: on no track, beside a road running on this heading (plane radians, the
+    /// platform's axis). Only BRT lines stop there (`bus::reach`). None for every other station.
+    pub road: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -254,7 +262,9 @@ pub struct LineData {
     pub path: Vec<u32>,
     /// Trains per hour for high, medium and low demand (SPEC 6.3).
     pub tph: [f32; 3],
-    /// Whole trains allocated across both directions; None only until the next settle, which gives a line its trains from `tph` (`TrackWorld::allocate_unallocated`, T-1146).
+    /// Whole trains allocated across both directions. None only for a line known by its rate alone (a TWT4 save's
+    /// frequency line, `realsave`'s and bench's lines as built), between its decode or build and
+    /// `TrackWorld::allocate_unallocated` in the same load, which gives it trains from `tph` (T-1146, T-1183).
     pub trains: Option<[u32; 3]>,
     /// T-625: headway in seconds for high, medium and low demand (0 = no service). When set the
     /// whole-line counts follow it: the fewest trains that keep it over the round trip.
@@ -289,6 +299,10 @@ pub struct LineData {
     /// fixed (set on a line with no route). Served once a round trip, as a one-way station is
     /// (`Network::legs`). Only stations among `stops`; saved in `LOS1`.
     pub ones: Vec<(u32, u8)>,
+    /// T-4013: the stops where riders may only board (`BOARD_ONLY`) or only get off
+    /// (`ALIGHT_ONLY`), on both runs; trains stop and dwell there as anywhere. Station and kind, only
+    /// stations among `stops` (every visit of a station alike); a rail line's alone. Saved in `LBO1`.
+    pub only: Vec<(u32, u8)>,
     /// T-2981: a loop runs one way, round in the direction its stops or route were drawn (run 0
     /// alone); otherwise both ways. Kept on an open line, which ignores it, so it carries over a
     /// close. A new bus or ferry line starts one way, a train line both ways.
@@ -494,6 +508,12 @@ pub enum Issue {
     StationPorts { node: u32 },
     /// T-3889: a station where tram track meets rail.
     StationFamily { node: u32 },
+    /// T-3378: a busway meets other track at a node (a busway joins only busways).
+    BuswayJoin { node: u32 },
+    /// T-3378: a station on a busway (BRT stations go beside one).
+    BuswayStation { node: u32 },
+    /// T-3378: what is for trains and trams only (a crossover, a train line's path) on a busway.
+    BuswayTrack { edge: u32 },
     /// A station on a node where more than two pieces of track meet.
     StationJunction { node: u32 },
     PlatformLength { node: u32 },
@@ -568,6 +588,8 @@ pub enum Issue {
     NotAtPort { node: u32 },
     /// A port's berth missing, outside the world or too far from its landing (T-2193).
     PortBerth { node: u32 },
+    /// Track, a level, water or an upgrade other than Park and ride (kept from older saves) at a BRT station (T-3378).
+    NotAtBrtStation { node: u32 },
 }
 
 /// What the raw setters touched since the last `take_touch`.
@@ -581,6 +603,8 @@ pub struct Touch {
     /// T-3521: lines whose weekend setting changed (`set_weekend`), which settle only the weekends
     pub weekend: Vec<u32>,
     pub paths_changed: bool,
+    /// T-3378: a busway was added, changed or removed, so every bus line is timed again
+    pub busways: bool,
 }
 
 /// What `derive` rebuilt.
@@ -629,6 +653,8 @@ pub struct Network {
     pub node_own: Vec<String>,
     /// A port's berth (`StationData::berth`, T-2193); None for every other node.
     pub node_berth: Vec<Option<[f64; 2]>>,
+    /// A BRT station's road heading (`StationData::road`, T-3378); None for every other node.
+    pub node_road: Vec<Option<f64>>,
     pub node_ports: Vec<Ports>,
     /// Derived with the ports: where each end's lanes lie and the moves through the node (T-3137).
     pub node_moves: Vec<Moves>,
@@ -684,6 +710,8 @@ pub struct Network {
     pub line_hand: Vec<bool>,
     /// T-3711: per line, its one-way stops the player set (`LineData::ones`).
     pub line_ones: Vec<Vec<(u32, u8)>>,
+    /// T-4013: per line, its boarding-only and getting-off-only stops (`LineData::only`).
+    pub line_only: Vec<Vec<(u32, u8)>>,
     pub line_one_way: Vec<bool>,
     pub line_limit: Vec<u16>,
     /// T-3758: `LineData::fare_dist`.
@@ -832,6 +860,14 @@ pub struct Network {
     mask_epoch: u32,
     /// Off: every node is asked of the mask each time (the rows check compares the two).
     pub wet_cache: bool,
+    /// T-3378: the BRT lanes' room (`brt_room`), kept with a hash of everything it was worked out from.
+    brt_room: std::cell::RefCell<Option<(u64, std::sync::Arc<super::bus::lanes::Room>)>>,
+    /// T-3378: every BRT line's lanes (`brt_lanes`), kept the same way.
+    brt_lanes: std::cell::RefCell<Option<(u64, std::sync::Arc<(super::bus::lanes::Lanes, u32)>)>>,
+    /// T-3378 stage 4: the constructed busways (`busways`), kept with `busway_key`.
+    busways: std::cell::RefCell<Option<(u64, std::sync::Arc<super::bus::busway::Busways>)>>,
+    /// T-3378: set while the blueprint is priced, so the busways still to be built count as built (`built_busways`).
+    busways_planned: std::cell::Cell<bool>,
 }
 
 /// Slack in a Dijkstra key.

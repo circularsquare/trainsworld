@@ -241,7 +241,7 @@ fn beyond(net: &Network, cand: &[u32], level: Option<i8>, built_ok: bool) -> Bey
         .flat_map(|&e| [net.edge_a[e as usize], net.edge_b[e as usize]])
         .filter(|&n| {
             let i = n as usize;
-            net.node_platform[i] > 0 && net.node_berth[i].is_none() && net.node_level[i] != l && (built_ok || !net.node_built[i])
+            net.node_platform[i] > 0 && !net.trackless(i as u32) && net.node_level[i] != l && (built_ok || !net.node_built[i])
         })
         .collect();
     ends.sort_unstable();
@@ -249,7 +249,7 @@ fn beyond(net: &Network, cand: &[u32], level: Option<i8>, built_ok: bool) -> Bey
     let usable = |e: u32| net.edge_ok(e) && !net.edge_crossover[e as usize] && (built_ok || !net.edge_built[e as usize]) && !picked(e);
     let plain = |n: u32| {
         let i = n as usize;
-        net.node_ports[i].n == 2 && net.node_platform[i] == 0 && net.node_berth[i].is_none()
+        net.node_ports[i].n == 2 && net.node_platform[i] == 0 && !net.trackless(i as u32)
     };
     let other = |e: u32, n: u32| if net.edge_a[e as usize] == n { net.edge_b[e as usize] } else { net.edge_a[e as usize] };
     let node_op = |n: u32| net.node_data(n).filter(|d| d.level != l).map(|d| Op::Node { id: n, data: Some(NodeData { level: l, ..d }) });
@@ -366,8 +366,9 @@ fn beyond(net: &Network, cand: &[u32], level: Option<i8>, built_ok: bool) -> Bey
 
 /// A piece whose track type can change: plain double track (single track and crossovers have no high-speed or
 /// tram form).
-fn kind_ok(d: &EdgeData, _w: Want) -> bool {
-    !d.crossover
+fn kind_ok(d: &EdgeData, w: Want) -> bool {
+    // T-3378: a busway is never retyped, nor anything retyped to one
+    !d.crossover && !(w.kind.is_some() && d.kind.is_busway())
 }
 
 /// T-3296: single track that becomes double: plain rail track that runs both ways. A piece set or joined to
@@ -557,6 +558,7 @@ fn culprits(net: &Network, cand: &[u32], issues: &[Issue], flats: &[(u32, u32)],
             | Issue::Crossover { edge: e }
             | Issue::NoParallel { edge: e }
             | Issue::Alongside { edge: e }
+            | Issue::BuswayTrack { edge: e }
             | Issue::HighSpeed { edge: e } => edge(e, &mut out),
             Issue::NoSuchNode { node }
             | Issue::TooManyPorts { node }
@@ -566,6 +568,8 @@ fn culprits(net: &Network, cand: &[u32], issues: &[Issue], flats: &[(u32, u32)],
             | Issue::StationPorts { node }
             | Issue::StationJunction { node }
             | Issue::StationFamily { node }
+            | Issue::BuswayJoin { node }
+            | Issue::BuswayStation { node }
             | Issue::PlatformLength { node }
             | Issue::PlatformTooLong { node }
             | Issue::PlatformStation { node }
@@ -577,6 +581,7 @@ fn culprits(net: &Network, cand: &[u32], issues: &[Issue], flats: &[(u32, u32)],
             | Issue::StationInUse { node, .. }
             | Issue::BranchNoRoom { node }
             | Issue::NotAtPort { node }
+            | Issue::NotAtBrtStation { node }
             | Issue::PortBerth { node } => at_node(node, &mut out),
             // T-3889: a train line the change would put on tram track: the picked pieces it runs on
             Issue::TramTrack { line } => out.extend(net.line_path(line).iter().map(|&p| p >> 1).filter(|&e| picked(e))),
@@ -651,7 +656,7 @@ fn family_ops(net: &Network, cand: &[u32], w: Want) -> Vec<Op> {
         }
     }
     // `Network::tram_stop` once the pieces have changed
-    let stop_after = |n: u32| net.node_ok(n) && net.node_platform[n as usize] > 0 && net.node_berth[n as usize].is_none() && tram_after(net, cand, w, n);
+    let stop_after = |n: u32| net.node_ok(n) && net.node_platform[n as usize] > 0 && !net.trackless(n) && tram_after(net, cand, w, n);
     for l in 0..net.line_count() as u32 {
         if !net.line_ok(l) || net.line_bus[l as usize].is_some() || net.line_ferry[l as usize].is_some() || !net.line_path(l).iter().any(|&p| moved(p >> 1)) {
             continue;

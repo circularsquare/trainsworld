@@ -96,7 +96,7 @@ fn stop_tiers_follow_the_line_tool() {
     let facing_back = station(&mut a, 3700.0, -1300.0, "Z");
     let other = station(&mut a, 6000.0, 5000.0, "E");
     let id = a.new_line_id();
-    assert_eq!(a.set_line(id, &[first, last], 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(id, &[first, last], 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     let raw = a.stop_tiers(id);
     let tiers: std::collections::HashMap<u32, f64> = raw.chunks(3).map(|c| (c[0] as u32, c[1])).collect();
     assert_eq!(tiers.len(), 9);
@@ -116,8 +116,11 @@ fn stop_tiers_follow_the_line_tool() {
         if stops.is_empty() {
             continue;
         }
+        let guess: std::collections::BTreeSet<u32> = a.click_path(id, n).iter().map(|&e| e as u32).collect();
         assert_eq!(a.set_stops(id, &stops), 0, "{}", a.issues());
         let grown = a.line_path(id);
+        // T-4147: the path read at the hover is the one the click's edit takes
+        assert_eq!(guess, grown.iter().chain(&a.line_back_path(id)).map(|&p| p >> 1).collect(), "station {}", a.w.net.node_name[n as usize]);
         if t == 4.0 {
             assert_eq!(a.line_reversals(id), vec![1.0], "trains reverse at B, stop 1 of A, B, Z");
         } else {
@@ -125,9 +128,22 @@ fn stop_tiers_follow_the_line_tool() {
         }
         assert_eq!(a.undo(), 0);
     }
+    // T-4097: the path read over a stop is the one taking it out takes, round the bypass too
+    for via in [between, bypass] {
+        assert_eq!(a.set_stops(id, &[first, via, last]), 0, "{}", a.issues());
+        let guess: std::collections::BTreeSet<u32> = a.click_path(id, via).iter().map(|&e| e as u32).collect();
+        let was = a.line_path(id);
+        assert_eq!(a.take_stop(id, via), 0, "{}", a.issues());
+        assert_eq!(a.line_stops(id), vec![first, last]);
+        assert_eq!(guess, a.line_path(id).iter().chain(&a.line_back_path(id)).map(|&p| p >> 1).collect(), "station {}", a.w.net.node_name[via as usize]);
+        assert_eq!(was == a.line_path(id), via == between, "only the bypass moves the path");
+        assert!(a.take_path(id, via).is_empty(), "no stop now");
+        assert_eq!(a.undo(), 0);
+        assert_eq!(a.undo(), 0);
+    }
     // with no route yet, every station joined to the one stop counts as on it
     let lone = a.new_line_id();
-    assert_eq!(a.set_line(lone, &[first], 0.0, 0.0, 0.0, 30.0, 180.0, 0, 0, "One".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(lone, &[first], 0, 0, 0, 30.0, 180.0, 0, 0, "One".into()), 0, "{}", a.issues());
     let tiers: std::collections::HashMap<u32, f64> = a.stop_tiers(lone).chunks(3).map(|c| (c[0] as u32, c[1])).collect();
     assert_eq!((tiers[&past_end], tiers[&bypass], tiers[&other]), (1.0, 1.0, 3.0));
 }
@@ -217,7 +233,7 @@ fn the_first_stop_closes_and_opens_a_loop() {
     let (w, ns) = super::super::super::tests::ring_fixture();
     a.w = w;
     let id = a.new_line_id();
-    assert_eq!(a.set_line(id, &ns[..4], 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(id, &ns[..4], 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     let tier = |a: &TrackApi, n: u32| a.stop_tiers(id).chunks(3).find(|c| c[0] as u32 == n).unwrap()[1];
     assert_eq!(tier(&a, ns[0]), 5.0, "closes");
     assert_eq!(tier(&a, ns[3]), 5.0, "T-3203: the last stop closes it too");
@@ -238,7 +254,7 @@ fn the_first_stop_closes_and_opens_a_loop() {
     let (w, ns) = super::super::super::tests::ring_fixture();
     b.w = w;
     let id = b.new_line_id();
-    assert_eq!(b.set_line(id, &ns[..2], 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0);
+    assert_eq!(b.set_line_with_trains(id, &ns[..2], 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0);
     assert_eq!(b.stop_tiers(id).chunks(3).find(|c| c[0] as u32 == ns[0]).unwrap()[1], 5.0, "the ring leads round");
 }
 
@@ -249,7 +265,7 @@ fn a_junction_passed_twice_is_one_mark() {
     let (w, [s0, m, _, k]) = super::super::super::tests::balloon_fixture();
     a.w = w;
     let id = a.new_line_id();
-    assert_eq!(a.set_line(id, &[s0, m, k, m, s0], 6.0, 4.0, 2.0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
+    assert_eq!(a.set_line_with_trains(id, &[s0, m, k, m, s0], 6, 4, 2, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     let marks = a.line_marks(id);
     assert_eq!(marks.len(), 6, "{marks:?}");
     assert_eq!((marks[0], marks[1]), (4.0, 1.0), "the junction, after the second stop");

@@ -9,12 +9,14 @@
 import { ConstructButton } from "./ConstructButton";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { shown } from "../../game/pending";
 import { demandAt, lineSeconds } from "../../game/clock";
 import { periodAt } from "../../game/periods";
 import { count, distance, distUnit, duration, exact, metresFromShown, metresToShown, millions, money, perDistance, shortDistance, speed } from "../../game/format";
 import { moneyState } from "../../game/money";
 import { BOATS, boatOf, boatStock, type Boat } from "../../game/boats";
 import { t } from "../../i18n";
+import { tipMutedLine } from "../tip";
 import { useToday } from "../../game/today";
 import { DEMAND_INDEX, type LineInput, type LineStats } from "../../game/types";
 import { ask, display, lineDraft, selection, tool } from "../../game/ui";
@@ -23,16 +25,20 @@ import { editBusRoute, editFerryRoute, toggleEditStops } from "../../game/lineAc
 import { busDraft } from "../../map/busDraw";
 import { ferryDraft } from "../../map/ferryDraw";
 import { edit, fleetOf, linesById, say, stationNames, world } from "../../game/world";
-import { Check, Icon, Row, Segmented, Stepper, SwapLabel } from "../widgets";
+import { Alert, Icon, Row, Segmented, Stepper, SwapLabel } from "../widgets";
+import { useLineQuote } from "../../game/quotes";
+import { nearestStation } from "../../game/places";
+import { fullTitle, heldTrains, LANE_KIND } from "../../game/capacityKinds";
+import { useClockQuery } from "../useClockQuery";
 import { demandView, complexTransfers } from "../../game/demand";
 import { placesNear, hoodsNear, townsNear } from "../../game/placeList";
 import { endsInStation, placeName } from "../../map/stationNames";
 import type { ClockBus } from "../../workers/protocol";
-import { RoundTrip, ScheduleButtons, StopToday, StopTransfers, StretchHalf, stretchLooks } from "./LineInspector";
+import { limitsFrom, RoundTrip, ScheduleButtons, StopToday, StopTransfers, StretchHalf, stretchLooks } from "./LineInspector";
 import { LineFare, LineMoney } from "./LineMoney";
 import { PurposeSplit } from "./PurposeSplit";
 import { drawnReversed } from "../../game/northUp";
-import { AverageSpeed, boatsBought, PastDay, Schedule, useLinePeriods } from "./schedule";
+import { AverageSpeed, boatsBought, NO_LIMITS, PastDay, rowLabel, Schedule, useLinePeriods } from "./schedule";
 import { LineTitle, useLineTitle } from "./LineTitle";
 import { afterCopy } from "../../game/lineGroups";
 
@@ -214,18 +220,14 @@ const SPACING_STEPS = [400, 600, 800, 1000, 1500, 2000, 3000, 5000, 8000, 10_000
 /** T-2937: the Stops heading with its Auto and Manual buttons, and under Auto the Stop spacing row.
  * Manual (T-2891) opens the stop editing; any spacing, 0 included, leaves it. */
 function StopsHead({ l, bus }: { l: LineInput; bus: ClockBus }) {
-  // what was asked for, shown at once and counted from until the edit lands
-  const [asked, setAsked] = useState<{ hand: boolean; spacing: number } | null>(null);
-  const hand = asked?.hand ?? bus.hand;
-  const spacing = Math.max(SPACING_STEPS[0], asked ? asked.spacing : bus.spacing);
-  const send = (to: { hand: boolean; spacing: number }) => {
-    setAsked(to);
-    return edit(to.hand ? { op: "busHand", line: l.num } : { op: "busSpacing", line: l.num, spacing: to.spacing }).then((a) => {
-      setAsked(null);
+  // what was asked for shows at once, until the rows that hold it (game/busAhead.ts)
+  const hand = shown("line:" + l.num, "hand", bus.hand);
+  const spacing = Math.max(SPACING_STEPS[0], shown("line:" + l.num, "spacing", bus.spacing));
+  const send = (to: { hand: boolean; spacing: number }) =>
+    edit(to.hand ? { op: "busHand", line: l.num } : { op: "busSpacing", line: l.num, spacing: to.spacing }).then((a) => {
       if (a.ok && to.hand) toggleEditStops(l);
       return a.ok;
     });
-  };
   const choose = (manual: boolean) => { if (manual !== hand) void send({ hand: manual, spacing: 0 }); };
   const step = (d: number) => {
     const at = SPACING_STEPS.reduce((best, s, i) => (s <= spacing ? i : best), 0);
@@ -295,7 +297,7 @@ function ChangingToTrains({ l, bus }: { l: LineInput; bus: ClockBus }) {
 /** T-3892: a ferry line's boat size, where a train line has its train type: each hover its riders and speed, and on
  * a running line what the switch buys beyond that size's spare boats (the old ones stay in the depot). */
 function BoatSize({ l, st, bus }: { l: LineInput; st: LineStats; bus: ClockBus }) {
-  const m = moneyState.value, now = boatOf(bus);
+  const m = moneyState.value, now = shown("line:" + l.num, "boat", boatOf(bus));
   const tip = (b: Boat) => {
     let s = t("busInspector.boatTip", { riders: exact(BOATS[b].riders), speed: speed(BOATS[b].kmh) });
     const need = fleetOf(st);
@@ -319,21 +321,90 @@ function BoatSize({ l, st, bus }: { l: LineInput; st: LineStats; bus: ClockBus }
 }
 
 /** T-3907: a bus line on BRT or off it: bus lanes along the whole route, its buses at no less than the BRT floor.
- * On a constructed line switching on is paid at once; off gives nothing back. */
+ * T-3944: an upgrade as a station's are (StationUpgrades.tsx): outlined when off, dashed while its lanes are in the
+ * blueprint, filled once built. A click puts it in the blueprint or takes it out, or takes built lanes away (nothing
+ * refunded); a constructed line's lanes in the blueprint are built by Construct beside it or the Build tab's. */
 function BrtRow({ l, bus }: { l: LineInput; bus: ClockBus }) {
   const m = moneyState.value;
-  const [asked, setAsked] = useState<boolean | null>(null);
-  const on = asked ?? bus.brt;
-  // T-3907: paid and upkept over the road in town only
-  const tip = m ? t("busInspector.brtTip", { speed: speed(m.brtKmh), price: millions(perDistance(m.brtRouteKm)), upkeep: money(perDistance(m.upkeepBrtKm * m.economy)), unit: distUnit(), town: distance(bus.townM) }) : undefined;
+  const asked = shown<boolean | null>("line:" + l.num, "brt", null);
+  const on = asked ?? (bus.brt || bus.brtBp);
+  const built = on && asked === null && bus.brt && bus.built;
+  // the Construct beside it: a constructed line whose lanes are in the blueprint
+  const pending = asked === null && bus.built && bus.brtBp;
+  const q = useLineQuote(pending ? l.num : null);
+  // T-3907: paid and upkept over the road in town only; T-3378: lanes another BRT line has are not paid again
+  const shared = bus.townM - bus.newM;
+  const price = m ? (bus.newM / 1000) * m.brtRouteKm * 1e6 : 0;
+  const act = t(on ? (built ? "stationUpgrades.actBuilt" : "stationUpgrades.actPlanned") : "stationUpgrades.actAdd");
+  const tip = m ? [t("busInspector.brt"), t("busInspector.brtTip", { speed: speed(m.brtKmh), price: millions(perDistance(m.brtRouteKm)), upkeep: money(perDistance(m.upkeepBrtKm * m.economy)), unit: distUnit(), town: distance(bus.townM) }),
+    ...(shared >= 50 ? [t("busInspector.brtShared", { shared: distance(shared) })] : []), ...(built ? [] : [t("stationUpgrades.costs", { price: money(price) })]), act].join("\n") : undefined;
   const set = (to: boolean) => {
-    setAsked(to);
-    void edit({ op: "busBrt", line: l.num, on: to }).then(() => setAsked(null));
+    void edit({ op: "busBrt", line: l.num, on: to }).then((a) => {
+      if (!a.ok) return;
+      if (to) say(t("stationUpgrades.added", { name: t("busInspector.brt") }));
+      else if (built) say(t("stationUpgrades.removed", { name: t("busInspector.brt"), station: l.name }));
+    });
+  };
+  const build = async () => {
+    const a = await edit({ op: "constructLine", line: l.num });
+    if (a.ok) say(t("busInspector.brtBuilt", { name: l.name, price: money(a.charge * 1e6) }));
   };
   return (
-    <li>
-      <Check checked={on} onChange={set} tip={tip}>{t("busInspector.brt")}</Check>
+    <li class="brt-up">
+      <button class={"btn icon upgrade" + (!on ? "" : built ? " on" : " planned")} aria-label={t("busInspector.brt")} aria-pressed={on} data-tip={tip} onClick={() => set(!on)}>
+        <Icon.brt />
+      </button>
+      <span class="grow" data-tip={tip}>{t("busInspector.brt")}</span>
+      {pending && (
+        <button class="btn text" onClick={() => void build()}>
+          {q ? t("constructButton.priced", { price: money(q.build + q.trains) }) : t("constructButton.plain")}
+        </button>
+      )}
     </li>
+  );
+}
+
+/** T-3378: a constructed BRT line's fullest stretch of lane now, buses an hour one way against the most it takes;
+ * red once full, when the lines on it run fewer buses than asked. */
+function LaneRow({ bus, period }: { bus: ClockBus; period: number }) {
+  const most = bus.laneLoad[5] ?? 0, n = bus.laneLoad[period] ?? 0;
+  if (!bus.brt || !bus.built || !(n > 0) || !(most > 0)) return null;
+  const full = n >= most - 0.05;
+  return (
+    <li>
+      <span class="grow">{t("busInspector.lane")}</span>
+      <span class={"val" + (full ? " bad" : "")} data-tip={full ? t("busInspector.laneFullTip", { most: Math.round(most) }) : undefined}>{t("busInspector.laneLoad", { n: Math.round(n), most: Math.round(most) })}</span>
+    </li>
+  );
+}
+
+interface LaneHold { row: number; rows: number; wait: number; place: string }
+/** T-3378: a BRT line's `line_held` (`line_row_held`): where a full lane keeps some of its buses from running, by
+ * row, and the headways the lanes limit it to (`limitsFrom`). */
+function useLaneHeld(l: LineInput | undefined, bus: ClockBus | undefined) {
+  const w = world.value;
+  return useClockQuery(l && bus?.brt && bus.built ? { what: "lineHeld", line: l.num, rows: true } : null, [l?.num, w?.version, bus?.brt], (d) => {
+    const rows = Math.round(d.length / 13), held: LaneHold[] = [];
+    for (let r = 0; r < rows; r++) {
+      const [wait, kind, , x, y] = d.subarray(7 * r, 7 * r + 5);
+      if (kind === LANE_KIND && heldTrains(wait) > 0) held.push({ row: r, rows, wait, place: fullTitle(kind, nearestStation(x, y)?.name ?? "", "bus") });
+    }
+    return { held, limits: limitsFrom(d, "bus") };
+  });
+}
+
+/** T-3378: the alert of a full BRT lane, as a rail line's of full track (`lineInspector.heldLevel`). */
+function LaneHeld({ st, lanes }: { st: LineStats; lanes: LaneHold[] }) {
+  if (st.status !== "running" || lanes.length === 0) return null;
+  return (
+    <ul class="alerts">
+      {[...new Set(lanes.map((h) => h.place))].map((place) => (
+        <Alert tip={t("busInspector.laneFullTip", { most: Math.round(st.bus?.laneLoad[5] ?? 0) })}>
+          {place}
+          {lanes.filter((h) => h.place === place).map((h) => <div class="detail">{t("lineInspector.heldLevel", { level: rowLabel(h.rows, h.row), text: t("busInspector.laneHeld", { n: heldTrains(h.wait) }) })}</div>)}
+        </Alert>
+      ))}
+    </ul>
   );
 }
 
@@ -349,6 +420,7 @@ export function BusInspector({ id }: { id: string }) {
   const st = w && l ? w.lineStats[l.id] : undefined;
   const bus = st?.bus;
   const endName = useEndNames(bus, new Set((w?.save.stations ?? []).map((s) => s.name)));
+  const lanes = useLaneHeld(l, bus);
   if (!w || !l || !st || !bus) return null;
   const names = stationNames(w);
 
@@ -367,10 +439,10 @@ export function BusInspector({ id }: { id: string }) {
     const selected = selection.peek();
     if (selected?.kind === "line" && selected.line === l.id) selection.value = null;
   });
-  const remove = () => {
+  const remove = (e: MouseEvent) => {
     // T-2919: asked only where it cannot be undone, a constructed bus route (final, nothing refunded);
     // a planned bus line or a ferry line (T-2194: its ports stay, its boats go to the depot) goes at once
-    if (ferry || !bus.built) return removeNow();
+    if (ferry || !bus.built || e.shiftKey) return removeNow();
     ask.value = { text: t("busInspector.deleteQuestion", { name: l.name, built: true }), yes: t("busInspector.deleteYes"), no: t("busInspector.deleteNo"), run: () => {
       ask.value = null;
       void edit({ op: "removeLine", line: l.num }).then((a) => {
@@ -430,15 +502,17 @@ export function BusInspector({ id }: { id: string }) {
         <button class={"btn text" + (drawing ? " on" : "")} data-tip={drawing ? t("busInspector.saveTip") : bus.built && !ferry ? t("busInspector.changeTipBuilt") : t("busInspector.changeTip")} onClick={() => (ferry ? editFerryRoute(l) : editBusRoute(l))}><Icon.pencil />{drawing ? t("busInspector.save") : t("busInspector.edit")}</button>
         {bus.hand && <button class={"btn text" + (editingStops ? " on" : "")} data-tip={editingStops ? t("lineInspector.finishTip") : t("busInspector.editStopsTip")} onClick={() => toggleEditStops(l)}><Icon.pencil /><SwapLabel on={editingStops} off={t("lineInspector.editStops")} onText={t("lineInspector.stopEditing")} /></button>}
         <button class="btn text" onClick={() => void copy()} disabled={copying}>{t("busInspector.copy")}</button>
-        <button class="btn text danger" onClick={remove}>{t("busInspector.deleteYes")}</button>
+        <button class="btn text danger" data-tip={tipMutedLine(t("common.shiftSkip"))} onClick={remove}>{t("busInspector.deleteYes")}</button>
       </div>
 
-      <Schedule l={l} st={st} period={periodAt(lineSeconds(st))} crowd={periods} copy={<ScheduleButtons l={l} st={st} />} />
+      <Schedule l={l} st={st} period={periodAt(lineSeconds(st))} limits={lanes?.limits ?? NO_LIMITS} crowd={periods} copy={<ScheduleButtons l={l} st={st} />} />
       <ul class="rows">
         {ferry && <BoatSize l={l} st={st} bus={bus} />}
         {!ferry && <BrtRow l={l} bus={bus} />}
+        {!ferry && <LaneRow bus={bus} period={periodAt(lineSeconds(st))} />}
         <AverageSpeed st={st} lev={lev} />
       </ul>
+      <LaneHeld st={st} lanes={lanes?.held ?? []} />
 
       {st.status === "running" && <div class="line-day"><PastDay l={l} st={st} periods={periods} kind={kind} extra={<><PurposeSplit scope={[{ line: l.id }]} unit={t("lineInspector.ridersUnit")} /><ChangingToTrains l={l} bus={bus} /></>} /></div>}
 

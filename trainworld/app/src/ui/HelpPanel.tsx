@@ -4,9 +4,12 @@
 
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { t } from "../i18n";
+import { t, type MessageKey } from "../i18n";
+import { TripSplitGraph } from "./TripSplitGraph";
 import { mobileDevice } from "../workers/deviceMemory";
 import { marketOff } from "../game/ui";
+import { tripView } from "../game/trip";
+import { shownPeriod } from "../map/tripView";
 import { ACTION_KEYS, BUS_KEY, DEMAND_KEY, HELP_KEY, HIDE_UI_KEY, SWITCH_PICK_KEY, TAB_KEYS, TOOL_KEYS, TOOLS, TRIP_KEY } from "./toolKeys";
 import { Icon } from "./widgets";
 
@@ -143,6 +146,76 @@ function sections(): [string, [string, string][]][] {
     [t("help.stepTrains"), t("help.stepBy")],
   ]],
   ];
+}
+
+/** T-2264: the explainer opened by the trip panel's "?" beside the effective time. It sits where the help panel
+ * does; opening the help panel closes it. */
+export type HelpTopic = "time";
+export const helpTopic = signal<HelpTopic | null>(null);
+
+const TRAIN: MessageKey[] = ["helpTopic.timeWalk", "helpTopic.timeWait", "helpTopic.timeRide", "helpTopic.timeBoard", "helpTopic.timeChange", "helpTopic.timeFare"];
+const CAR: MessageKey[] = ["helpTopic.timeDrive", "helpTopic.timePark", "helpTopic.timeParkPrice", "helpTopic.timeOwn"];
+
+/** The "?" that opens a topic, or closes it again */
+export function HelpTopicButton({ topic }: { topic: HelpTopic }) {
+  const on = helpTopic.value === topic;
+  const name = t("helpTopic.timeTitle");
+  return (
+    <button class={"btn icon help-topic-open" + (on ? " on" : "")} data-tip={name} aria-label={name} aria-pressed={on}
+      onClick={() => { helpTopic.value = on ? null : topic; helpOpen.value = false; }}>
+      <Icon.question />
+    </button>
+  );
+}
+
+/** The selected trip's train effective time over its car's, as the trip panel shows them; null without both options */
+function selectedRatio(): number | null {
+  const x = tripView.value?.trip?.periods[shownPeriod.value];
+  if (!x || !x.railOffered || x.apart || !(x.railPerceived > 0) || !(x.roadPerceived > 0)) return null;
+  return x.railPerceived / x.roadPerceived;
+}
+
+export function HelpTopicPanel() {
+  const topic = helpTopic.value;
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!topic) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      helpTopic.value = null;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+    const press = (e: PointerEvent) => {
+      const el = e.target as Element;
+      if (!ref.current?.contains(el) && !el.closest?.(".help-topic-open")) helpTopic.value = null;
+    };
+    window.addEventListener("keydown", key, true);
+    window.addEventListener("pointerdown", press, true);
+    return () => {
+      window.removeEventListener("keydown", key, true);
+      window.removeEventListener("pointerdown", press, true);
+    };
+  }, [topic]);
+  // opening the help panel (F1 included) takes the place of an open topic
+  const helpIsOpen = helpOpen.value;
+  useEffect(() => { if (helpIsOpen) helpTopic.value = null; }, [helpIsOpen]);
+  if (!topic) return null;
+  const ratio = selectedRatio();
+  const list = (keys: MessageKey[]) => <ul>{keys.map((k) => <li key={k}>{t(k)}</li>)}</ul>;
+  return (
+    <div class="help-panel help-topic" ref={ref} role="dialog" aria-label={t("helpTopic.timeTitle")}>
+      <p>{t("helpTopic.timeIntro")}</p>
+      <h3>{t("helpTopic.timeTrain")}</h3>
+      {list(TRAIN)}
+      <h3>{t("helpTopic.timeCar")}</h3>
+      {list(CAR)}
+      <p>{t("helpTopic.timeWalking")}</p>
+      <p>{t("helpTopic.timeChoose")}</p>
+      <TripSplitGraph q={ratio} />
+      {ratio !== null && <p class="muted small">{t("helpTopic.graphDot")}</p>}
+    </div>
+  );
 }
 
 export function HelpPanel() {

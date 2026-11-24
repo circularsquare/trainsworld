@@ -13,19 +13,17 @@ import subprocess
 import sys
 
 TREE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the tree's root
-MAPS_CORES = None
-for up in (TREE, os.path.dirname(os.path.dirname(TREE))):  # a worktree is <maps>/.tw-trees/<name>
-    if os.path.exists(os.path.join(up, "cores.py")):
-        MAPS_CORES = os.path.join(up, "cores.py")
-        break
+MAPS_CORES = os.path.join(TREE, "cores.py")   # finds the shared ledger itself from a worktree
 SIM = os.path.join(TREE, "trainworld", "sim")
 APP = os.path.join(TREE, "trainworld", "app")
 WANT = 3
 
 
 def claim(name):
-    r = subprocess.run([sys.executable, MAPS_CORES, "claim", str(WANT), name, "--pid", str(os.getpid()), "Rust build"],
-                       capture_output=True, text=True)
+    r = subprocess.run([sys.executable, MAPS_CORES, "claim", str(WANT), name, "--pid", str(os.getpid()),
+                        "--min", "2", "Rust build"], stdout=subprocess.PIPE, text=True)   # stderr: the waiting line
+    if r.returncode:
+        sys.exit("no cores from the ledger (see above); not building")
     last = (r.stdout.strip().splitlines() or ["1"])[-1]
     try:
         return max(1, min(WANT, int(last.split()[0])))
@@ -38,7 +36,8 @@ def main():
         sys.exit(__doc__)
     name = "rust-" + os.path.basename(TREE)
     jobs = claim(name)
-    env = dict(os.environ, CARGO_BUILD_JOBS=str(jobs))
+    # wasm-pack's wasm-opt otherwise takes every core, outside the claim (7 cores seen 11-21).
+    env = dict(os.environ, CARGO_BUILD_JOBS=str(jobs), BINARYEN_CORES=str(jobs))
     cargo_bin = os.path.join(os.environ.get("USERPROFILE", ""), ".cargo", "bin")
     env["PATH"] = cargo_bin + os.pathsep + env.get("PATH", "")
     sh = os.name == "nt"

@@ -2,6 +2,7 @@ use super::super::overtake::tests::{set_passing, shinkansen};
 use super::super::overtake::PASS_CLEAR_S;
 use super::super::profile;
 use super::super::service::Trip;
+use super::super::tests::set_headway;
 use super::super::world::{Op, TrackWorld};
 use super::*;
 
@@ -64,7 +65,7 @@ fn every_local_waits_for_its_express() {
     for (hl, hx) in [(10.0f32, 10.0f32), (30.0, 10.0), (10.0, 30.0)] {
         let (mut w, n, local, express) = shinkansen();
         for (id, h) in [(local, hl), (express, hx)] {
-            w.apply(Op::Schedule { id, tph: [60.0 / h, 60.0 / h, 0.0] }).unwrap();
+            set_headway(&mut w, id, [60.0 / h, 60.0 / h, 0.0]);
         }
         set_passing(&mut w, &n[1..6], true);
         let t0 = 86400.0 + 8.0 * 3600.0;
@@ -88,13 +89,56 @@ fn every_local_waits_for_its_express() {
     }
 }
 
+/// T-3929: a count or headway line's return run leaves where its round trip leaves it
+/// (`Service::lattice`), so an express and its local can't both run at their overtake plan's best
+/// offset in both directions: on this line at 10/10 (headway lines) the express left A just behind
+/// a local and caught it before B, the first passing station, 24 times in 4 h. At any phase of the
+/// express no express now catches a local before the first passing station either way (`lead_in`);
+/// at the phase spacing gives it (by what each offset costs, `spacing`) there is no bad pass at
+/// all on headway lines. Count lines too (T-3931, the batch check of T-3929: locals leaving 1 s
+/// after their express): their trains drift against each other's, so a run has many different
+/// waits to fit in its `MAX_VARS` timetables, and merged by sort order they added enough waiting
+/// to put whole runs back on the slot's (`floor`) or waited longer at one station than a train
+/// needed, just in front of the next express. Each of these counts (local/express trains) had bad
+/// passes before (12/9 2, 12/7 25, 13/9 58, 9/6 31, 10/12 52 in 4 h).
+#[test]
+fn counted_expresses_never_run_through_locals() {
+    for counts in [None, Some((12u32, 9u32)), Some((12, 7)), Some((13, 9)), Some((9, 6)), Some((10, 12))] {
+        let (mut w, n, local, express) = shinkansen();
+        for id in [local, express] {
+            match counts {
+                None => set_headway(&mut w, id, [6.0, 6.0, 0.0]),
+                Some((kl, kx)) => {
+                    let k = if id == local { kl } else { kx };
+                    w.apply(Op::AutoTrains { id, auto: None, trains: Some([k, k, 0]) }).unwrap();
+                }
+            }
+        }
+        set_passing(&mut w, &n[1..6], true);
+        let t0 = 86400.0 + 8.0 * 3600.0;
+        let early = |bad: &[String]| bad.iter().filter(|b| b.contains("before node 1")).cloned().collect::<Vec<_>>();
+        let (bad, good) = bad_passes(&w, local, express, &n, &n[1..6], t0, t0 + 4.0 * 3600.0, false);
+        eprintln!("{counts:?}: {good} passes at passing stations, {} bad", bad.len());
+        assert!(good >= 8, "{counts:?}: the expresses pass the locals");
+        assert!(bad.is_empty(), "{counts:?}: {} bad passes, first {:?}", bad.len(), &bad[..bad.len().min(6)]);
+        let h = 3600.0 / w.net.line_tph[express as usize][0] as f64;
+        for k in 0..24 {
+            w.net.line_phase[express as usize][0] = (h * k as f64 / 24.0) as f32;
+            w.svc.forget_timing();
+            w.retime();
+            let (bad, _) = bad_passes(&w, local, express, &n, &n[1..6], t0, t0 + 4.0 * 3600.0, false);
+            assert!(early(&bad).is_empty(), "{counts:?}, express phase {}/24: {:?}", k, &early(&bad)[..early(&bad).len().min(4)]);
+        }
+    }
+}
+
 /// Without passing tracks the express is timed behind the local ahead of it train by train
 /// (T-3271): the timetable never has it through a local, where the averaged following loss did.
 #[test]
 fn an_express_with_nowhere_to_pass_follows_its_local() {
     let (mut w, n, local, express) = shinkansen();
     for (id, h) in [(local, 10.0f32), (express, 10.0f32)] {
-        w.apply(Op::Schedule { id, tph: [60.0 / h, 60.0 / h, 0.0] }).unwrap();
+        crate::track::tests::set_headway(&mut w, id, [60.0 / h, 60.0 / h, 0.0]);
     }
     let t0 = 86400.0 + 8.0 * 3600.0;
     let er = &w.svc.lines[express as usize].runs;
@@ -117,7 +161,7 @@ fn an_express_with_nowhere_to_pass_follows_its_local() {
 #[test]
 fn variants_come_back_after_a_load() {
     let (mut w, n, local, express) = shinkansen();
-    w.apply(Op::Schedule { id: express, tph: [2.0, 2.0, 0.0] }).unwrap();
+    crate::track::tests::set_headway(&mut w, express, [2.0, 2.0, 0.0]);
     set_passing(&mut w, &n[1..6], true);
     let back = TrackWorld::new(super::super::save::decode(&super::super::save::encode(&w.net)).unwrap());
     let t0 = 86400.0 + 8.0 * 3600.0;
@@ -130,7 +174,7 @@ fn variants_come_back_after_a_load() {
 #[test]
 fn cluster_keeps_every_departure_under_its_variant() {
     let each: Vec<Vec<i64>> = (0..40).map(|i| vec![(i * 7) % 13, (i * 3) % 5, 0]).collect();
-    let (reps, which) = cluster(&each);
+    let (reps, which) = cluster(&each, |_, _| true);
     assert!(reps.len() <= MAX_VARS);
     for (e, &k) in each.iter().zip(&which) {
         assert!(reps[k].iter().zip(e).all(|(r, x)| r >= x), "{e:?} under {:?}", reps[k]);
@@ -217,7 +261,7 @@ fn headway_lines_waits_at_the_real_phase() {
 fn both_rush_stretches_are_timed_on_their_own() {
     let (mut w, n, local, express) = shinkansen();
     for (id, h) in [(local, 30.0f32), (express, 10.0f32)] {
-        w.apply(Op::Schedule { id, tph: [60.0 / h, 60.0 / h, 0.0] }).unwrap();
+        set_headway(&mut w, id, [60.0 / h, 60.0 / h, 0.0]);
     }
     set_passing(&mut w, &n[1..6], true);
     let op = w.rows_ops(None, 4).unwrap();
@@ -278,7 +322,7 @@ fn own_weekends_run_the_slot_timetable() {
 fn nothing_to_time_leaves_no_variant() {
     let (mut w, _, local, express) = shinkansen();
     // the express alone: no trains of the local to wait or follow
-    w.apply(Op::Schedule { id: local, tph: [0.0, 0.0, 0.0] }).unwrap();
+    w.apply(Op::AutoTrains { id: local, auto: None, trains: Some([0; 3]) }).unwrap();
     for l in [local, express] {
         assert!(w.svc.lines[l as usize].runs.iter().all(|r| r.vars.iter().all(|v| v.is_empty())));
         assert!(w.svc.line_trips(&w.net, l as usize, 86400.0, 2.0 * 86400.0).iter().all(|t| t.var == 0));
@@ -332,22 +376,48 @@ fn headway_locals_make_their_next_departure() {
 }
 
 /// T-3542's moved hours meet stage 2: with the morning from 5 the hour 5-6 is a piece of the night's
-/// slot run at the morning's own rate; its locals are timed train by train like the morning's.
+/// slot run at the morning's own rate. It runs the morning's timetable (T-3931: on the night's, its
+/// round trip and return departures were sized on the night's averaged waits, so its locals, timed
+/// against the morning's expresses, missed their next departures and went back to the slot's
+/// timetable), so its locals are timed train by train like the morning's and every local in the
+/// night and the moved hour makes its next departure. Headway and count lines, with trains at night.
 #[test]
 fn a_moved_morning_hour_is_timed_too() {
+    for counts in [false, true] {
+        moved_morning_hour(counts);
+    }
+}
+
+fn moved_morning_hour(counts: bool) {
     let (mut w, n, local, express) = shinkansen();
+    for (id, medium) in [(local, 1800), (express, 600)] {
+        let k = w.net.line_trains[id as usize].unwrap();
+        let op = if counts {
+            Op::AutoTrains { id, auto: None, trains: Some(if id == local { [12, 4, 2] } else { [9, 9, 2] }) }
+        } else {
+            Op::AutoTrains { id, auto: Some([600, medium, 3600]), trains: Some([k[0], k[1], k[0]]) }
+        };
+        w.apply(op).unwrap();
+    }
     set_passing(&mut w, &n[1..6], true);
     let op = w.rows_ops(None, 5).unwrap();
     w.apply(op).unwrap();
     w.apply(Op::Hours { line: None, cuts: [5, 10, 16, 20, 24] }).unwrap();
+    let lead = w.svc.lattice(&w.net, local as usize).unwrap().lead;
     let t0 = 86400.0 + 5.0 * 3600.0;
-    let trips = w.svc.line_trips(&w.net, local as usize, t0, t0 + 3600.0);
-    let early: Vec<(u8, u8)> = trips.iter().filter(|t| t.dep >= t0 + 600.0).map(|t| (t.level, t.var)).collect();
-    eprintln!("5-6 locals (slot, variant): {early:?}");
-    assert!(early.iter().any(|x| x.1 > 0), "locals in the moved hour timed train by train");
-    let (bad, good) = bad_passes(&w, local, express, &n, &n[1..6], t0, t0 + 2.0 * 3600.0, false);
-    eprintln!("5-7: {good} passes, {} bad", bad.len());
-    assert!(bad.is_empty(), "{} bad passes, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
+    let trips = w.svc.line_trips(&w.net, local as usize, t0 - 6.0 * 3600.0, t0 + 3.0 * 3600.0);
+    let piece: Vec<(u8, u8)> = trips.iter().filter(|t| t.dep >= t0 - lead && t.dep < t0 + 3600.0 - lead).map(|t| (t.level, t.var)).collect();
+    eprintln!("counts {counts}: rates {:?} / {:?}; 5-6 locals (slot, variant): {piece:?}", w.net.line_tph[local as usize], w.net.line_tph[express as usize]);
+    assert!(!piece.is_empty() && piece.iter().all(|x| x.0 == 0 && x.1 > 0), "counts {counts}: locals in the moved hour run the morning's slot, timed train by train");
+    // (count lines' locals leave service in the morning itself too: their round trip is sized on
+    // the averaged waits, notes/T-3929.md "Left")
+    let lost: Vec<f64> = trips.iter().filter(|t| t.next.is_none() && t.dep >= t0 - 4.0 * 3600.0 && t.dep < t0 + 2.0 * 3600.0).map(|t| ((t.dep - 86400.0) / 36.0).round() / 100.0).collect();
+    eprintln!("counts {counts}: locals 1-7 leaving service at (h) {lost:?}");
+    assert!(counts || lost.is_empty(), "locals 1-7 leaving service: {lost:?}");
+    let (bad, good) = bad_passes(&w, local, express, &n, &n[1..6], t0 - 4.0 * 3600.0, t0 + 2.0 * 3600.0, false);
+    eprintln!("counts {counts}: 1-7: {good} passes, {} bad", bad.len());
+    assert!(good >= 8, "counts {counts}: the expresses pass the locals");
+    assert!(bad.is_empty(), "counts {counts}: {} bad passes, first {:?}", bad.len(), &bad[..bad.len().min(4)]);
 }
 
 /// T-3896: the variants are in a line's phase tables, which the page reads again only for the lines
@@ -363,13 +433,13 @@ fn a_line_timed_otherwise_is_noted_changed() {
     assert!(timed > 1);
     // the local's variants as if worked out otherwise before: the next retime puts them back
     w.svc.lines[local as usize].runs[0].vars[0].pop();
-    w.svc.timing_key.clear();
+    w.svc.forget_timing();
     w.svc.take_changed();
     w.retime();
     assert_eq!(w.svc.lines[local as usize].runs[0].vars[0].len(), timed);
     assert_eq!(w.svc.take_changed(), vec![local]);
     // timed the same: nothing noted
-    w.svc.timing_key.clear();
+    w.svc.forget_timing();
     w.retime();
     assert!(w.svc.take_changed().is_empty());
 }

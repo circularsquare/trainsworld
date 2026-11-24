@@ -106,7 +106,7 @@ the map's other controls', and the level buttons' numbers 15 px (also in the pho
   at 0.5x [T-2744] (`costTint` in
   `map/trackTagRows.ts`); its hover names the level [T-1159] (with ", high-speed track" after it)
   and gives the same upkeep line as the level buttons [T-2006].
-  The second row: **Regular** or **High speed** track [T-255, T-817], the
+  The second row: **Regular**, **High speed**, **Tram** or **Busway** track [T-255, T-817, T-2926, T-3378: Busway hides the snaps but beside, the count buttons and the ramp switch, and gives the snaps and count back when another type is picked], the
   selection bar's words, then three icon buttons, **Single track** (one line), **Double track** (two lines)
   and **Quad track** (four lines) [T-2931, T-3093]. Single is 0.6x the cost and the single-track upkeep shown;
   quad is two double tracks' price (2x the cost and upkeep shown). Single goes with every type, High speed and Tram too [T-3352]
@@ -144,10 +144,14 @@ the map's other controls', and the level buttons' numbers 15 px (also in the pho
   [track-and-service.md](track-and-service.md) 6.1]. Everything the player reads says level for the
   track's seven steps, never elevation ("Level", "Level +1", "Levels go from −3 to +3."; "ground
   level" is one of them) [T-2226, reversing T-526].
-- **The station bar**, one row: **Platform length** and its stepper, for new stations. The station
-  tool reads no other option. Tram stops and the other stations each keep their own length (tram 2
-  cars to start, regular and high speed 10 cars, shared by those two); the bar shows the length of
-  the kind under the pointer, else of the track type picked [T-3015].
+- **The station bar**, one row: first what the tool places [T-3999], four icon buttons with their names as hovers,
+  **Train station** (the default), **Tram stop**, **BRT station** and **Port**, remembered per browser (`build.stationKind`);
+  on a phone one button showing the picked kind, which opens the four above the bar. With Train station or Tram stop picked,
+  **Station length** (the label left out on a phone) and its stepper, then the one or both tracks buttons (T-3332). Each
+  kind places only its own: a train station snaps to train track only (never tram track), a tram stop to tram track only,
+  and on open ground a train station brings regular or high-speed track (the track bar's high speed) and a tram stop tram
+  track, whatever type the track tool has picked [T-4010]. Tram stops and train stations each keep their own length (tram
+  2 cars to start, up to 4; train 10 cars to start, no cap of 4); the bar shows the length of the kind picked.
 - The level, the ramp switch, the track type, both target speeds, the Advanced row, the keep placing switch, the
   snap and beside switches and both platform lengths are remembered per browser (localStorage with the other panel settings,
   not in the save) [T-468]; keep placing is on by default [T-942]. A browser with nothing remembered
@@ -165,7 +169,7 @@ the map's other controls', and the level buttons' numbers 15 px (also in the pho
 
 [T-2284; `MapToolBar` in `ui/ToolBar.tsx`, `ui/ToolNotes.tsx`, `CLICK_MODE_COLOURS` in
 `game/palette.ts`; design notes/T-2267.md 3.7] Each click mode but plain selecting has its own
-colour: track `#0a819d` (regular; high speed `#5a5fc8`, tram `#c0603a`, `TRACK_TYPE_COLOURS`, T-3693), station `#8d71b1`, delete `#d63f73`, select tool `#9c7b31`, bus `#a09e2d`,
+colour: track by type from `MODE_ICON_COLOURS` (rail `#3a66ac`, high speed `#44519d`, tram `#469bcb`; `TRACK_TYPE_COLOURS`, T-3693, T-4207), station `#8d71b1`, delete `#d63f73`, select tool `#9c7b31`, bus `#a09e2d`,
 ferry `#16716f`, line stops the edited line's own colour (kept legible on the shade, `legibleOn`; `#d777ed`
 while no line is picked yet), trip explorer `#268769`, station building `#a15b7b`, passage
 `#b0866a`, the same in both shades (chosen 11 or more CIEDE2000 from every colour the game draws).
@@ -203,7 +207,8 @@ mouse moving again takes it back).
   end or the handle, or confirm, places the segment, and with keep placing the next starts at its
   end. A tap on the start with no end waiting ends the run, as a click on it does.
 - **Stations**: on track, a tap shows the platform ghost and its tag, a second tap or confirm
-  places it. A tap on open ground is refused at once (no second tap, as a click). After
+  places it. On open ground the first tap is the platform's end and the next places it toward that tap; a BRT station
+  or a port is placed by one tap (T-3999). After
   it is placed no ghost shows there until the finger moves or taps elsewhere [T-1756].
 - **Delete**: a tap shows what would go (drawn red, its name in the tag); confirm or a second tap
   removes it (built things still ask), cancel drops it.
@@ -367,8 +372,16 @@ Track is drawn through points, double and quad alike [T-418, T-422, T-423]. The 
   shows in full zoomed out [T-1038]. The same holds
   for every placement ghost: a dragged corner or node, a moved pick, a crossover, a station's own
   piece of track.
-- **Waiting** [T-1039]: when a click or the newest ghost has waited on the clock worker more than
-  300 ms, a small spinner leads the tag.
+- **Following the pointer** [T-4136]: the ghost's end is at the pointer every frame. Until the clock worker's answer for
+  the pointer's own spot lands, the last answer is shown bent to it: turned and scaled about the start, eased in from the
+  start when the start has a heading (so the ghost still leaves along the track), whole from a free start; its labels,
+  circle and tag move with it and keep that answer's figures. Every answer for the run is shown as it lands, also one the
+  pointer has since left; a click takes only the answer for its own spot (T-830). Before the run's first answer there is
+  nothing to bend, so the ghost is a stand-in from what the page has [T-4143]: from a start on track, the circular arc
+  that leaves along the track toward the pointer and ends at it; else a straight line; no figures, its heights from the
+  start's level to the end's. The first answer replaces it.
+- **Waiting** [T-1039]: when a click has waited on the clock worker more than 300 ms, or no answer has come for the
+  ghost for 300 ms, a small spinner leads the tag.
 - **Placed blueprint track** is drawn as blue rails ([ui-map.md](ui-map.md) "Lines and track").
 - Nothing outside the track tool reads its settings [T-3153]: the delete and select tools, drag edits and the station tool
   pick and describe any track whatever type, count, level, ramp or speed the track bar holds (only the track tool
@@ -418,7 +431,7 @@ point. Between two points the route takes the shortest path over the basemap's z
 (`busRoads.ts`; trunk, primary, secondary, tertiary, minor and bus-only roads, and motorways, so the
 long bridges and tunnels most cities carry on them (T-2469); any direction, or with Settings > "Buses obey one-way streets" ticked only the way a one-way street runs (T-3480, Renkon's open-source PR 1), length as it is, no turn
 rules; service ways, tracks and paths are left out, except that a plain service road (no driveway, alley or parking aisle tag, open to all, at ground level) at most 60 m long with each end within 3 m of a street can be driven, and is never landed on (T-2882)), at most 3 times the straight line or 1 km more
-than it, whichever is longer. While the tool is on, the roads it may use carry a teal hint (`bus_roads_hint`), from zoom 11; the fast ones, trunk roads and motorways with their ramps (`fastRoadExpr` in `busRoads.ts`, the roads a route marks `K_TRUNK`), are drawn in blue instead (`BUS_FAST_COLOUR`, light #3a4fb0 at 0.85 opacity, dark #a6bcff at 0.9), 1.2 times its width [T-3829; Anita picked it from three looks]. With that setting ticked (off by default, `display.busOneWay`; with it off a route is as it was) a one-way street is the basemap's `oneway`: 1 runs with the line as drawn, -1 against it, and a street with no `oneway` runs both ways (`RoadGraph.path`). The route goes round rather than back down a one-way street. While the bus tool is on and the setting is ticked, those one-way streets carry small arrows in the road hint's own colour on that road (teal, blue on a fast road), pointing the way traffic runs (turned round where `oneway` is -1), from zoom 15, drawn about 1.2 times the road hint's own stroke on that road at each zoom (`bus_roads_oneway` in `basemap.ts`). A two-way street stays a plain line. A line set to both ways, and one that loops back, still runs that drawn road in reverse on the way back (open-source issue 8, a bus going the wrong way round a roundabout, is the same case). Roads join where a road's vertex comes within about 1 m of another road
+than it, whichever is longer. While the tool is on, the roads it may use carry a teal hint (`bus_roads_hint`), from zoom 11; the fast ones, trunk roads and motorways with their ramps (`fastRoadExpr` in `busRoads.ts`, the roads a route marks `K_TRUNK`), are drawn in blue instead (`BUS_FAST_COLOUR`, light #3a4fb0 at 0.85 opacity, dark #a6bcff at 0.9), 1.2 times its width [T-3829; Anita picked it from three looks]. Under the hint, the ground that is in town for BRT (a plain bus moves under BRT's floor there, `streets::brt_in_town`) is tinted faintly green (`bus_town_fill`: light #22a43c at 0.22 opacity, dark #5fd070 at 0.17), from zoom 11: the 2 km zone squares of the street speeds loaded, merged into polygons by the sim (`TrackApi.last_town_outline`, sent by the clock worker as each pack's speeds land, `map/townArea.ts`); where no pack's speeds are in, it is out of town, as in the sim [T-3913; `?town=a|b|c|now|khaki|none` swaps the look, notes/T-3913.md]. With that setting ticked (off by default, `display.busOneWay`; with it off a route is as it was) a one-way street is the basemap's `oneway`: 1 runs with the line as drawn, -1 against it, and a street with no `oneway` runs both ways (`RoadGraph.path`). The route goes round rather than back down a one-way street. While the bus tool is on and the setting is ticked, those one-way streets carry small arrows in the road hint's own colour on that road (teal, blue on a fast road), pointing the way traffic runs (turned round where `oneway` is -1), from zoom 15, drawn about 1.2 times the road hint's own stroke on that road at each zoom (`bus_roads_oneway` in `basemap.ts`). A two-way street stays a plain line. A line set to both ways, and one that loops back, still runs that drawn road in reverse on the way back (open-source issue 8, a bus going the wrong way round a roundabout, is the same case). Roads join where a road's vertex comes within about 1 m of another road
 at its level, or where two ground-level roads cross, since the tiles drop the junction's vertex from a road
 running straight through it (T-2873; a motorway joins another motorway, and its own ends join any road).
 A click within 100 m of a road lands on the nearest one, a motorway
@@ -444,7 +457,7 @@ parallel road 4 to 40 m across before the path follows a road, the hop counted a
 route turns there instead of running to the next junction and back (T-1512; `across` in `roadGraph.ts`). The roads come from
 the basemap's own tile server at zoom 14, whatever the map's zoom. While drawing,
 the route shows in the line's colour with the stops the sim would place (ends as small rounded
-squares, a ring round each train station it meets, small rings between and the street stops), and
+squares, a ring round each train station it meets, small rings for the stops between), and
 the tag by the pointer gives the road length and the price. What those stops will connect with is lit
 as hovered things are (T-2993, `game/busLinks.ts` `routeMeets`): each train station it stops at, with a
 built line's dashed transfer line from the stop to it, and each other bus line it will change with, one
@@ -529,6 +542,12 @@ lighter; at most 16 of each.
   Away from stations, within 100 m of where the route passes nearest another bus line's stop that is within
   100 m of the route (`BUS_XFER_M`, demand's station merge; T-2992), the marker snaps there and the tag names
   that line, so the stop is one place with the other line's.
+  Holding Ctrl (Cmd on a Mac) while placing (T-4069) turns both snaps off: the marker, and the stop, go where the
+  route is nearest the pointer, within 8 px of it, and the stop is never a station's (`BusRoute::exact`, saved in
+  `LBE1`; the Ctrl-placed point keeps that through a redraw). It still needs the route's road and stays 50 m
+  from any other stop; demand still joins it to another line's stop within 100 m, and the tag names that line.
+  The marker always sits where the stop will land, with or without Ctrl; where it is snapped the tag has a
+  last row, "Ctrl+click to place without snapping", and holding or letting go of Ctrl moves the marker at once.
   A click on the route adds a stop, a click on a stop takes it out, each one edit and one undo; the
   two ends stay. On a loop (T-3123) the closing stop is the end, and the last stop between offers no removal
   (it has no tag and takes no click); on a route that loops back a stop on the way out is drawn on both passes,
@@ -541,7 +560,7 @@ lighter; at most 16 of each.
 
 [T-2194; `map/ferryDraw.ts`; design notes/T-2177.md 3.2] The Build tab's Ferry button (beside Bus,
 each half the row, key O) or O from any tab starts
-the ferry tool for a new line. The player places ports, and waypoints where the route must pass; between
+the ferry tool for a new line (a lone port is placed with the station tool, "Placing stations"). The player places ports, and waypoints where the route must pass; between
 them the route is found over the basemap's water (track-and-service.md 6.8), never drawn by hand.
 
 - **A click** within the reach of the shore, on land or on the water, puts a new port on the nearest shore
@@ -687,9 +706,10 @@ switch on, the track tool follows the real network the layer draws.
 
 [T-065, T-311, T-312]
 
-- **A click leaves the ghost standing** [T-2763; `addPending` in `map/tools.ts`] where it was clicked, until
-  the clock worker's answer puts the station in the world (0.3 to 3 s on the real save, the lines through a
-  split piece drawing again); a refusal takes it away.
+- **A click draws the station at once** [T-2763, T-4146; `map/stationAhead.ts`, `game/pending.ts`]: the ghost's box
+  is drawn as the placed station (BRT and open-ground stations too, an open-ground one with its piece of track) until
+  the network holding it is drawn, kept while other spots near are tried; a refusal takes it away with the notice.
+  Not when the ghost is red or held.
 - **The ghost** is the platform's full box at its true length at every zoom: blue (`#2f6fe0` fill,
   `#1c4fb8` outline) where a click would place it and red (`#e03c3c`, `#b91f1f`) where it would be
   refused, fixed colours with a thin white halo; a refused spot shows the reason in the tag. On
@@ -739,7 +759,7 @@ switch on, the track tool follows the real network the layer draws.
 - **Placement help** [T-312, T-412]: with the pointer snapped to track the tag says how far the
   spot is, in a straight line, from the station placed last in this session ("1.2 km from W 46th
   St"; nothing before the first), then roughly how many local trips there are within 1 km
-  (1 mile in US units): "12k trips within 1km", two significant figures, "Under 50" below that,
+  (1 mile in US units; within 600 m, 1,970 ft, for a BRT station, the bus corridor `CORRIDOR_M`, T-4135): "12k trips within 1km", two significant figures from 50 up, the exact count below that ("1 trip", "0 trips"),
   over a thin bar of its size on a log scale, empty at 1,000 and full at 1M, ticks at 10k and 100k
   (`NEAR_BAR_*` in `map/tools.ts`) [T-2271]. The count is the day shown. It is the Homes and Destinations bubbles' legs (all purposes) over the cells whose centres
   are inside the circle, from the zone in view only; a trip with both ends inside counts twice.
@@ -747,13 +767,29 @@ switch on, the track tool follows the real network the layer draws.
   changes, so the count is there when the pointer reaches track; while a newer solve's legs are
   on their way the last ones received stay in use, and a failed ask is repeated 2 s later [T-2430].
   A refused spot shows only the reason. Two thin rings at 1 km and
-  2 km of ground distance (0.5 and 1 km for a tram stop, T-3001), each labelled at its top, follow the spot under the ghost
+  2 km of ground distance (0.5 and 1 km for a tram stop, T-3001; one at 600 m for a BRT station), each labelled at its top, follow the spot under the ghost
   (`stationRings` in `map/tools.ts`, an SVG layer, fixed grey ink at 35%).
-- **Only on track** [T-1820]: with the pointer further than the snap radii from track and nodes, the
-  ghost is a refusal: no platform, no rings, the tag "Place stations on track" in red by the pointer.
-  A click there places nothing and says the same in the notice. The game has no station on open
-  ground any more; a save's old ones stay. The sim's `add_free_station` and the worker's free
-  `StationAt` stay for other callers, and the page no longer calls them.
+- **On open ground** [T-794, T-907; taken out by T-1820, back with T-3999 at players' asking; `map/stationFree.ts`]:
+  with the pointer further than the snap radii from track and nodes, a ring marks the spot and the tag says "Click to
+  start a station here" over the placement help. The first click is one end of the platform; then the platform points
+  from it toward the pointer, at the station length set, with its own straight piece of track 10 m longer at each end
+  drawn as the track ghost (track-and-service.md 6.1 "Placing stations"), the tag "Click to set the station's
+  direction", "220 m of new track, $106M" (the worker's price for both, `preview_free_station`) and the help, or the
+  refusal in red. The second click places both as one edit; the pointer within 8 px of the first end keeps the last
+  heading. Esc, another tool or another kind drops the first end. By touch the first tap places the end and the next
+  places the station toward it; the bar's cancel drops the end.
+- **BRT station** [T-3378, T-3999]: never on track. The ghost is a tram stop's box beside the bus route or road the
+  station would take (track-and-service.md 6.7 "BRT stations"), the tag "BRT station" over the help; with neither
+  near, "Place BRT stations beside a road" in red. A click or tap places it at once.
+- **Port** [T-3999; `map/stationPort.ts`]: a port on no ferry line, found as the ferry tool finds one ("Drawing a
+  ferry line"): the same ghost, tags and refusals, and a pointer on a port the network has, or a landing within 30 m of
+  one, says its name over "There is already a station here." A click or tap places a blueprint port (US$10M,
+  `TrackApi::add_port`), which a ferry line drawn later stops at as at any port.
+- **Auto** [T-4105; `map/stationAuto.ts`]: the first button of the kind group; a browser that never picked starts on Train station
+  (the pick, Auto included, is remembered). The kind comes from what is under the pointer, first match wins: track
+  (a train station, or a tram stop where no train track is within 4 px of the nearest), a road a bus may use or a bus
+  route within 12 px (at least 8 m, at most 50 m), a ferry route, water or a shore a port could take (a port), else a
+  train station on open ground. The ghost is that kind's, and the tag's trips row starts with that kind's toolbar icon (T-4135). The kind holds while a free station's first end is down.
 - How a new station is named: [track-and-service.md](track-and-service.md) 6.1. A double click on
   the name in its inspector renames it.
 
@@ -780,9 +816,11 @@ removing that piece would only lay it back; zoomed out, or from the selection ba
 Delete or Backspace is its Remove button; with nothing selected, Delete picks the delete tool; while drawing, Delete takes the last segment back like Backspace. A piece beside a through station is drawn red, and named by its
 length, only past the platform's end, which is all that goes ([track-and-service.md](track-and-service.md)
 6.1, T-1161; `stationTrim` in `game/remove.ts`). Blueprint is
-removed at once (undoable; [T-2763] a piece no line runs over and no station touches leaves the screen at the click, `hideEdge` in `map/renderer.ts`, and the line-effects question to the clock worker is skipped; the model follows when the worker answers); anything constructed only after a yes in the confirmation dialog
+removed at once (undoable; [T-2763] a piece no line runs over and no station touches skips the line-effects question to the clock worker); anything constructed only after a yes in the confirmation dialog
 ("Remove 1.2 km of built track? Nothing is refunded." with Remove and Keep; Esc is Keep). The
-inspectors' Remove buttons and the Select tool's Remove ask the same way. **A big delete asks
+inspectors' Remove buttons and the Select tool's Remove ask the same way. Track and stations leave the screen at the click (or
+the yes) [T-4146; `map/stationAhead.ts`]: a line the station ended loses that stretch at once, other lines' new
+ways follow when the worker has applied the removal, and a refusal brings it all back. **A big delete asks
 too** [T-1649; `isBigDelete`, `removeQuestion` in `game/remove.ts`]: more than 50 km of track, or a
 tenth of the network's, whichever is less (never under 5 km), blueprint or built, in the same
 dialog, worded "Delete 4,499 km of built track? Nothing is refunded." with "Delete track" and "Keep

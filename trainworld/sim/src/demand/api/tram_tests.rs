@@ -73,28 +73,37 @@ fn tram_sections_are_three_quarters_of_a_car() {
     assert_eq!((0..net.st_x.len()).filter(|&s| net.tram_only(s)).count(), 4, "the stop merged into the metro station is not tram-only");
 }
 
-/// A tram along a corridor carries at least what the bus it replaces does: same stops, same trains an
-/// hour, same hop times; the bus is a third of a car, the tram two sections of three quarters. With no bus
-/// boarding cost (T-3856) the two board alike, so on this light corridor they carry the same, to rounding.
+/// A tram along a corridor carries at least what the bus it replaces does when the two board alike: same
+/// stops, same trains an hour, same hop times; the bus is a third of a car, the tram two sections of three
+/// quarters. Since T-3910 a tram trip pays the 2 + 2 boarding minutes at its ends and a bus trip none (T-3856), so
+/// with the cost on the tram carries less than the bus on this corridor, but still a good part of it.
 #[test]
 fn a_tram_carries_at_least_the_bus_it_replaces() {
-    let load = |tram: bool| {
+    let load = |tram: bool, boarding: bool| {
         let cars = if tram { 2.0 } else { crate::demand::network::BUS_CARS };
         let (mut api, xy, counts, stops, times, tph, c) = with_line(8, -3500.0, 600.0, 1000.0, cars);
         if tram {
             api.set_tram_lines(&[0, 0, 1]);
         }
-        // (T-3888: its stops on the street, at grade, as a bus's; the metro's below)
-        let grade: Vec<u8> = (0..stops.len()).map(|k| (k >= stops.len() - 8) as u8).collect();
-        api.set_stairs(&[], &grade);
+        if !boarding {
+            api.base.train_in_min = 0.0;
+            api.base.train_out_min = 0.0;
+        }
+        // (T-4041: its stops on the street, as a bus's, pay no boarding cost; the metro's do)
+        let street: Vec<u8> = (0..stops.len()).map(|k| (k >= stops.len() - 8) as u8).collect();
+        api.set_stairs(&[], &street);
         api.set_network(&xy, &counts, &stops, &times, &tph, &c).unwrap();
         assert!(api.solve(0));
         // the third line's route nodes are the last 16
         let b = api.board(0);
         b[b.len() - 16..].iter().sum::<f32>()
     };
-    let (bus, tram) = (load(false), load(true));
-    assert!(tram >= bus * 0.9999, "tram {tram} against bus {bus}");
+    // boarding alike (none): the tram carries at least the bus
+    let (bus, tram) = (load(false, false), load(true, false));
+    assert!(tram >= bus * 0.9999, "no boarding cost: tram {tram} against bus {bus}");
+    // with the boarding cost on (T-4041: paid at the metro's stops, not at the tram's on the street): not by more than half less
+    let (bus, tram) = (load(false, true), load(true, true));
+    assert!(tram >= bus * 0.5, "boarding cost: tram {tram} against bus {bus}");
 }
 
 /// T-3903: a per-line or per-stop input of the wrong length is an error, not read as none (the page's copy of a
@@ -111,6 +120,47 @@ fn a_per_line_input_of_the_wrong_length_is_an_error() {
     assert!(err.contains("stops at grade"), "{err}");
     api.set_stairs(&[], &[]);
     api.set_network(&xy, &counts, &stops, &times, &tph, &cars).unwrap();
+}
+
+/// T-3909: the everyday layer, given the tram flags as the worker gives both populations, solves on the network the
+/// commutes do (a tram's three quarters of a car, the same tram-only stops); with no flags it would hold the tram as
+/// a train, and its tram riders differ.
+#[test]
+fn everyday_trips_see_the_tram_lines_as_commutes_do() {
+    use crate::demand::everyday::EverydayApi;
+    // the small pack with errand and leisure places: a cell's jobs each
+    let (h, mut b) = super::tests::small_pack();
+    let jobs = DemandApi::new(&h, &b).unwrap().city.jobs.clone();
+    let mut h: serde_json::Value = serde_json::from_str(&h).unwrap();
+    for name in ["errand_jobs", "leisure_jobs"] {
+        let offset = b.len();
+        b.extend(jobs.iter().flat_map(|v| v.to_le_bytes()));
+        h["arrays"].as_array_mut().unwrap().push(serde_json::json!({"name": name, "dtype": "f32", "per": "cell", "count": jobs.len(), "offset": offset}));
+    }
+    let h = h.to_string();
+    let open = |tram: bool| {
+        let (mut api, xy, counts, stops, times, tph, cars) = with_line(5, -300.0, 300.0, 150.0, 2.0);
+        let mut ev = EverydayApi::beside_with(&api, &h, &b, &[]).unwrap();
+        if tram {
+            api.set_tram_lines(&[0, 0, 1]);
+            ev.set_tram_lines(&[0, 0, 1]);
+        }
+        api.set_network(&xy, &counts, &stops, &times, &tph, &cars).unwrap();
+        ev.set_network(&xy, &counts, &stops, &times, &tph, &cars).unwrap();
+        (api, ev)
+    };
+    let (api, mut ev) = open(true);
+    let (a, e) = (api.svc.as_ref().unwrap(), ev.engine().svc.as_ref().unwrap());
+    assert_eq!(e.cars, vec![10.0, 8.0, 1.5], "the everyday layer's tram: three quarters of a car a section");
+    assert_eq!(e.st_tram, a.st_tram);
+    assert_eq!(e.st_tram.iter().filter(|&&t| t).count(), 5);
+    assert!(e.same_layout(a), "the everyday layer's network is the commutes'");
+    let (_, mut plain) = open(false);
+    assert!(ev.solve(0) && plain.solve(0));
+    // the tram line's route nodes are the last 10
+    let on = |b: Vec<f32>| b[b.len() - 10..].iter().sum::<f32>();
+    let (with, without) = (on(ev.board(0)), on(plain.board(0)));
+    assert!(with > 0.0 && (with - without).abs() > 1e-3 * without, "tram riders {with} with the flags, {without} without");
 }
 
 /// Solve time with and without a tram line of 20 stops on top of the 34 metro ones (printed, not
@@ -142,4 +192,22 @@ fn tram_solve_time() {
     };
     let (a, b) = (time(false), time(true));
     println!("metro only {a:.3} s, with 20 tram stops {b:.3} s, ratio {:.2}, stops 34 -> 54 ({:.2})", b / a, 54.0 / 34.0);
+}
+
+/// T-3378: a BRT station (the snapshot's `upgrades::BRT_STATION`) takes a tram stop's slot, with no tram line in the
+/// game, and a wait there counts as in a waiting room (T-4012: built in).
+#[test]
+fn a_brt_station_takes_a_tram_stops_slot_and_a_waiting_rooms_wait() {
+    use crate::demand::kernel::wait_factor;
+    use crate::track::upgrades::{BRT_STATION, WAITING_ROOM_WAIT};
+    let (mut api, xy, counts, stops, times, tph, cars) = with_line(5, -300.0, 300.0, 150.0, 2.0);
+    let n = xy.len() / 2;
+    // the new line's five stops are BRT stations
+    api.set_upgrades(&(0..n).map(|s| if s >= n - 5 { BRT_STATION } else { 0 }).collect::<Vec<u8>>());
+    api.set_network(&xy, &counts, &stops, &times, &tph, &cars).unwrap();
+    let net = DemandApi::period_net(api.svc.as_ref().unwrap(), 0);
+    let brt: Vec<usize> = (0..net.st_x.len()).filter(|&s| net.tram_only(s)).collect();
+    assert_eq!(brt.len(), 5, "the five BRT stations take tram stops' slots");
+    assert!(brt.iter().all(|&s| wait_factor(&net, s) == WAITING_ROOM_WAIT));
+    assert!((0..net.st_x.len()).filter(|s| !brt.contains(s)).all(|s| wait_factor(&net, s) == 1.0));
 }

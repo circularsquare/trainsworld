@@ -6,7 +6,7 @@ import { queryClock } from "../workers/clockClient";
 import { inkOn, LEVEL_COLOURS } from "../game/palette";
 import type { Level, TrackEdge } from "../game/types";
 import { distUnit, distance, levelLabel, levelName, millions, money, moneyCash, perDistance, speed, unitShort, upkeepText } from "../game/format";
-import { edgeUpkeep, stationUpkeepOf } from "../game/regionMoney";
+import { edgeUpkeep, nodeUpkeepOf } from "../game/regionMoney";
 import { bpPicked, clearBpPicked, dropPicked, doubleUpPicked, doubleUpPieces, enableAll, limitPieces, oneWayPicked, oneWayPieces, reversePicked, kindPicked, levelPicked, offTotals, pickedState, removePicked, switchPicked, tracksPicked } from "../game/blueprintPick";
 import { canRebuild, type RebuildKind, rebuildKind, rebuildLevel, rebuildPicked, rebuildQuote, rebuildTip, rebuildTracks } from "../game/rebuild";
 import { busUpkeepDay, liveMoney, moneyState } from "../game/money";
@@ -16,13 +16,14 @@ import { constructBlueprints } from "../game/lineActions";
 import { edit, say, world } from "../game/world";
 import { setOneWays } from "../game/oneWay";
 import { mapBearing } from "../map/live";
-import { tipGrid } from "./tip";
+import { tipGrid, tipMuted } from "./tip";
 import { useBlueprintPieces, useBlueprintQuote } from "../game/quotes";
 import { blueprintParts, bpHover, switchRow, type BpPart } from "../game/blueprintStretches";
 import { locateNodes } from "./locate";
 import { redo, undo } from "../game/fareUndo";
 import { Icon, LevelButtons, Stepper, TrackCountButtons } from "./widgets";
 import { usePieceLimit } from "./inspector/PieceLimit";
+import { withShown } from "../game/pieceAhead";
 import { SWITCH_PICK_KEY } from "./toolKeys";
 import { TERRAIN_NAMES, TERRAIN_SURCHARGES, WATER_SURCHARGE } from "../game/terrain";
 import { kindLevelMult, TRACK_SPECS } from "../game/trackKinds";
@@ -38,10 +39,12 @@ const SINGLE_ROW_OFFSET = 3;
 const TRAM_ROW = 4;
 /** and for street tram track (sim `STREET_TRAM_ROW`, T-2927) */
 const STREET_TRAM_ROW = 5;
+/** and for a busway (sim `BUSWAY_ROW`, T-3378), always double */
+const BUSWAY_ROW = 9;
 /** the quote row of tram cars (sim `blueprint_cost_items`; 14 is a ferry route) */
 const TRAM_CARS = 15;
-/** T-3907: and of bus routes' BRT, road metres */
-const BRT = 16;
+/** T-3907: and of bus routes' BRT, road metres; T-3378: and of BRT stations, a count */
+const BRT = 16, BRT_STATIONS = 17;
 
 const NOUN = ["track", "station", "junction", "flyover", "flatCrossing", "car", "ground", "roadCrossing", "stationUpgrade", "passage", "route", "bus", "port", "boat", "ferryRoute", "tram car"];
 /** "3 stations", "2 new cars": a counted noun by its id, the plural chosen in the message */
@@ -55,6 +58,7 @@ function rowName(r: BlueprintItem) {
   if (r.kind === 11) return counted("newBus", r.quantity);
   // T-2193: ports, boats and a ferry route's metres (free)
   if (r.kind === 12) return counted("port", r.quantity);
+  if (r.kind === BRT_STATIONS) return t("blueprint.brtStations", { count: r.quantity });
   if (r.kind === 13) return counted("newBoat", r.quantity);
   if (r.kind === 14) return t("blueprint.ferryRoute", { distance: distance(r.quantity) });
   if (r.kind === TRAM_CARS) return t("blueprint.newTramCars", { count: r.quantity });
@@ -62,6 +66,7 @@ function rowName(r: BlueprintItem) {
   if (r.kind === 7) return counted("roadCrossing", r.quantity);
   if (r.kind === 0 && (r.tracks === TRAM_ROW || r.tracks === TRAM_ROW + SINGLE_ROW_OFFSET)) return t("blueprint.lengthLevelTram", { distance: distance(r.quantity), level: levelWords(r) });
   if (r.kind === 0 && (r.tracks === STREET_TRAM_ROW || r.tracks === STREET_TRAM_ROW + SINGLE_ROW_OFFSET)) return t("blueprint.lengthLevelStreetTram", { distance: distance(r.quantity), level: levelWords(r) });
+  if (r.kind === 0 && r.tracks === BUSWAY_ROW) return t("blueprint.lengthLevelBusway", { distance: distance(r.quantity), level: levelWords(r) });
   if (r.kind === 0) return t("blueprint.lengthLevel", { distance: distance(r.quantity), level: levelWords(r) });
   return t("blueprint.withLevel", { what: counted(NOUN[r.kind] || "item", r.quantity), level: levelWords(r) });
 }
@@ -89,9 +94,9 @@ function rowTip(r: BlueprintItem) {
   let base: string;
   const water = r.wet ? WATER : 1;
   const wet = () => { if (r.wet) factors.push([t("blueprint.overWater"), "", WATER]); };
-  const one = r.kind === 0 && r.tracks >= SINGLE_ROW_OFFSET + HSR_ROW;
+  const one = r.kind === 0 && r.tracks >= SINGLE_ROW_OFFSET + HSR_ROW && r.tracks !== BUSWAY_ROW;
   const row = one ? r.tracks - SINGLE_ROW_OFFSET : r.tracks;
-  const mult = (l: Level) => (r.kind === 0 && row === TRAM_ROW ? kindLevelMult("tram", l) : r.kind === 0 && row === STREET_TRAM_ROW ? kindLevelMult("streetTram", l) : MULT[l]);
+  const mult = (l: Level) => (r.kind === 0 && row === BUSWAY_ROW ? kindLevelMult("busway", l) : r.kind === 0 && row === TRAM_ROW ? kindLevelMult("tram", l) : r.kind === 0 && row === STREET_TRAM_ROW ? kindLevelMult("streetTram", l) : MULT[l]);
   const lvl = (l: Level) => { if (mult(l) !== 1) factors.push([levelName(l), "", mult(l)]); };
   if (r.kind === 0) {
     const [shown] = lenKm(n / 1000);
@@ -101,7 +106,7 @@ function rowTip(r: BlueprintItem) {
     // "Cost factor × 3"
     // (tram track pays a share of each, T-2928, T-3004)
     const adds: [string, number][] = [];
-    const spec = row === STREET_TRAM_ROW ? TRACK_SPECS.streetTram : row === TRAM_ROW ? TRACK_SPECS.tram : TRACK_SPECS.regular;
+    const spec = row === BUSWAY_ROW ? TRACK_SPECS.busway : row === STREET_TRAM_ROW ? TRACK_SPECS.streetTram : row === TRAM_ROW ? TRACK_SPECS.tram : TRACK_SPECS.regular;
     if (r.ground > 0) adds.push([TERRAIN_NAMES[r.ground] ?? t("blueprint.roughGround"), (TERRAIN_SURCHARGES[r.ground] ?? 0) * spec.terrain]);
     if (r.wet) adds.push([t("blueprint.overWater"), WATER_SURCHARGE * spec.water]);
     if (adds.length) {
@@ -133,6 +138,9 @@ function rowTip(r: BlueprintItem) {
     const m = moneyState.peek();
     base = t("blueprint.baseCostDist", { price: mil(perDistance((r.kind === BRT ? m?.brtRouteKm : m?.busRouteKm) ?? 0)), unit: distUnit() });
     factors.push([t("blueprint.length"), withUnit(n / 1000 / perDistance(1)), 1]);
+  } else if (r.kind === BRT_STATIONS) {
+    base = t("blueprint.baseCostBrtStation", { price: money(r.cost / Math.max(1, n)) });
+    if (n !== 1) factors.push([t("blueprint.stationsFactor"), String(n), 1]);
   } else if (r.kind === 14) {
     base = t("blueprint.ferryFree");
   } else {
@@ -156,7 +164,7 @@ export function BlueprintControls() {
   if (w && m && total > 0) {
     for (const e of w.edges) if (!e.built && !e.off) upkeep += edgeUpkeep({ ...e, built: true }, m);
     // T-2194: a port's upkeep is its own, a fifth of a station's
-    for (const s of w.save.stations) if (!s.built && !s.off) upkeep += s.port ? m.upkeepPort * m.economy : stationUpkeepOf(m, s);
+    for (const s of w.save.stations) if (!s.built && !s.off) upkeep += nodeUpkeepOf(m, s);
     for (const st of Object.values(w.lineStats)) if (st.bus && !st.bus.built && !st.bus.ferry) upkeep += busUpkeepDay(m, st.bus) * m.economy;
   }
   return (
@@ -248,7 +256,7 @@ function WayArrow({ e }: { e: TrackEdge }) {
  * its way as an arrow, and Use automatic way (T-3137) for the pieces pinned against the way their run gives. */
 function PickOneWay() {
   const p = bpPicked.value, w = world.value;
-  const pieces = useMemo(() => oneWayPieces(p), [p, w]);
+  const pieces = withShown(useMemo(() => oneWayPieces(p), [p, w]));
   if (!pieces.length) return null;
   const all = pieces.every((e) => e.oneWay), some = pieces.some((e) => e.oneWay);
   const pinned = pieces.filter((e) => !!e.setWay && (e.setWay === 3 ? 0 : e.setWay) !== (e.autoWay ?? 0));
@@ -290,7 +298,7 @@ function PickOnePiece() {
  * selecting too, one piece included, since the track panel has no controls. */
 function PickLimit() {
   const p = bpPicked.value, w = world.value;
-  const pieces = useMemo(() => limitPieces(p), [p, w]);
+  const pieces = withShown(useMemo(() => limitPieces(p), [p, w]));
   const { value, on, toggle, step } = usePieceLimit(pieces);
   if (!pieces.length) return null;
   const label = t("blueprint.speedLimit");
@@ -376,7 +384,7 @@ export function BlueprintBar() {
       <PickDoubleUp />
       <PickOneWay />
       <PickLimit />
-      <button class="btn text" data-tip={t("blueprint.removeTip", { keyed: true })} onClick={() => void removePicked()}><Icon.bin /><span class="bp-label">{t("blueprint.remove")}</span></button>
+      <button class="btn text" data-tip={t("blueprint.removeTip", { keyed: true }) + tipMuted(t("common.shiftSkip"))} onClick={(e) => void removePicked(e.shiftKey)}><Icon.bin /><span class="bp-label">{t("blueprint.remove")}</span></button>
       <button class="btn text" data-tip={t("blueprint.clearTip")} onClick={() => (keys ? clearBpPicked() : dropPicked())}><Icon.cross /><span class="bp-label">{t("blueprint.clear")}</span></button>
       </div>
       {canLevel && levels && (

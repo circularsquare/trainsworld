@@ -13,7 +13,7 @@ import { DAY_KINDS, dayKindOf } from "../game/days";
 import { kindOfIn, rowOfDay, rowOfIn, type DayRow, type HolidayData } from "../game/holidayCalendar";
 import { shiftAt } from "../game/localTime";
 import { between, lagged, table, type KindOf, type PerHour } from "../game/moneyTiming";
-import { type PackedOutlines } from "../map/coarseOutlines";
+import { type PlaceOutlines } from "../map/coarseOutlines";
 import { NEW_LINE_CARS, START_CLOCK, type GameMode, type DayLedger, type HourLedger, type NewHeadways, type GuideSave, type Achieved } from "./saveFile";
 import type { FromClock } from "./protocol";
 import { loadFailKey } from "../game/loadText";
@@ -94,8 +94,8 @@ export function placeLineCountries() {
 }
 /** T-1265: the coarse outlines name each station's zone (game/cities.ts `cityWithin`); the page's copy, posted
  * once after init (T-2802), and the lines' countries placed again when they are in */
-export let outlinesIn: (p: PackedOutlines | null) => void = () => {};
-export const outlinesGot = new Promise<PackedOutlines | null>((got) => { outlinesIn = got; });
+export let outlinesIn: (p: PlaceOutlines | null) => void = () => {};
+export const outlinesGot = new Promise<PlaceOutlines | null>((got) => { outlinesIn = got; });
 export let outlinesRead: Promise<void> = Promise.resolve();
 export let holidaysSent = "", rowsSent = "";
 export const kindOfLine = (id: number): KindOf => kindOfIn(holidayData, lineCountries.get(id));
@@ -228,6 +228,9 @@ export let copyOf: string | undefined;
  * its own and the page's, never fewer; undefined for the published game's own */
 export let pageModded: string[] = [];
 export let modded: string[] | undefined;
+/** T-3851: the page runs without calculating trips (the "moneyFrozen" message): no fares, running costs, upkeep or loan
+ * payments are settled, so cash stays as saved while trains run */
+export let moneyFrozen = false;
 export function withModded(own: unknown): string[] | undefined {
   const all = [...new Set([...(Array.isArray(own) ? own.filter((x): x is string => typeof x === "string") : []), ...pageModded])].slice(0, 16);
   return all.length ? all : undefined;
@@ -328,6 +331,8 @@ export function pricesOf(p: ArrayLike<number>) {
     smallBoatPrice: p[24], runCostSmallBoatKm: p[25], largeBoatPrice: p[26], runCostLargeBoatKm: p[27],
     // T-3907: BRT's price a road-km, its upkeep a road-km a day, its buses' least speed
     brtRouteKm: p[28], upkeepBrtKm: p[29], brtKmh: p[30],
+    // T-3922: upkeep a game day of what is bought on a station over its price
+    upkeepUpgradeShare: p[31],
   };
 }
 export let prices = pricesOf([2.5, 2, 100, 9]);
@@ -406,6 +411,7 @@ export function putNewLineWeekendShare(v: typeof newLineWeekendShare) { newLineW
 export function putOpened(v: typeof opened) { opened = v; }
 export function putOutlinesRead(v: typeof outlinesRead) { outlinesRead = v; }
 export function putPageModded(v: typeof pageModded) { pageModded = v; }
+export function putMoneyFrozen(v: typeof moneyFrozen) { moneyFrozen = v; }
 export function putPartCost(v: typeof partCost) { partCost = v; }
 export function putPartFare(v: typeof partFare) { partFare = v; }
 export function putPartHour(v: typeof partHour) { partHour = v; }

@@ -88,7 +88,7 @@ export const lineShares = computed(() => {
       // a bent curve's extra goes with the per-km part, as it is counted on the km ridden (T-1516)
       const fx = dm.fareX?.reduce((a, b) => a + b, 0) ?? 0;
       // T-1626, T-2195: a high-speed or ferry line's rate times its multiplier, T-3567 its own (its extra came so from demand)
-      const mul = lineFareMul({ id: l.id, fast: st.fast, ferry: !!st.bus?.ferry, boat: boatOf(st.bus), bus: !!st.bus && !st.bus.ferry }, lf);
+      const mul = lineFareMul({ id: l.id, fast: st.fast, ferry: !!st.bus?.ferry, boat: boatOf(st.bus), bus: !!st.bus && !st.bus.ferry, brt: !!st.bus?.brt }, lf);
       const base = lf.base * (baseOf.get(l.id) ?? 0), perKm = Math.max(0, mul * lf.perKm * pkmAll + fx);
       if (base + perKm > 0) {
         const mix = new Map<string, number>();
@@ -111,7 +111,7 @@ export function edgeUpkeep(e: { built: boolean; crossover?: boolean; tracks: num
   if (!e.built || e.crossover) return 0;
   // T-1931: the dearest structure the edge touches, as the track model counts it
   const rate = e.levelMin <= -2 ? m.upkeepBoredKm : e.levelMin === -1 ? m.upkeepCutKm : e.levelMax > 0 ? m.upkeepViaductKm : m.upkeepTrackKm;
-  return (e.lengthM / 1000) * rate * (e.tracks === 1 ? m.upkeepSingle : 1) * (e.hsr ? m.upkeepHsr : e.kind ? TRACK_SPECS[e.kind === 2 ? "streetTram" : "tram"].upkeep : 1) * m.economy;
+  return (e.lengthM / 1000) * rate * (e.tracks === 1 ? m.upkeepSingle : 1) * (e.hsr ? m.upkeepHsr : e.kind ? TRACK_SPECS[e.kind === 4 ? "busway" : e.kind === 2 ? "streetTram" : "tram"].upkeep : 1) * m.economy;
 }
 /** T-1502: a bus route's road km by region, each piece of the route's own points (about 200 m of it) to the region
  * at its middle, the drawn ground distances scaled to the road length; a route with no points keeps T-1464's
@@ -150,9 +150,14 @@ function busKmByRegion(w: WorldView, line: string): Map<string, number> {
 }
 /** T-867: a constructed station's upkeep a game day, US$; T-2619: dearer below ground, as the
  * track model counts it (`cost::station_upkeep`). */
-/** a station's upkeep a day: a tram stop's is its own figure (T-2926) */
-export const stationUpkeepOf = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "upkeepOnePlatform" | "economy">, s: { level: number; tram?: boolean; onePlatform?: boolean }) =>
-  s.tram ? TRAM_STOP_UPKEEP * m.economy : stationUpkeep(m, s.level) * (s.onePlatform ? m.upkeepOnePlatform : 1);
+/** a station's upkeep a day: a tram stop's is its own figure (T-2926), and a BRT station's the same (T-3378, sim
+ * `UPKEEP_BRT_STATION`), without what is bought on it */
+export const stationUpkeepOf = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "upkeepOnePlatform" | "economy">, s: { level: number; tram?: boolean; brt?: boolean; onePlatform?: boolean }) =>
+  s.tram || s.brt ? TRAM_STOP_UPKEEP * m.economy : stationUpkeep(m, s.level) * (s.onePlatform ? m.upkeepOnePlatform : 1);
+/** T-3922: a station's or port's whole upkeep a day, US$, what is bought on it included (as the track model's
+ * `upkeep_shares` counts it) */
+export const nodeUpkeepOf = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "upkeepOnePlatform" | "upkeepPort" | "economy">, s: { level: number; tram?: boolean; brt?: boolean; onePlatform?: boolean; port?: unknown; upgradeUpkeep?: number }) =>
+  (s.port ? (m.upkeepPort ?? 0) * m.economy : stationUpkeepOf(m, s)) + (s.upgradeUpkeep ?? 0);
 export const stationUpkeep = (m: Pick<MoneyState, "upkeepStation" | "upkeepStationUnder" | "economy">, level: number) =>
   (level < 0 ? m.upkeepStationUnder : m.upkeepStation) * m.economy;
 
@@ -182,7 +187,7 @@ export const upkeepShares = computed<Shares>(() => {
     const a = u > 0 && w.nodes.get(e.a), b = u > 0 && w.nodes.get(e.b);
     if (a && b) add(out, midZone(e.id, (a.lng + b.lng) / 2, (a.lat + b.lat) / 2, zl), u);
   }
-  for (const s of w.save.stations) if (s.built) add(out, stationZone(s) ?? "", s.port ? (m.upkeepPort ?? 0) * m.economy : stationUpkeepOf(m, s));
+  for (const s of w.save.stations) if (s.built) add(out, stationZone(s) ?? "", nodeUpkeepOf(m, s));
   for (const l of w.save.lines) {
     if (!w.lineStats[l.id]?.bus?.built || w.lineStats[l.id]?.bus?.ferry) continue; // T-2194: a ferry route has no upkeep
     // T-3907: a BRT route's upkeep spread over its road as an average a km
@@ -210,8 +215,9 @@ export function chargeShares(before: WorldView | null, after: WorldView, line?: 
   for (const l of after.save.lines) {
     const now = after.lineStats[l.id]?.bus, was = before?.lineStats[l.id]?.bus;
     if (!now?.built || now.ferry) continue;
-    // T-3907: a constructed line switched to BRT pays its lanes in town, spread over its road
-    const town = now.roadM > 0 ? Math.min(1, now.townM / now.roadM) : 0;
+    // T-3907: a constructed line switched to BRT pays its lanes in town, spread over its road; T-3378: those no
+    // other BRT line has
+    const town = now.roadM > 0 ? Math.min(1, now.newM / now.roadM) : 0;
     const price = (was?.built ? 0 : perKm) + (now.brt && !(was?.built && was.brt) ? brtKm * town : 0);
     if (price > 0) for (const [z, km] of busKmByRegion(after, l.id)) add(cost, z, km * price);
   }

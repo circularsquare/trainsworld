@@ -1,8 +1,32 @@
 use super::*;
-use crate::track::tests::{edge, line, node, station, world};
+use crate::track::tests::{edge, headway_line, line, node, set_headway, station, world};
 
 /// Riders in the overload tests below, written for a car of 160 at crush, scaled to today's (T-2186).
 const X: f32 = (CRUSH_PER_CAR / 160.0) as f32;
+
+/// T-3939: the stop times worked out where read are `rem_euclid(DAY)` to the bit, far into a game too.
+#[test]
+fn day_rem_is_rem_euclid_to_the_bit() {
+    let mut seed = 12345u64;
+    let mut next = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut xs = vec![0.0, -0.0, 1e-300, DAY, -1.0, -DAY * 3.5, 1e15, 2e15];
+    for d in [1.0, 2.0, 3.0, 7.0, 1240.0, 11574.0] {
+        let c = d * DAY;
+        for e in [0.0, 1e-9, 1e-6, 1e-3, 0.5] {
+            xs.extend([c + e, c - e, f64::from_bits(c.to_bits() + 1), f64::from_bits(c.to_bits() - 1)]);
+        }
+    }
+    for _ in 0..200_000 {
+        xs.push(next() * 1e9);
+        xs.push(next() * 3.0 * DAY);
+    }
+    for x in xs {
+        assert_eq!(day_rem(x).to_bits(), x.rem_euclid(DAY).to_bits(), "{x:e}");
+    }
+}
 
 #[test]
 fn ride_km_follows_the_alighting_shares() {
@@ -83,7 +107,7 @@ fn setup(tph: f32) -> (crate::track::world::TrackWorld, u32) {
     for n in [a, b, c] {
         station(&mut w, n, 200);
     }
-    let l = line(&mut w, &[a, b, c], [tph, tph / 2.0, tph / 4.0]);
+    let l = headway_line(&mut w, &[a, b, c], [tph, tph / 2.0, tph / 4.0]);
     (w, l)
 }
 
@@ -231,7 +255,7 @@ fn a_circle_carries_its_riders_round_through_the_first_stop() {
     }
     assert!(ra.load[i * n + 1] < 0.5 && ra.load[i * n + 2] < 0.5, "they leave at 1");
     assert_eq!(ra.load[i * n + 6], 0.0);
-    assert!(ra.q_after.iter().all(|&q| q < 1e-3), "nobody is left at the first stop");
+    assert!((0..ra.load.len()).all(|i| ra.queues.q_after(i) < 1e-3), "nobody is left at the first stop");
     assert!((ra.boarded - ra.alighted).abs() < 1e-6 * ra.boarded.max(1.0));
     // demand's riders board once at 4 and once more, staying aboard, at the first stop
     let day = 100.0 * 24.0;
@@ -249,7 +273,7 @@ fn a_line_with_room_carries_demands_load_and_leaves_no_one() {
         // every rider in the day boards and gets off
         assert!((ra.arrived - ra.boarded).abs() < 1e-6 * ra.arrived.max(1.0), "{} {}", ra.arrived, ra.boarded);
         assert!((ra.boarded - ra.alighted).abs() < 1e-6 * ra.boarded.max(1.0));
-        assert!(ra.q_after.iter().all(|&q| q < 1e-3));
+        assert!((0..ra.load.len()).all(|i| ra.queues.q_after(i) < 1e-3));
         // the day's arrivals are demand's
         assert!((ra.arrived - (500.0 * 8.0 + 200.0 * 10.0 + 50.0 * 6.0)).abs() < 1e-6);
     }
@@ -303,6 +327,62 @@ fn past_day_holds_a_whole_day_at_any_hour() {
     }
 }
 
+/// T-4149: `past_day` with lines' blocks kept from earlier reads gives what a read with nothing kept gives, as time
+/// moves, the service changes ahead of its account, the account is worked out again and the riders change.
+#[test]
+fn past_day_kept_blocks_equal_a_fresh_read() {
+    fn fresh(b: &Boarding, svc: &Service, t: f64) -> Vec<f64> {
+        let c = b.clone();
+        *c.day_memo.borrow_mut() = Default::default();
+        c.past_day(svc, t)
+    }
+    fn same(b: &Boarding, svc: &Service, t: f64, what: &str) {
+        let (got, want) = (b.past_day(svc, t), fresh(b, svc, t));
+        assert_eq!(b.past_day_whole(svc, t).iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{what}, whole");
+        assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{what}");
+    }
+    let (mut w, l) = setup(10.0);
+    let mut b = Boarding::default();
+    b.set_riders(&riders(l, [500.0, 200.0, 500.0, 200.0, 50.0]));
+    b.ensure(&w.net, &w.svc);
+    let t = 2.0 * DAY + 9.5 * 3600.0;
+    same(&b, &w.svc, t, "first read");
+    same(&b, &w.svc, t, "read again");
+    same(&b, &w.svc, t + 600.0, "ten minutes on");
+    set_headway(&mut w, l, [20.0, 10.0, 5.0]);
+    same(&b, &w.svc, t + 600.0, "the service changed, its account not yet");
+    b.ensure(&w.net, &w.svc);
+    same(&b, &w.svc, t + 600.0, "the account worked out again");
+    b.set_riders(&riders(l, [900.0, 300.0, 700.0, 300.0, 80.0]));
+    b.ensure(&w.net, &w.svc);
+    same(&b, &w.svc, t + 600.0, "new riders");
+    b.clear();
+    same(&b, &w.svc, t + 600.0, "cleared");
+}
+
+/// T-4149: `line_periods` read again, kept, gives what a whole read gives as the service and the riders change.
+#[test]
+fn line_periods_kept_equal_a_whole_read() {
+    fn same(b: &Boarding, svc: &Service, l: u32, what: &str) {
+        for day in 0..DAY_KINDS {
+            let (got, want) = (b.line_periods(svc, l as usize, day), b.line_periods_whole(svc, l as usize, day));
+            assert_eq!(got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{what}, day {day}");
+        }
+    }
+    let (mut w, l) = setup(10.0);
+    let mut b = Boarding::default();
+    b.set_riders(&riders(l, [500.0, 200.0, 500.0, 200.0, 50.0]));
+    b.ensure(&w.net, &w.svc);
+    same(&b, &w.svc, l, "first read");
+    same(&b, &w.svc, l, "read again");
+    set_headway(&mut w, l, [20.0, 10.0, 5.0]);
+    b.ensure(&w.net, &w.svc);
+    same(&b, &w.svc, l, "the account worked out again");
+    b.set_riders(&riders(l, [900.0, 300.0, 700.0, 300.0, 80.0]));
+    b.ensure(&w.net, &w.svc);
+    same(&b, &w.svc, l, "new riders");
+}
+
 #[test]
 fn period_totals_match_demand_with_the_busiest_hour_shapes() {
     let (w, l) = setup(12.0);
@@ -343,7 +423,7 @@ fn an_overloaded_line_leaves_people_behind_and_the_queue_clears() {
     let ra = &b.accounts[0][l as usize].as_ref().unwrap().runs[0];
     let m = ra.deps.len();
     // the queue at A, train by train through the day
-    let q: Vec<(f64, f32, f32)> = (0..m).map(|j| (ra.order_t[j], ra.q_after[ra.order[j] as usize * 3], ra.load[ra.order[j] as usize * 3])).collect();
+    let q: Vec<(f64, f32, f32)> = (0..m).map(|j| (ra.stop_times(0).at(j), ra.queues.q_after(ra.order.get(j) * 3), ra.load[ra.order.get(j) * 3])).collect();
     let at = |h: f64| q.iter().filter(|e| e.0 < h * 3600.0).next_back().unwrap().1;
     assert!(at(7.0) > 0.0 && at(9.0) >= at(7.0), "{} {}", at(7.0), at(9.0));
     // T-1067: 600 more a train than it takes, until the platform holds WAITING_CAP as a train
@@ -382,10 +462,10 @@ fn riders_left_behind_too_long_go_another_way() {
     let ra = &b.accounts[0][l as usize].as_ref().unwrap().runs[0];
     let m = ra.deps.len();
     // the queue grows 600 a train through the morning and fills the platform before noon
-    let most = (0..m).map(|j| ra.q_after[j * 3]).fold(0.0f32, f32::max) as f64;
+    let most = (0..m).map(|j| ra.queues.q_after(j * 3)).fold(0.0f32, f32::max) as f64;
     assert!(most <= WAITING_CAP - cap + 1e-3, "{most}");
-    let gave_by_noon: f64 = (0..m).filter(|&j| ra.order_t[j] < 12.5 * 3600.0).map(|j| ra.gone[ra.order[j] as usize * 3] as f64).sum();
-    let gave_after: f64 = (0..m).filter(|&j| ra.order_t[j] > 12.5 * 3600.0).map(|j| ra.gone[ra.order[j] as usize * 3] as f64).sum();
+    let gave_by_noon: f64 = (0..m).filter(|&j| ra.stop_times(0).at(j) < 12.5 * 3600.0).map(|j| ra.queues.gone(ra.order.get(j) * 3) as f64).sum();
+    let gave_after: f64 = (0..m).filter(|&j| ra.stop_times(0).at(j) > 12.5 * 3600.0).map(|j| ra.queues.gone(ra.order.get(j) * 3) as f64).sum();
     assert!(gave_by_noon > 0.0 && gave_after > 0.0, "{gave_by_noon} {gave_after}");
     // whoever is left waits at most GIVE_UP_S past their first train (T-1255: on a train every 30
     // minutes or rarer, a rider joins only for a train with room)
@@ -393,7 +473,7 @@ fn riders_left_behind_too_long_go_another_way() {
     assert!(longest > 1800.0 && longest <= GIVE_UP_S + 1.0, "{longest}");
     assert!(ra.gave_up > 1000.0, "{}", ra.gave_up);
     assert!((ra.arrived - ra.boarded - ra.gave_up).abs() < 1e-6 * ra.arrived);
-    let gone: f64 = ra.gone.iter().map(|&g| g as f64).sum();
+    let gone: f64 = (0..ra.load.len()).map(|i| ra.queues.gone(i) as f64).sum();
     assert!((gone - ra.gave_up).abs() < 1e-3 * ra.gave_up);
 }
 
@@ -421,9 +501,9 @@ fn riders_come_and_wait_only_for_a_train_with_room_soon() {
     let ra = &b.accounts[0][l as usize].as_ref().unwrap().runs[0];
     let m = ra.deps.len();
     // every peak train leaves full and the platform holds at most the next 30 minutes' trains
-    let peak: Vec<usize> = (0..m).filter(|&j| ra.order_t[j] > 7.0 * 3600.0 && ra.order_t[j] < 9.5 * 3600.0).map(|j| ra.order[j] as usize).collect();
+    let peak: Vec<usize> = (0..m).filter(|&j| ra.stop_times(0).at(j) > 7.0 * 3600.0 && ra.stop_times(0).at(j) < 9.5 * 3600.0).map(|j| ra.order.get(j)).collect();
     assert!(peak.iter().all(|&i| (ra.load[i * 3] as f64 - cap).abs() < 1e-3));
-    let most = (0..m).map(|i| ra.q_after[i * 3]).fold(0.0f32, f32::max) as f64;
+    let most = (0..m).map(|i| ra.queues.q_after(i * 3)).fold(0.0f32, f32::max) as f64;
     assert!(most <= 5.0 * cap + 1e-3, "{most}");
     // so nobody waits much beyond 30 minutes for a train with room (the head of the queue: a
     // headway more)
@@ -513,10 +593,10 @@ fn a_queue_that_lasts_the_night_carries_round_the_day() {
     assert!(quick.leftover > 1000.0, "{}", quick.leftover);
     // the kept account is the warm one: the first train after 03:00 already finds a queue
     let i = ra.deps.iter().position(|&d| d >= START_HOUR * 3600.0).unwrap();
-    assert!(ra.q_after[i * 3] > 1000.0, "{}", ra.q_after[i * 3]);
+    assert!(ra.queues.q_after(i * 3) > 1000.0, "{}", ra.queues.q_after(i * 3));
     let j = quick.deps.iter().position(|&d| d >= START_HOUR * 3600.0).unwrap();
     // (T-1255: a train's worth more, the platform holding only the next 30 minutes' trains)
-    assert!(ra.q_after[i * 3] > quick.q_after[j * 3] + 500.0, "{} {}", ra.q_after[i * 3], quick.q_after[j * 3]);
+    assert!(ra.queues.q_after(i * 3) > quick.queues.q_after(j * 3) + 500.0, "{} {}", ra.queues.q_after(i * 3), quick.queues.q_after(j * 3));
     // and every departure of the day is in it once, in time order
     assert_eq!(ra.deps.len(), quick.deps.len());
     assert!(ra.deps.windows(2).all(|p| p[0] < p[1]));
@@ -534,7 +614,7 @@ fn a_change_mid_peak_keeps_the_account_on_the_drawn_trains() {
     let before_trips = w.svc.trips(&w.net, now - 600.0, now);
     let loads_before: Vec<Option<Vec<f32>>> = before_trips.iter().map(|t| b.trip_account(t.line, t.run as usize, t.dep)).collect();
     let before = w.svc.before_edit(&w.net, now);
-    w.apply(crate::track::world::Op::Schedule { id: l, tph: [4.0, 5.0, 2.5] }).unwrap();
+    set_headway(&mut w, l, [4.0, 5.0, 2.5]);
     w.svc.note_changes(&w.net, &before, now);
     b.ensure(&w.net, &w.svc);
     for epoch in [now - 1200.0, now + 2400.0] {
@@ -788,7 +868,8 @@ fn riders_changing_lines_arrive_with_their_train() {
         let g_t: Vec<f64> = {
             let ra = &b.accounts[0][l2 as usize].as_ref().unwrap().runs[0];
             let m = ra.deps.len();
-            ra.order_t[2 * m..3 * m].to_vec()
+            let ts = ra.stop_times(2);
+            (0..m).map(|j| ts.at(j)).collect::<Vec<f64>>()
         };
         let h0 = epoch.rem_euclid(DAY);
         for c in &hour {
@@ -863,7 +944,7 @@ fn a_new_lines_platforms_fill_from_when_its_trains_start() {
     b.set_riders(&riders(l, [3000.0, 2000.0, 2000.0, 2000.0, 100.0]));
     let now = 2.0 * DAY + 8.0 * 3600.0 + 1200.0;
     let before = w.svc.before_edit(&w.net, now);
-    w.apply(crate::track::world::Op::Schedule { id: l, tph: [10.0, 5.0, 2.5] }).unwrap();
+    set_headway(&mut w, l, [10.0, 5.0, 2.5]);
     w.svc.note_changes(&w.net, &before, now);
     let epoch = now - 1200.0;
     let out = b.hour(&w.net, &w.svc, epoch);
@@ -922,7 +1003,7 @@ fn a_long_lines_opening_day_runs_as_full_as_the_next() {
     b.set_riders(&v);
     let now = 2.0 * DAY + 7.0 * 3600.0 + 1200.0;
     let before = w.svc.before_edit(&w.net, now);
-    w.apply(crate::track::world::Op::Schedule { id: l, tph: [4.0, 4.0, 4.0] }).unwrap();
+    set_headway(&mut w, l, [4.0, 4.0, 4.0]);
     w.svc.note_changes(&w.net, &before, now);
     b.ensure(&w.net, &w.svc);
     let opening = b.line_periods(&w.svc, l as usize, 0);
@@ -947,4 +1028,50 @@ fn a_long_lines_opening_day_runs_as_full_as_the_next() {
     // the first two hours: no one left behind, and riders counted only from each stop's opening
     assert!(today[5] < 1.0, "{} left behind", today[5]);
     assert!(today[3] > 0.0 && today[3] < 2.0 * 3600.0 * rate as f64 * 2.0 * (n - 1) as f64 / 3600.0, "{} riders", today[3]);
+}
+
+
+/// T-3939: the sparse queues read back every trip and stop's two numbers to the bit.
+#[test]
+fn queues_read_back_to_the_bit() {
+    let n = 200;
+    let q: Vec<f32> = (0..n).map(|i| match i % 7 { 0 => 1.5 + i as f32, 3 => -0.0, 5 => 1e-30, _ => 0.0 }).collect();
+    let g: Vec<f32> = (0..n).map(|i| if i % 11 == 4 { 0.25 * i as f32 } else { 0.0 }).collect();
+    let s = Queues::new(&q, &g);
+    for i in 0..n {
+        assert_eq!(s.q_after(i).to_bits(), q[i].to_bits(), "q at {i}");
+        assert_eq!(s.gone(i).to_bits(), g[i].to_bits(), "gone at {i}");
+    }
+    assert_eq!(s.kept(), (0..n).filter(|&i| q[i].to_bits() != 0 || g[i].to_bits() != 0).count());
+    let empty = Queues::new(&[], &[]);
+    assert_eq!(empty.q_after(0), 0.0);
+}
+
+/// T-4184: a run's stop order reads back the same in 16 and 32 bits, and takes the wide form only past 65,536 departures.
+#[test]
+fn trip_order_reads_back_in_both_widths() {
+    let (trips, stops) = (70_000usize, 2usize);
+    let mut short = TripOrder::zeros(stops * 1000, 1000);
+    let mut wide = TripOrder::zeros(stops * trips, trips);
+    assert!(matches!(short, TripOrder::Short(_)) && matches!(wide, TripOrder::Wide(_)));
+    assert!(matches!(TripOrder::zeros(4, 1 << 16), TripOrder::Short(_)));
+    for i in 0..stops * 1000 {
+        short.set(i, (i * 7 % 1000) as u32);
+    }
+    for i in 0..stops * trips {
+        wide.set(i, (i * 7 % trips) as u32);
+    }
+    for k in 0..stops {
+        let (s, w) = (short.slice(k * 1000, (k + 1) * 1000), wide.slice(k * trips, (k + 1) * trips));
+        assert_eq!((s.len(), w.len()), (1000, trips));
+        for i in 0..1000 {
+            assert_eq!(s.get(i), (k * 1000 + i) * 7 % 1000);
+            assert_eq!(short.try_get(k * 1000 + i), Some(s.get(i)));
+        }
+        for i in 0..trips {
+            assert_eq!(w.get(i), (k * trips + i) * 7 % trips);
+        }
+    }
+    assert_eq!(short.try_get(stops * 1000), None);
+    assert_eq!((short.heap_bytes(), wide.heap_bytes()), (stops * 1000 * 2, stops * trips * 4));
 }

@@ -22,6 +22,7 @@ import { lngLatToPack } from "../game/coords";
 import { describeIssues } from "../game/issues";
 import { touchInput } from "./touch";
 import { edit, say, world } from "../game/world";
+import { dragAhead } from "../game/pieceAhead";
 import type { ClockClient } from "../workers/clockClient";
 import { effect } from "@preact/signals";
 import { toLocal } from "./geo";
@@ -34,6 +35,7 @@ import { packToLngLat } from "../game/coords";
 import type { PreviewAnswer } from "../workers/clockClient";
 import { MARKS_ZOOM, NODE_HIT_PX } from "./dragHandles";
 import { marksLayer, onScreen, placeAt } from "./screenPlace";
+import { hidden, onBlueprintsHidden } from "./visibility";
 import { curveLabels, CurveLabelPool } from "./trackTagRows";
 
 /** A click, not a drag: the pointer moved less than this (px). */
@@ -115,6 +117,7 @@ export class BlueprintBox {
       if (tool.value !== "blueprint") this.cancel();
     });
     host.addEventListener("pointercancel", (e) => this.endTouch(e));
+    onBlueprintsHidden(() => this.place());
     // the highlight follows the pick and the world (a new network has new buffers)
     effect(() => {
       bpPicked.value;
@@ -171,6 +174,7 @@ export class BlueprintBox {
    * constructed (of `dragNodes`: those a box held, or the ends of picked track and picked stations). */
   private movable(): number[] {
     const w = world.peek(), p = bpPicked.peek();
+    if (hidden.blueprints) return [];
     if (!w || (!p.edges.length && !p.stations.length)) return [];
     const was = this.movableOf;
     if (was.pick === p && was.version === w.version) return was.nodes;
@@ -428,7 +432,9 @@ export class BlueprintBox {
         this.drag = { x0: m.x0, y0: m.y0, x: m.x0, y: m.y0, add, base: add ? bpPicked.peek() : { edges: [], stations: [] }, pan: false, moved: false };
       } else {
         this.client.dropPreview();
-        const a = await edit({ op: "moveNodes", nodes: m.nodes, dx: m.dx, dy: m.dy, design: designSpeed.peek() });
+        const touching = world.peek()?.edges.filter((x) => m.nodes.includes(x.a) || m.nodes.includes(x.b)) ?? [];
+        const strokes = m.preview?.ok ? previewStrokes(m.preview, touching.some((x) => x.hsr)) : null;
+        const a = await dragAhead(strokes, touching.map((x) => x.id), () => edit({ op: "moveNodes", nodes: m.nodes, dx: m.dx, dy: m.dy, design: designSpeed.peek() }));
         if (!a.ok && !a.issues.length) say(m.issues.length ? describeIssues(m.issues) : t("blueprintBox.cannotMoveThis"), true);
         this.endMove();
         return;

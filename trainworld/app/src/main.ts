@@ -7,6 +7,8 @@
 //
 // URL parameters: docs/code-map.md, "URL switches".
 
+// T-4126: before anything reads storage
+import "./game/trackStorage";
 import "./ui/style.css";
 import "./ui/zenmaru.css";
 // each language's font faces (T-2636); here, not in i18n/index.ts, which the workers import and where CSS injection throws
@@ -29,8 +31,12 @@ import { hideUiKey } from "./ui/hideUi";
 import { helpKey } from "./ui/HelpPanel";
 import { followCapsLock, keyIsTheirs, releaseSelectsAfterMousePick } from "./ui/keys";
 import { stopsById, world } from "./game/world";
-import { hiddenLevels, hiddenLines, hideBuses, levelBits } from "./game/lineVisibility";
-import { setHidden } from "./map/visibility";
+import "./map/aheadShow"; // T-4145: draws the edits waiting to show (game/pending.ts)
+import { pendingNetIn, pendingTaken } from "./game/pending";
+import { drawnEdgesOf } from "./map/lineAhead";
+import type { NetworkBuffers } from "./map/network";
+import { hiddenLevels, hiddenLines, hideBlueprints, hideBlueprintsView, hideBuses, levelBits } from "./game/lineVisibility";
+import { setBlueprintsHidden, setHidden } from "./map/visibility";
 import "./game/capLoad";
 import { removeThing, setTrackHider } from "./game/remove";
 import { redo, undo } from "./game/fareUndo";
@@ -40,7 +46,8 @@ import { lineRunFactor } from "./game/regionMoney";
 import { stretchMoney } from "./game/stretchMoney";
 import { faresOf } from "./game/fareCurve";
 import { live } from "./map/live";
-import { setBasemapLabels, setBasemapShade, setSatellite, setBusRoadHint, setHillshade, setRailRoadHint, setTramRoadHint } from "./map/basemap";
+import { setBasemapLabels, setBasemapShade, setSatellite, setBusRoadHint, setHillshade, setRailRoadHint, setTramRoadHint, townChanged } from "./map/basemap";
+import { townVersion } from "./map/townArea";
 import { createMap } from "./map/mapView";
 import { startRealNetwork } from "./map/realNetwork";
 import { startRealStations } from "./map/realStations";
@@ -79,6 +86,7 @@ import { ReversalMarks } from "./map/reversalMarks";
 import { lineSizeAt, startTrackHover } from "./map/trackHover";
 import { startTerrainTint } from "./map/terrainTint";
 import { startRestList } from "./map/hoverRest";
+import { startOverChrome } from "./map/overChrome";
 import { startStationLife } from "./map/stationLife";
 import { soundLog, startBuildSounds } from "./map/buildSound";
 import { openings, startOpeningDay } from "./game/openingDay";
@@ -94,7 +102,11 @@ import { DemandStopped } from "./ui/DemandStopped";
 import { NewVersion } from "./ui/NewVersion";
 import { FiguresStopped } from "./ui/FiguresStopped";
 import { figuresPeaks, figuresStopped, watchFigures } from "./game/figuresStopped";
+import { ModelStopped } from "./ui/ModelStopped";
 import { DeviceNote, deviceNoteApplies } from "./ui/DeviceNote";
+import { RetryNote } from "./ui/RetryNote";
+import { InstallBanner, installBannerApplies } from "./ui/InstallBanner";
+import { retryDiedLoad, retryLoadsInPage } from "./game/oomRetry";
 import { MapSky, TopBar } from "./ui/TopBar";
 import { cycleDemandEnd, MapTopLeft } from "./ui/DemandSelector";
 import { diagramShown, startDiagramView } from "./diagram/view";
@@ -108,7 +120,7 @@ import { mountKeepDot } from "./ui/KeepDot";
 import { startTips } from "./ui/tip";
 import { startModded } from "./game/modded";
 import { setupDone, startLoadingGate } from "./ui/LoadingScreen";
-import { choosing, lastLoadDied, loadCannotFinish, loadGraphicsGone, loadNoSimd, loadNoWebgl2, onGraphicsGone, startGameWait, waitKey } from "./game/loading";
+import { choosing, lastLoadDied, loadCannotFinish, loadGraphicsGone, loadNoSimd, loadNoWebgl2, onGraphicsGone, startGameWait, startWithoutTrips, waitKey } from "./game/loading";
 import { webgl2State } from "./map/webgl2";
 import { hasWasmSimd } from "./map/wasmSimd";
 import { outOfMemoryText } from "./game/loadText";
@@ -117,7 +129,7 @@ import { choiceFromUrl, showStartMenu, START_LOGO, worldCover } from "./ui/Start
 import { viewStart } from "./ui/locate";
 import { enterGame, fitAhead, startOpenFit } from "./ui/locate";
 import { realmsAhead } from "./game/realms";
-import { ClockClient, clockWorkerStatus, manageSaveSlot, onNetAhead, onNetworkSnapshot, onSaveRoom, onStationsAhead, retryGround } from "./workers/clockClient";
+import { ClockClient, clockWorkerStatus, manageSaveSlot, onNetAhead, onNetworkSnapshot, onSaveRoom, onStationsAhead, retryGround, saveSlotsState } from "./workers/clockClient";
 import { demandStuckSince, netAhead, retryPackDownloads, saveRoom, startDemand, stationsAhead, submitNetwork } from "./workers/demandClient";
 import { startDemandViews, viewStats } from "./map/demandViews";
 import { startTripView } from "./map/tripView";
@@ -173,10 +185,11 @@ if (!hasWasmSimd()) {
 // once the page is set up, and the workers start with the pick (`startWorkers` below), the map
 // already drawn under it.
 // T-2545: the last load in this tab never ended (iOS reloads a page that ran out of memory): say so and
-// start no game, or a game too big for the device would load and die again
+// start no game, or a game too big for the device would load and die again; T-3933: unless it can open again once
+// with fewer solving workers
 const lastDied = lastLoadDied();
-const urlChoice = lastDied ? null : choiceFromUrl();
-if (lastDied) loadCannotFinish(outOfMemoryText(), true);
+const urlChoice = lastDied ? retryDiedLoad() : choiceFromUrl();
+if (lastDied && !urlChoice) loadCannotFinish(outOfMemoryText(), true);
 // Demand pool (T-026) first: its downloads and pack opening are the longest part of startup, so
 // they start before the map is set up (T-172). The clock worker's network snapshots go to
 // `submitNetwork` below (workers/demandClient.ts); `?demandTest=1` solves T-005's hand-made
@@ -185,8 +198,10 @@ const startDemandPool = (newGame: boolean) => {
   startDemand(HOME_CITY, newGame);
 };
 if (urlChoice) {
-  startGameWait(waitKey(urlChoice));
-  startDemandPool(!!urlChoice.newGame);
+  startGameWait(waitKey(urlChoice), urlChoice);
+  // T-3851: a network opened without calculating trips starts no demand pool at all
+  if (urlChoice.noTrips) startWithoutTrips();
+  else startDemandPool(!!urlChoice.newGame);
 }
 
 // ---- map and overlay ----
@@ -209,6 +224,7 @@ map.getContainer().appendChild(demandStoppedRoot);
 // the notices below can fire before the clock client exists (the graphics lost while the game loads): nothing to save then
 let earlyClient: ClockClient | null = null;
 const saveGame = () => earlyClient ? earlyClient.saveBeforeReload() : Promise.resolve();
+retryLoadsInPage(saveGame); // T-3933: a load the page sees run out of memory opens again with fewer workers
 render(h(DemandStopped, { save: saveGame }), demandStoppedRoot);
 // T-3582: the browser refused the page graphics mid-game: the game is saved before the player restarts the browser
 onGraphicsGone(() => { void saveGame(); });
@@ -220,11 +236,27 @@ render(h(NewVersion, { save: saveGame }), newVersionRoot);
 const figuresStoppedRoot = document.createElement("div");
 map.getContainer().appendChild(figuresStoppedRoot);
 render(h(FiguresStopped, { save: saveGame }), figuresStoppedRoot);
+// T-4109: the track model stopped: a notice with Reload
+const modelStoppedRoot = document.createElement("div");
+map.getContainer().appendChild(modelStoppedRoot);
+render(h(ModelStopped, null), modelStoppedRoot);
 // T-2802, T-2839: a phone has no trips between cities, and a device reporting 4 GB or less may not run well; said once per game load
 if (deviceNoteApplies()) {
   const noMarketRoot = document.createElement("div");
   map.getContainer().appendChild(noMarketRoot);
   render(h(DeviceNote, null), noMarketRoot);
+}
+// T-4106: on a phone or tablet after 2 hours of play, how to install the game as an app
+if (installBannerApplies()) {
+  const installRoot = document.createElement("div");
+  map.getContainer().appendChild(installRoot);
+  render(h(InstallBanner, null), installRoot);
+}
+// T-3933: a load that ran out of memory opened again with fewer workers
+if (lastDied) {
+  const retryRoot = document.createElement("div");
+  map.getContainer().appendChild(retryRoot);
+  render(h(RetryNote, null), retryRoot);
 }
 const blueprintBarRoot = document.createElement("div");
 map.getContainer().appendChild(blueprintBarRoot);
@@ -241,10 +273,8 @@ mountGuide(map.getContainer()); // T-1822: the Getting started card under the da
 mountKeepDot(); // T-1832: counts the hour of play before the yellow dot by the search glass shows
 const renderer = new NetworkRenderer();
 renderer.checkPatch = params.get("patch") === "check"; // T-1029
-// T-2763: blueprint track the player removes leaves the screen at the click
+// T-2763: whether a line is drawn over track the player removes
 setTrackHider({
-  hide: (edge) => renderer.hideEdge(edge),
-  show: () => renderer.unhideEdges(),
   onLine: (edge) => {
     const l = renderer.net?.lines;
     if (!l) return true;
@@ -355,9 +385,15 @@ if (SYNTH) {
       if (s.service && renderer.net) renderer.setService(s.render.phases, s.render.meta);
       else if (s.net) {
         const was = renderer.net;
+        // T-4145: what is drawn ahead of the edits this network holds goes with it (built once, by setNetwork)
+        const held = pendingTaken(client.orderOf(s), { net: true });
         renderer.setNetwork(s.net); // built in the worker (T-063)
+        if (import.meta.env.DEV) checkHeld(s.net, held);
+        renderer.netVersion = s.version;
         carryGrids(was, s.net, renderer.checkPatch); // T-1030
         carryEdgeGrid(was, s.net, renderer.checkPatch);
+        // T-4214: the map clicks pick on holds these edits now (a click waiting for them goes, map/toolWait.ts)
+        pendingNetIn(client.orderOf(s));
         // T-1047; T-1021: a task of its own right after, so a big network's first state is two tasks
         if (!trackSoon) { trackSoon = true; setTimeout(() => { trackSoon = false; followTrack(renderer.net, world.peek()); }, 0); }
         // the placers that follow the network (the select tool's squares) run on map frames, which a paused game has none of (T-1537)
@@ -369,7 +405,7 @@ if (SYNTH) {
     };
     // T-1071: a train count is drawn from the moment it takes effect, with its own trips
     if (s.effectiveAt !== undefined) {
-      renderer.stage(s.version, s.effectiveAt, put);
+      renderer.stage(s.version, s.effectiveAt, put, !!s.loadsFollow);
       overlay.invalidate();
     } else {
       renderer.flushStaged();
@@ -459,10 +495,14 @@ effect(() => {
 const demandOnTop = (x: number, y: number, add: boolean) => (onMark(x, y) || netFirst(x, y) ? undefined : demandClick?.(x, y, add));
 
 // T-3420: the lines and levels the player hid; a hidden line's twin with it (T-3333)
+/** Settings' Show blueprints, as it stands in the game in hand: a viewed community network has its own (T-4002) */
+const blueprintsOff = computed(() => (saveSlotsState.value.viewing ? hideBlueprintsView : hideBlueprints).value);
 const hiddenNums = computed(() => {
   const ids = hiddenLines.value, w = world.value, out = new Set<number>();
   for (const id of ids) out.add(Number(id));
   if (hideBuses.value && w) for (const l of w.save.lines) if (w.lineStats[l.id]?.bus) out.add(l.num);
+  // a planned bus line is a blueprint too; hidden as a bus line is, so the picks pass over it
+  if (blueprintsOff.value && w) for (const l of w.save.lines) { const st = w.lineStats[l.id]; if (st?.bus && st.status === "planned") out.add(l.num); }
   if (w && ids.size) for (const [twin, of] of w.twins) if (ids.has(of)) out.add(Number(twin));
   return out;
 });
@@ -471,6 +511,12 @@ effect(() => {
   const stations = new Map((w?.save.stations ?? []).map((s) => [s.id, s.level]));
   const changed = setHidden(hiddenNums.value, levelBits(hiddenLevels.value), (id) => stations.get(id), (id) => w?.nodes.get(id)?.level);
   if (changed) overlay.invalidate();
+});
+// Settings' Show blueprints: every blueprint piece is not drawn or picked (map/visibility.ts)
+effect(() => {
+  const off = blueprintsOff.value;
+  document.documentElement.classList.toggle("no-blueprints", off);
+  if (setBlueprintsHidden(off)) overlay.invalidate();
 });
 // Bus lines are drawn from the world's routes (T-1464, map/busLayer.ts)
 effect(() => {
@@ -521,6 +567,7 @@ effect(() => {
 });
 // Resting the pointer on track says what the track display shows there (T-157).
 startTrackHover(map, overlay);
+startOverChrome(map); // T-4009
 // T-732: resting the pointer lists what else is under it
 if (!SYNTH) startRestList(map, overlay, (x, y) => demandClick?.(x, y, false, true));
 // T-686: from the platforms' zoom, chimes, pops and faces as trains let riders off and on
@@ -535,6 +582,7 @@ map.on("load", () => {
   effect(() => setSatellite(map, display.value.satellite)); // T-3249
   effect(() => setHillshade(map, display.value.hillshade)); // T-1270
   effect(() => setBusRoadHint(map, tool.value === "bus", display.value.busOneWay)); // T-2883
+  effect(() => (townVersion.value, townChanged(map))); // T-3913
   effect(() => setTramRoadHint(map, tool.value === "track" && tramTrack.value && snapStreets.value && !snapRealTram.value)); // T-2998
   effect(() => setRailRoadHint(map, tool.value === "track" && !tramTrack.value && snapRoads.value)); // T-3129
   startTerrainTint(map); // T-1270 stage 3
@@ -823,7 +871,7 @@ if (!urlChoice && !lastDied) showStartMenu((choice) => {
   enterGame(); // T-2477: a pan before the pick does not count
   if (choice.game) viewStart(choice.game.start, choice.game.mode);
   else if (!choice.newGame) client.fitNextGame(); // T-895: a saved game opens on its network
-  startGameWait(waitKey(choice));
+  startGameWait(waitKey(choice), choice);
   startDemandPool(!!choice.newGame && !choice.game?.real);
   pauseNewGame(choice.newGame);
   guideNewGame(!!choice.newGame);
@@ -957,3 +1005,20 @@ if (DEBUG) {
   };
 }
 setupDone(); // T-950: an uncaught error before this line ends the loading card
+
+/** T-4145, dev builds: a network taken after an edit's word holds the line edges the word drew (message order). A line
+ * edited again before this network can differ, so this warns, never throws. */
+function checkHeld(n: NetworkBuffers, held: Map<number, Set<number> | null>) {
+  let track: Set<number> | undefined;
+  for (const [line, word] of held) {
+    let edges = word;
+    const drawn = drawnEdgesOf(n, line);
+    // a removed station's two halves are drawn ahead under both ids, and the joined piece keeps only one (clockWordStations `said`)
+    if (edges) {
+      track ??= new Set(n.track.edge.subarray(0, n.track.count));
+      for (const e of [...edges]) if (!drawn.has(e) && !track.has(e)) edges = new Set([...edges].filter((x) => x !== e));
+    }
+    const same = edges ? edges.size === drawn.size && [...edges].every((e) => drawn.has(e)) : drawn.size === 0;
+    if (!same) console.warn(`T-4145: the network after line ${line}'s word draws other edges than the word (${drawn.size} drawn, ${edges?.size ?? 0} in the word)`);
+  }
+}

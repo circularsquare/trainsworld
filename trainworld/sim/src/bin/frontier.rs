@@ -117,8 +117,7 @@ fn num(v: &Value, k: &str) -> f64 {
 /// headways. Returns the track model, the line and what building it and its fleet cost, US$M.
 fn build(city: &City, run: &Value, line_km: f64) -> Result<(TrackApi, u32, f64), String> {
     let mut a = TrackApi::new(city.lon, city.lat, true);
-    let ok = a.add_pack_streets(ZONE_M, city.x0, city.y0, city.zw, city.zh, &city.pop, &city.jobs, &city.zone, &city.gx, &city.gy, &[], &city.cells9, city.lon, city.lat);
-    if !ok {
+    if a.add_pack_streets(ZONE_M, city.x0, city.y0, city.zw, city.zh, &city.pop, &city.jobs, &city.zone, &city.gx, &city.gy, &[], &city.cells9, city.lon, city.lat) < 0 {
         return Err("street grid refused".into());
     }
     let cash0 = 1e9;
@@ -324,8 +323,8 @@ fn main() {
         let mul = if s.bus { num(fares, "bus") } else if s.fast { num(fares, "hsr") } else { 1.0 } as f32;
         let fare_mul = if mul != 1.0 { vec![mul; 2 * n] } else { vec![] };
         // setUpPops, in its order
-        // (the everyday layer is given no tram flags: the worker sets them on the commutes only)
         api.set_tram_lines(&[s.tram as u8]);
+        ev.set_tram_lines(&[s.tram as u8]);
         api.set_stairs(&[], &s.grade);
         ev.set_stairs(&[], &s.grade);
         api.set_chunked(true);

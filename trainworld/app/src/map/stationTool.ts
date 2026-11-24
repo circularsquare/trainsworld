@@ -4,11 +4,12 @@ import { t as tr, tNumber } from "../i18n";
 import { type MapMouseEvent } from "maplibre-gl";
 import { EARTH_R } from "../game/frame";
 import { describeIssues } from "../game/issues";
-import { count, unitMetres, unitShort } from "../game/format";
+import { count, length, unitMetres, unitShort } from "../game/format";
 import { activeCity, getWorldFrame, worldFrameEpoch } from "../game/cities";
 import { cellModes, cityCells, demandView } from "../game/demand";
 import { metresBetween } from "../game/walks";
-import { stationOnTram, tool } from "../game/ui";
+import { stationKind, stationOnTram, tool } from "../game/ui";
+import { CORRIDOR_M } from "./busLayer";
 import { newStationName, trackDirection } from "./stationNames";
 import { edit, rightHand, say, stationNames, world } from "../game/world";
 import { type ClockEdge, type ClockNode } from "../workers/protocol";
@@ -22,7 +23,10 @@ import { placeAt } from "./screenPlace";
 import { firstAccepted, fractionAlong, layoutIssues, layoutOf, likelyFirst, nearestOn, pointAlong, roomNear, type Candidate } from "./stationSnap";
 import { M_CROSSING, MARK_STRIDE } from "./markData";
 import { playBuild } from "./buildSound";
-import { SNAP_EDGE_PX, notOnTrack, type Snap, type Spot, type Verdict, HOLD_AT, KNOWN_PX, LAYOUT_ISSUES, lengthOf } from "./toolParts";
+import { SNAP_EDGE_PX, type Snap, type Spot, type Verdict, HOLD_AT, KNOWN_PX, LAYOUT_ISSUES, lengthOf } from "./toolParts";
+import { portClick } from "./stationPort";
+import { ahead } from "../game/pending";
+import { freeClick, freeStart, freeStarted } from "./stationFree";
 import type { Tools } from "./tools";
 
 export function nameKey(tk: Tools, px: number, py: number) {
@@ -52,28 +56,135 @@ export function shownNameAt(_tk: Tools, lng: number, lat: number): string | unde
   return best === undefined ? undefined : stationNames(w).get(best);
 }
 
+/** T-3378: a BRT station's platform, m (sim `params::BRT_STATION_PLATFORM`) */
+export const BRT_STATION_PLATFORM = 40;
+/** T-3378: a BRT station's centre is this many ground metres off its road's centre line, and a click this near a
+ * road a bus may use places one */
+const BRT_SIDE_M = 10;
+export const BRT_REACH_M = 50;
+
+/** T-3999: a BRT station snaps to a bus route within this many screen pixels of ground (146 m at zoom 15 at 40°
+ * latitude), at least `BUS_ROUTE_MIN_M` and at most `BUS_ROUTE_MAX_M`; a pointer within `ON_ROAD_M` of another road
+ * nearer than the route takes that road */
+const BUS_ROUTE_PX = 80, BUS_ROUTE_MIN_M = 50, BUS_ROUTE_MAX_M = 400, ON_ROAD_M = 8;
+const M_PER_DEG = 111_320;
+
+/** Ground metres a screen pixel spans at `lat` (512 px tiles). */
+export function metresPerPx(tk: Tools, lat: number): number {
+  return (78271.517 * Math.cos((lat * Math.PI) / 180)) / 2 ** tk.map.getZoom();
+}
+
+/** T-3999: the nearest point within `m` ground metres on a bus line's route (no ferry's), a point 10 m along it and
+ * how far off it is; null where none is. */
+function busRouteNear(lng: number, lat: number, m: number, ferry = false): { at: { lng: number; lat: number }; along: { lng: number; lat: number }; d: number } | null {
+  const w = world.peek();
+  if (!w) return null;
+  const kx = M_PER_DEG * Math.cos((lat * Math.PI) / 180), ky = M_PER_DEG;
+  let best = m, out: ReturnType<typeof busRouteNear> = null;
+  for (const st of Object.values(w.lineStats)) {
+    const b = st.bus;
+    if (!b || !!b.ferry !== ferry) continue;
+    const r = b.routeLL;
+    for (let i = 0; i + 3 < r.length; i += 2) {
+      const ax = (r[i] - lng) * kx, ay = (r[i + 1] - lat) * ky, dx = (r[i + 2] - r[i]) * kx, dy = (r[i + 3] - r[i + 1]) * ky, l2 = dx * dx + dy * dy;
+      if (!l2) continue;
+      const k = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)), px = ax + k * dx, py = ay + k * dy, d = Math.hypot(px, py);
+      if (d >= best) continue;
+      const l = Math.sqrt(l2);
+      best = d;
+      out = { at: { lng: lng + px / kx, lat: lat + py / ky }, along: { lng: lng + (px + (dx / l) * 10) / kx, lat: lat + (py + (dy / l) * 10) / ky }, d };
+    }
+  }
+  return out;
+}
+
+/** T-4105: Auto takes the bus kind when a road a bus may use or a bus route is within this many screen pixels of the
+ * pointer (at least 8 m, at most `BRT_REACH_M`): a wider reach would cover most of a city's open ground */
+const AUTO_ROAD_PX = 12;
+
+/** T-4105: whether a road or bus route is at the pointer (`ferry`: a ferry route is) */
+export function roadUnder(tk: Tools, lng: number, lat: number, ferry = false): boolean {
+  const m = Math.max(8, Math.min(BRT_REACH_M, AUTO_ROAD_PX * metresPerPx(tk, lat)));
+  if (busRouteNear(lng, lat, m, ferry)) return true;
+  return !ferry && !!tk.street.busRoads.kerb({ lng, lat }, m);
+}
+
+/** T-3378: where a click at `lng, lat` places a BRT station: T-3999: beside the nearest bus route within
+ * `BUS_ROUTE_PX`, else beside the nearest road a bus may use within `BRT_REACH_M`; on the click's side of it, its
+ * platform along the road (`heading` in the world frame); null where there is none, undefined while the roads load
+ * (and no route is near). */
+export function brtSpot(tk: Tools, lng: number, lat: number): { lx: number; ly: number; x: number; y: number; heading: number; ways: Float32Array[]; perM: number } | null | undefined {
+  const route = busRouteNear(lng, lat, Math.max(BUS_ROUTE_MIN_M, Math.min(BUS_ROUTE_MAX_M, BUS_ROUTE_PX * metresPerPx(tk, lat))));
+  const road = tk.street.busRoads.kerb({ lng, lat }, BRT_REACH_M);
+  // a pointer on another road takes that road, so the street beside a route can still have its own station
+  const onRoad = road ? metresBetween(lng, lat, road.at.lng, road.at.lat) : Infinity;
+  const k = route && !(onRoad <= ON_ROAD_M && route.d > onRoad + ON_ROAD_M) ? route : road;
+  if (!k) return k;
+  const [ax, ay] = toLocal(k.at.lng, k.at.lat), [bx, by] = toLocal(k.along.lng, k.along.lat), [cx, cy] = toLocal(lng, lat);
+  const l = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / l, uy = (by - ay) / l;
+  const side = ux * (cy - ay) - uy * (cx - ax) < 0 ? -1 : 1, perM = 1 / Math.cos((lat * Math.PI) / 180);
+  const lx = ax - uy * side * BRT_SIDE_M * perM, ly = ay + ux * side * BRT_SIDE_M * perM;
+  const p = tk.pack(lx, ly), q = tk.pack(lx + ux * perM, ly + uy * perM), reach = 100 * perM;
+  // the platform's two ways out along the road, as a station's along its track
+  const ways = [Float32Array.of(lx, ly, 0, lx + ux * reach, ly + uy * reach, 0), Float32Array.of(lx, ly, 0, lx - ux * reach, ly - uy * reach, 0)];
+  return { lx, ly, x: p.x, y: p.y, heading: Math.atan2(q.y - p.y, q.x - p.x), ways, perM };
+}
+
 export async function stationClick(tk: Tools, e: MapMouseEvent) {
-  const first = tk.snap(e.point.x, e.point.y, e.lngLat);
-  if (first.kind === "free") {
-    // T-1820: stations go on track only
-    say(notOnTrack(), true);
+  const kind = stationKind.peek();
+  if (kind === "port") return portClick(tk, e);
+  if (kind === "bus") {
+    // T-3378: a BRT station beside a road; T-3999: only with the bus kind picked, never snapped to track
+    let b = brtSpot(tk, e.lngLat.lng, e.lngLat.lat);
+    // a click before the roads there have loaded waits for them a few seconds
+    for (let i = 0; b === undefined && i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      b = brtSpot(tk, e.lngLat.lng, e.lngLat.lat);
+    }
+    if (!b) {
+      say(tr("tools.notBesideRoad"), true);
+      return;
+    }
+    playBuild("station");
+    // T-4146: drawn at the click, gone again if refused
+    const shown = ahead({ stations: [{ lx: b.lx, ly: b.ly, ways: b.ways, perM: b.perM, plat: BRT_STATION_PLATFORM, side: 0, tram: false }] });
+    const key = nameKey(tk, e.point.x, e.point.y), named = tk.named?.key === key && tk.map.areTilesLoaded() ? tk.named.name : null;
+    tk.named = null;
+    const name = await (named ?? nameFor(tk, e.point.x, e.point.y));
+    const r = await shown.send(() => edit({ op: "addBrtStation", x: b.x, y: b.y, heading: b.heading, name }, true, true));
+    if (r.ok) {
+      tk.lastPlaced = toLngLat(b.lx, b.ly);
+      say(tr("tools.blueprintStation", { name: shownNameAt(tk, tk.lastPlaced[0], tk.lastPlaced[1]) ?? name }));
+    } else if (r.issues.length) say(describeIssues(r.issues, undefined, undefined, true), true);
     return;
   }
+  // T-3999: on open ground the first click is the platform's first end and the second its direction
+  if (freeStarted()) return freeClick(tk, e, (px, py) => nameFor(tk, px, py));
+  const first = tk.snap(e.point.x, e.point.y, e.lngLat);
+  if (first.kind === "free") return freeStart(tk, first);
   // T-671, T-695: the spot the ghost shows, else the first the track model takes of what is under the pointer
   const v = tk.verdict();
   // T-1474: heard at the click, not when the edit is answered; not when the ghost shows a refusal
   if (!(v && !v.ok && !v.held)) playBuild("station");
-  const pend = v?.ok && !v.held && tk.hover && tk.hover.kind !== "free" ? addPending(tk) : null;
+  // T-4146: the station drawn at the click from its ghost, through every spot tried, gone if none is taken; a spot other
+  // than the ghost's is drawn once the network has it
+  const box = v?.ok && !v.held && tk.hover && tk.hover.kind !== "free" ? tk.lastBox : null;
+  const shown = ahead(box ? { stations: [box] } : {}, { tries: true });
+  let tried = 0;
   const tries = [...(v?.ok && v.spot && !v.held ? [v.spot] : []), ...tk.alts];
   const key = nameKey(tk, e.point.x, e.point.y);
-  const ahead = tk.named?.key === key && tk.map.areTilesLoaded() ? tk.named.name : null;
+  const named = tk.named?.key === key && tk.map.areTilesLoaded() ? tk.named.name : null;
   tk.named = null;
-  const name = await (ahead ?? nameFor(tk, e.point.x, e.point.y));
+  const name = await (named ?? nameFor(tk, e.point.x, e.point.y));
   const stationAt = (p: Exclude<Snap, { kind: "free" }>) => ({ op: "addStation" as const, at: p.kind === "node" ? { kind: "node" as const, node: p.node } : { kind: "edge" as const, edge: p.edge, ...tk.pack(p.lx, p.ly) }, platform: tk.platFor(p), name });
   const one = tk.oneAt();
   const stationAt1 = (p: Exclude<Snap, { kind: "free" }>) => { const o = stationAt(p); return { ...o, at: { ...o.at, ...one } }; };
-  const r = await firstAccepted(tries, async (p) => { const a = await edit(stationAt1(p), true, true); return a.ok ? null : a.issues; }, (p) => roomSnap(tk, p), () => false);
-  dropPending(tk, pend);
+  const r = await firstAccepted(tries, async (p) => {
+    if (tried++ === 1) shown.set({});
+    const a = await shown.send(() => edit(stationAt1(p), true, true));
+    return a.ok ? null : a.issues;
+  }, (p) => roomSnap(tk, p), () => false);
+  if (!r.spot) shown.drop();
   if (r.spot) {
     tk.lastPlaced = toLngLat(r.spot.lx, r.spot.ly); // T-312: the hover tag's "km from" (found again by position)
     say(tr("tools.blueprintStation", { name: shownNameAt(tk, tk.lastPlaced[0], tk.lastPlaced[1]) ?? name }));
@@ -110,7 +221,7 @@ export function askLegs(tk: Tools) {
   });
 }
 
-/** "12k trips within 1km" of the spot (T-412, T-1058; 1 mile in US units), from the cells behind
+/** "12k trips within 1km" of the spot (T-412, T-1058; 1 mile in US units; a BRT station counts within the bus corridor, T-4135), from the cells behind
  * the Homes and Destinations bubbles; null until they are in. A trip with both ends inside counts
  * twice, and a spot near a zone's edge counts the viewed zone's cells only. */
 export function tripsNear(tk: Tools, lng: number, lat: number): { text: string; legs: number } | null {
@@ -118,14 +229,14 @@ export function tripsNear(tk: Tools, lng: number, lat: number): { text: string; 
   const L = tk.legs;
   if (!L) return null;
   // the same answer until the pointer, the unit or the legs change: tk runs on every place()
-  const r = unitMetres(), kept = tk.nearKept;
+  const bus = stationKind.peek() === "bus", r = bus ? CORRIDOR_M : unitMetres(), kept = tk.nearKept;
   if (kept && kept.legs === L && kept.lng === lng && kept.lat === lat && kept.r === r) return kept.out;
-  const out = sumTripsNear(tk, L, lng, lat, r);
+  const out = sumTripsNear(tk, L, lng, lat, r, bus);
   tk.nearKept = { legs: L, lng, lat, r, out };
   return out;
 }
 
-export function sumTripsNear(_tk: Tools, L: NonNullable<Tools["legs"]>, lng: number, lat: number, r: number): { text: string; legs: number } | null {
+export function sumTripsNear(_tk: Tools, L: NonNullable<Tools["legs"]>, lng: number, lat: number, r: number, bus = false): { text: string; legs: number } | null {
   // the radius in world metres each way, so any frame's scale is right here
   const f = getWorldFrame();
   const [x, y] = f.fromLonLat(lng, lat);
@@ -138,10 +249,13 @@ export function sumTripsNear(_tk: Tools, L: NonNullable<Tools["legs"]>, lng: num
     if (dx * dx + dy * dy <= 1) (sum += L.legs[i]), cells++;
   }
   if (!cells) return null;
-  // two significant figures: the figure is rough by nature
+  // from 50 up, two significant figures: the figure is rough by nature
   const p = 10 ** Math.max(0, Math.floor(Math.log10(Math.max(sum, 1))) - 1), r2 = Math.round(sum / p) * p;
-  const n = sum < 50 ? null : r2 >= 10000 ? count(r2) : tNumber(r2);
-  return { text: n === null ? tr("tools.nearUnder", { unit: unitShort() }) : tr("tools.near", { n, unit: unitShort() }), legs: sum };
+  // under 50 the exact count; a lone trip has its own singular rows
+  const exact = Math.round(sum), n = sum < 50 ? tNumber(exact) : r2 >= 10000 ? count(r2) : tNumber(r2);
+  const one = sum < 50 && exact === 1;
+  const text = bus ? (one ? tr("tools.nearBusOne", { distance: length(r) }) : tr("tools.nearBus", { n, distance: length(r) })) : one ? tr("tools.nearOne", { unit: unitShort() }) : tr("tools.near", { n, unit: unitShort() });
+  return { text, legs: sum };
 }
 
 /** The station placed last in tk session (T-312), found by its position so a rename shows. */
@@ -190,23 +304,6 @@ export function svgMark(tk: Tools, kids: string[], back: boolean): SVGSVGElement
   if (back) tk.box.insertBefore(svg, tk.box.firstChild);
   else tk.box.appendChild(svg);
   return svg;
-}
-
-export function addPending(tk: Tools) {
-  const b = tk.lastBox;
-  if (!b) return null;
-  const el = svgMark(tk, ["path"], false);
-  el.setAttribute("class", "station-ghost ok placed");
-  const p = { b, el };
-  tk.pendingSt.push(p);
-  placePending(tk);
-  return p;
-}
-
-export function dropPending(tk: Tools, p: { b: unknown; el: SVGSVGElement } | null) {
-  if (!p) return;
-  p.el.remove();
-  tk.pendingSt = tk.pendingSt.filter((x) => x !== p);
 }
 
 export function placePending(tk: Tools) {
@@ -298,13 +395,13 @@ export function outsideSide(tk: Tools, h: Exclude<Snap,{kind:"free"}>, ends: Tra
 
 /** The platform box at (lx, ly) along `ways` (the track from the spot each way), and the twin's
  * on quad. */
-export function boxGhost(tk: Tools, lx: number, ly: number, ways: ArrayLike<number>[], perM: number, bad: boolean, twinAt: { x: number; y: number; ways: ArrayLike<number>[] } | null, plat = tk.platFor(tk.stationSpot()), double = false, outside: ((sh: PlatformShape) => number) | null = null) {
+export function boxGhost(tk: Tools, lx: number, ly: number, ways: ArrayLike<number>[], perM: number, bad: boolean, twinAt: { x: number; y: number; ways: ArrayLike<number>[] } | null, plat = tk.platFor(tk.stationSpot()), double = false, outside: ((sh: PlatformShape) => number) | null = null, tramLook = false) {
   const sh=platformShape(ways,0,plat/2*perM);
   // T-3332: a platform on one track of double track: its half of the box, on the pointer's side
   const one=tk.oneSideAt(lx,ly,sh,double);
   // a station on single track is one bar on its outside, as network.ts draws it (T-3540)
   const side=one||outside?.(sh)||0, mid=!one&&side!==0;
-  const tram=tk.tramSpot(tk.stationSpot());
+  const tram=tramLook||stationOnTram.peek();
   tk.lastBox={lx,ly,ways,perM,plat,side,tram,mid};
   const shape=ghostShape(tk, lx,ly,ways,perM,plat,side,tram,mid);
   tk.ghost ??= svgMark(tk, ["path"], false);
@@ -324,22 +421,24 @@ export function boxGhost(tk: Tools, lx: number, ly: number, ways: ArrayLike<numb
 }
 
 export function stationRings(tk: Tools, h: Snap) {
-  const step = stationOnTram.peek() ? 0.5 : 1;
+  // T-4135: a BRT station has one ring, at the bus corridor's width
+  const bus = stationKind.peek() === "bus", step = stationOnTram.peek() ? 0.5 : 1;
   if (!tk.rings) {
     tk.rings=svgMark(tk, ["circle","text","circle","text"],true);
     tk.rings.setAttribute("class","station-rings");
   }
-  const unit=circleOnScreen([h.lx,h.ly,unitMetres()],(x,y)=>tk.screen(x,y),toLngLat,toLocal);
+  const unit=circleOnScreen([h.lx,h.ly,bus?CORRIDOR_M:unitMetres()],(x,y)=>tk.screen(x,y),toLngLat,toLocal);
   if (!unit) return;
   const {x:cx,y:cy,r:km1}=unit;
   tk.rings.style.display="";
   placeAt(tk.rings,cx,cy,0,0,false);
   const kids=tk.rings.children;
   for (let i=0;i<2;i++) {
-    const r=km1*step*(i+1), c=kids[i*2], t=kids[i*2+1];
+    const r=km1*(bus?1:step*(i+1)), c=kids[i*2], t=kids[i*2+1];
+    (c as SVGElement).style.display=(t as SVGElement).style.display=bus&&i?"none":"";
     c.setAttribute("r",String(r));
     t.setAttribute("y",String(-r-3));
-    t.textContent=`${tNumber(step*(i+1))} ${unitShort()}`;
+    t.textContent=bus?length(CORRIDOR_M):`${tNumber(step*(i+1))} ${unitShort()}`;
   }
 }
 

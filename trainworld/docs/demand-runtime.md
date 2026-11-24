@@ -70,7 +70,7 @@ throughout). Startup timings: notes/T-172.md, notes/T-174.md.
 ## Bare zones
 
 **Bare zones** (T-325, T-336). A zone viewed or on screen beside the view (above zoom 7.5, T-871)
-that no built station reaches opens **bare**: its pack goes to the auxiliary worker alone, which sets its commute and
+that no built station reaches opens **bare**: its pack goes to the auxiliary worker alone (on a phone, the solving worker), which sets its commute and
 everyday layers on an empty network and solves every period once. With no station in reach every
 trip walks or drives, so these are exactly the figures any solve gives it. No solving worker opens
 it and no solve is started or waited for, so a pan never re-solves. The `opened` reply carries
@@ -102,7 +102,11 @@ solved with no station in it.
   with no solve started for it, so a first line's solve need not wait. Timings: notes/T-351.md.
 - A station built within reach downloads the pack again (the page keeps no copy) and opens it in
   every worker; the solve waits for it and covers it from then on. Its bare figures serve until a
-  shown solve covers it. The auxiliary worker keeps its bare copy (WASM memory never shrinks).
+  shown solve covers it. A zone with no figures shown yet (reached before any bare opening of it)
+  opens bare in the auxiliary worker first, from the same download and ahead of its open in every
+  worker there (T-4051, `bareFirst`), so the solve covering it finds its figures and runs as any
+  edit's solve, not round by round with a barrier (`newZones`: 3.5x the wait on a big game). The
+  auxiliary worker keeps its bare copy (WASM memory never shrinks).
   Memory and timings of a pan with bare zones: notes/demand-measurements.md.
 - **Zones track crosses** (T-1047, `openCrossed`): a zone built track crosses (game/trackZones.ts)
   that no station reaches opens bare too, outside a load's card and only while no other bare
@@ -114,7 +118,9 @@ solved with no station in it.
 cover is open fine or coarse in the solving workers (the aux worker opens every zone fine; its
 commute copies only map sums to cells). The page keeps a fine set, checked when the view settles,
 on a click, on an edit, when a load's card goes and every 30 s:
-1. the zone in view, once in view 2 s (a pan refines nothing);
+1. the zone in view, once in view 2 s (a pan refines nothing); on a phone or tablet (`phoneLoad`, T-4103) only a
+   zone already fine: looking at a coarse zone leaves it coarse (a selection or an edit there still refines it), since
+   that refine cost about 140 MB for a minute after a far jump for a few MB of detail;
 2. the selected zones: a zone, a bubble selection (the zone in view), a station's zone, a trip's two ends;
 3. zones edited in the last 15 minutes of wall time (stations added, removed or moved; a line's
    stops added or dropped, or its trains or cars changed: the zone in view if the line stops there);
@@ -151,10 +157,22 @@ their figures, so lines carry the new zone's riders beside the others' as they w
 names only the refined zones; when every cluster solved is one, the other zones' bubbles' sums are
 the last solve's, sent again. Its periods are never kept as a whole solve's (T-124): the next edit
 that touches the cluster solves it whole. Every solve records which of its zones were coarse (`Solve.coarse`); the zones
-shown from a coarse solve are `roughZones` (no star or goal comes from them), and the zone in view
+shown from a coarse solve are `roughZones` (stars and goals count them as any other, T-4117: every region's
+share within 0.01 points of fine on the Tokyo saves, notes/T-4086.md), and the zone in view
 shown rough while fine is on its way is `refiningZone` (the status tag,
 [ui-demand-views.md](ui-demand-views.md)). The demand cache's key marks each coarse zone's pack. `?lod=fine` opens
 every zone fine and `?lod=coarse` every zone coarse, and neither changes them after.
+
+**Calculate trips in less detail** (T-4117, `display.coarseDemand`, [ui-panels.md](ui-panels.md) Performance): every
+zone coarse, the zone in view, the selected and the edited ones too, so none is ever refined. Per browser, on by
+default on a phone or tablet (`mobileDevice`), off on a computer. Trips are calculated a third to two thirds faster
+after a load or an edit on a phone's pool, about a fifth faster on a computer's four workers (notes/T-4117.md); totals move about 0.01%, lines up to about 7%, small stations up to about 20% (T-4086). The memory
+estimate before a load (`memoryNeed`) counts the biggest zone coarse too. Changed mid-game, it takes effect at the next
+check (at once, or once the edit note or a load's card is done): on, every open zone opens again coarse; off, the
+fine set is made afresh as a game's first (the save's `demandFine` while this game has made none) and those zones
+open again fine. Either way it is a level change as above: the figures shown stay until the solve covering it lands,
+the status tag counts the zones ("Calculating trips in 5 cities", or "Calculating trips here" while the zone in view
+is refined), and the figures change in one step.
 
 ## Warm-up and the worker pool
 
@@ -166,11 +184,16 @@ page's workers, so they all open on optimised code. Timings in
 notes/T-174.md and notes/demand-measurements.md.
 
 **The pool and the bubbles' chain** (T-119). The pool is half the logical cores less one, at most
-5, at least 1 workers that solve, and one more that holds no period ([architecture.md](architecture.md) 7). A solving worker that runs out of memory
+5, at least 1 workers that solve, and one more that holds no period ([architecture.md](architecture.md) 7). On a phone or
+tablet (`phoneLoad`, T-4103), whose pool is one solving worker, there is no such aux worker: the solving worker opens
+the bare zones too (`bareToo`) and answers the aux worker's questions between its populations, as the focus pool's
+does (65-80 MB less; a bare zone's figures and the bubbles wait behind a population there; identical to the bit,
+`t325-bare-check.mjs` with one shared worker, notes/T-4103.md). A solving worker that runs out of memory
 (a failed WASM grow; `memoryShort`) halves the pool, the focus pool ends, and the same solve is sent again to the rest with
 no figure changed; the smaller count is kept for the tab's session (`sessionStorage`, so the reload of "Play without
 intercity trips" keeps it) and caps every later pool unless `?demandWorkers` says (T-2867, T-3072). Only the last solving
-worker running out shows the out of memory notice. Periods go to workers
+worker running out shows the out of memory notice (during a load that ran more than one, the page first saves and
+opens the game again with half: T-3933, [ui-panels.md](ui-panels.md) "Loading"). Periods go to workers
 by index (worker i of n: periods q with q mod n = i), so five workers solve a stage of all five periods at once, unless
 that puts two periods of a demand level on one worker (2 workers: high demand's three periods), when they are dealt
 out level by level (high, then medium, then low: 0, 1, 2, 3 and 4 in that order, to workers 0, 1, 0, 1, 0), so an edit to one level's trains
@@ -349,7 +372,11 @@ re-solves that level's periods (three at high, one at medium or low), a new stat
 `?perfOff=periods` re-solves every period of a cluster solved.
 
 After an edit (a solve without the round barrier) the clusters to solve go one after another, the
-zone in view's first (T-393), then the city view's zone's (T-2453), each to its last round; each but the last is sent as soon as it is
+zone in view's first (T-393), then the city view's zone's (T-2453), each to its last round. The zone in view's goes
+period after period, each through all its rounds (T-2624, `?perfOff=wholeSteps` off: round after round; periods
+share no rider, so the figures are the same), each period's final sent as it lands (`cluster.step`); where no local
+result of the solve was shown (none solved, or a solve restarted by T-3925) the page shows them as the local
+result's steps (below). Each cluster but the last is sent as soon as it is
 done, as one result per period with that cluster's figures alone (`result.cluster`), and the page
 puts its lines, their stations, its zones' views and, if the market is in it, the regional market's
 into the shown result at once. The network-wide totals wait for the solve's final: once every
@@ -388,7 +415,16 @@ read through its old route nodes, carried to the new network's by line and stati
 those zones' subzone sums (marked `local`, kept apart on the page until the whole solve's of the same
 round are all in, T-2532), so their bubbles follow the figures: the page
 puts its lines (not one shown at other fares, T-3303), their stations and those zones' views in (never the market's own figures) and
-clears the lines' pending label ("calculating...", ui-inspectors.md). A worker then waits for the page's `whole`, sent 8 s after the
+clears the lines' pending label ("calculating...", ui-inspectors.md). **Period by period** (T-2624, notes/T-2624.md,
+`?perfOff=steps` off): each period's result goes as its period is solved, the periods whose trains an hour changed
+on one of the cluster's lines first (an edit's trains can change nothing at a level, a line at its most trains an
+hour) and the others together with the last, else in period order, the morning peak first (the order changes no
+figure); the last goes after the zones' sums as above. While every solving worker solves locally and `whole` has not gone, the page shows each step before
+the last (`localStep`, workers/demandSteps.ts): the cluster's lines take the solved periods' figures; an unsolved
+period keeps the figures shown before the first step, except on a line the edit changed (its stops, trains or
+cars), where it gets the change of its level's solved periods in proportion; riders a day and boardings by stop are
+summed from the periods and the lines' stations move by their change. Zones, purposes, bubbles and the pending
+label wait for the last step, which is the local result above to the bit. A worker then waits for the page's `whole`, sent 8 s after the
 local results are shown, or at once when a worker solves nothing locally, so an edit following
 within that time is solved locally too; the whole solves follow as above and replace everything.
 **Stations on no line** (T-2410, `?perfOff=alone` off) are left out of the network demand solves
@@ -428,11 +464,21 @@ that, so edits coming faster than a slow local solve (all of Japan's, about 2 mi
 whole solve from starting. For the first 10 s of the local solve (`HOLD_QUIET_MS`) a network held
 behind it is taken to go at its local result: no zone is refined aside and the time left counts no
 second solve; after that both as for any hold. A worker replaced meanwhile still re-solves at
-once. So building steadily, a whole solve lands about every local solve plus whole solve (a line a
-minute on 2 workers: all of China every 60-90 s, all of Japan every 19-26 minutes), and an edit made during one
-shows its figures when it has landed and the local solve on top is done (the zone in view's sooner, from a
-worker aside: "The zone in view aside" below). A solve with the barrier (a load, a zone just opened)
-is still cut short by a newer network.
+once. **A newer edit stops a whole solve under 40% done** (T-3925, notes/T-3925.md, `?perfOff=restart`
+off): once an edit's whole solve has started (`whole` sent, or no worker has a local stage), a network that differs
+from its own (an edit; not a zone opened or at another level) is sent at once, cutting it short, while under 40% of
+it has run (time since sent against that plus the time left by its units, `unitsLeft`; while that can't be told, it
+waits) and the edits solved one after another without a final (`restartFrom`) began less than that solve's length
+ago. So building steadily a final still lands within about two solves of the first edit. Past 40% the held edit's
+local result on top of that final shows its lines sooner than a restarted solve would: the workers stop between
+population passes, as for any newer network, and the cut solve has already put the edited cluster on its network,
+so the restarted solve has no local stage and its lines and zones wait for its final (the zone in view gets no
+aside meanwhile). Its figures equal one solve of the newer network to the bit (`checks/t3925-restart-solve.mjs`).
+The status tag's bar starts from 0 with each restarted solve (`solveRestarted`). So building steadily, a whole solve lands about every local solve plus whole
+solve (a line a minute on 2 workers: all of China every 60-90 s, all of Japan every 19-26 minutes), and an edit made
+during one past that point shows its figures when it has landed and the local solve on top is done (the zone in
+view's sooner, from a worker aside: "The zone in view aside" below). A solve with the barrier (a load, a zone just
+opened) is still cut short by any newer network.
 With the barrier
 (startup, a zone just opened) the clusters to solve go in two groups when there are two or more and
 the first ranked zone's is one of them (T-402; the zone in view's, else the city view's, "The zone
@@ -466,7 +512,9 @@ is shown, and over a final result in that zone's own view alone, no line's figur
 per line are that one zone's, so a long line would read near zero). A cached result shown beats it. During
 a game load the focus pool (below) does this instead, to the zone's last round. After
 an edit the zone in view's cluster sends its free-flow round as soon as it has it, which gives new
-lines their first figures (T-324) without waiting for its last round.
+lines their first figures (T-324) without waiting for its last round; only when a line is new or has other stops
+than the shown figures' solve gave it (T-2624, `noPreview`, `?perfOff=preview` off: else its parts are work for
+nothing, 8-9 s a worker on the New York save).
 **The city view's zone next** (T-2453, notes/T-2453.md, `?perfOff=selected` off). A zone selected in
 the city view, when it is not the zone in view, comes second in each of those queues: its pack
 downloads and opens right after the zone in view's (`firstZones`; a `first` message when it is

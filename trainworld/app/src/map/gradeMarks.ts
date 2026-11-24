@@ -60,6 +60,7 @@ uniform float u_ends;        // 1: ramp ends are drawn (the track level view)
 uniform float u_ramps;       // 0: no marks on ramps and portals
 uniform float u_flat;        // 0: no marks on flat crossings and junctions
 uniform int u_level_hide;    // T-3420: the levels switched off (drawn faint, T-3560), a bit each from level -3
+uniform int u_no_bp;         // 1: blueprint marks are not drawn (Settings' Show blueprints)
 in vec4 a_mark;              // x, y, shape, angle
 in vec2 a_style;             // tier (0 built, 1 blueprint), level
 out vec2 v_p;
@@ -74,6 +75,7 @@ void main() {
   float r = rend ? (u_ends > 0.5 && u_ramps > 0.5 ? u_rw[int(a_style.x + 0.5)] : 0.0) : ramp ? u_r.z : (a_style.x > 0.5 ? u_r.x : u_r.y);
   if (u_ramps < 0.5 && ramp) r = 0.0;
   if (u_flat < 0.5 && (shape == ${M_CROSSING} || shape == ${M_JUNCTION})) r = 0.0;
+  if (u_no_bp == 1 && (rend ? (int(a_style.x + 0.5) & 1) == 1 : a_style.x > 0.5)) r = 0.0;
   v_fade = ((u_level_hide >> (clamp(int(round(a_style.y)), -3, 3) + 3)) & 1) != 0 ? ${LEVEL_FADE.toFixed(2)} : 1.0;
   if (r <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   float rq = rend ? length(vec2(0.5625 * r, 0.5 * u_thick)) + 2.0 : ramp ? 1.8 * r + 3.0 : r + 3.0;
@@ -231,7 +233,7 @@ export class GradeMarks {
     // again after a lost context (T-953): the old buffers are gone, the renderer uploads anew
     this.built = this.drawing = null;
     this.prog = compileOptional(gl, VS, FS, "grade marks");
-    if (this.prog) this.u = uniforms(gl, this.prog, [...PROJECT_UNIFORMS, "u_viewport", "u_r", "u_ink", "u_bp", "u_fill", "u_bad", "u_dpr", "u_quiet", "u_level_colours", "u_flat", "u_ramps", "u_level_hide", "u_rw", "u_ends", "u_thick"]);
+    if (this.prog) this.u = uniforms(gl, this.prog, [...PROJECT_UNIFORMS, "u_viewport", "u_r", "u_ink", "u_bp", "u_fill", "u_bad", "u_dpr", "u_quiet", "u_level_colours", "u_flat", "u_ramps", "u_level_hide", "u_no_bp", "u_rw", "u_ends", "u_thick"]);
   }
 
   private upload(old: Instances | null, data: Float32Array | undefined): Instances | null {
@@ -281,8 +283,15 @@ export class GradeMarks {
     this.drawing = this.upload(this.drawing, keep);
   }
 
-  draw(lc: LocalCamera, vp: readonly [number, number], zoom: number, dpr: number, levelColours: Float32Array, flat = true, ramps = true, ends: { w: readonly number[]; thick: number } | null = null) {
-    if ((!this.built && !this.drawing) || NO_MARKS) return;
+  /** whether the drawing tool has marks */
+  get previewing() {
+    return !!this.drawing;
+  }
+
+  /** `which`: the built network's marks or the drawing tool's (T-4136: those are drawn over the strokes' cache) */
+  draw(lc: LocalCamera, vp: readonly [number, number], zoom: number, dpr: number, levelColours: Float32Array, flat: boolean, ramps: boolean, ends: { w: readonly number[]; thick: number } | null, which: "built" | "drawing") {
+    const s = which === "built" ? this.built : this.drawing;
+    if (!s || NO_MARKS) return;
     const [loud, quiet, ramp] = markRadii(zoom);
     if (!loud && !quiet && !ramp) return;
     const gl = this.gl, u = this.u, shades = shadeColours();
@@ -303,11 +312,9 @@ export class GradeMarks {
     gl.uniform1f(u.u_ends, ends && ramp > 0 ? 1 : 0);
     if (ends) gl.uniform1fv(u.u_rw, ends.w);
     gl.uniform1f(u.u_thick, ends ? ends.thick : 0);
-    for (const s of [this.built, this.drawing]) {
-      if (!s) continue;
-      gl.bindVertexArray(s.vao);
-      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, s.count);
-    }
+    gl.uniform1i(u.u_no_bp, which === "built" && hidden.blueprints ? 1 : 0);
+    gl.bindVertexArray(s.vao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, s.count);
     gl.bindVertexArray(null);
   }
 }

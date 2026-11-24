@@ -23,7 +23,7 @@ What Canada's data changed, rule by rule (sources in notes/T-277.md, the adapter
   counted at home): their jobs are put back at workplaces by employment income band, and "no
   fixed workplace" workers added in proportion. Downtown Toronto is probably still under its
   pre-pandemic job count; for today's commuting with 24.7% at home it is plausible. Not
-  reweighted by OSM offices (DECISIONS-to-2026-10-19 2026-10-13).
+  reweighted by OSM offices (T-277).
 - **Work from home** is one share for the whole pack (Labour Force Survey, May 2024, Toronto CMA
   24.7%), applied as "the same fraction of 2021's at-home workers commutes again" at both ends,
   Hamilton and Oshawa included (28.3% and 27.3% at home in 2021; their own current share is
@@ -511,7 +511,7 @@ notes/T-420.md has the tables.
   as the level is seen.
 - **Rail propensity** (T-636, docs/demand-mode.md 4.3). None: `asc_rail` is 0 everywhere, so rail
   and the car are judged on time and money alone, by the ratio curve; Anita chose a sensible and
-  clear model over fitting the real cities (DECISIONS-to-2026-10-19 2026-10-17). A rail constant for the
+  clear model over fitting the real cities (DECISIONS.md, T-621). A rail constant for the
   everyday layer exists as a parameter at 0 (`everyday_asc_rail`), and the country table
   (`api::COUNTRY_ASC_RAIL`) is empty. The real cities' station entries are the loose check
   (notes/T-636.md). Why it may not carry over: with no constant, habit, income, bus competition and what the car is
@@ -657,8 +657,9 @@ notes/T-420.md has the tables.
   (people 65+ are 29% of Japan, 3% of Nigeria). Check: a country's travel survey walk shares by
   distance (NHTS, England's NTS, France's EMP, Japan's person-trip surveys) and its census
   walk-to-work share.
-- **The boarding cost** (T-3888, T-3910). A trip pays 2 perceived minutes at its first boarding and 2 at
-  its last alighting, on a train or a tram at any level; nothing on a bus or ferry, or at a change.
+- **The boarding cost** (T-3888, T-3910, T-4041). A trip pays 2 perceived minutes at its first boarding and 2 at
+  its last alighting, on a train or a tram at any level, but not at a tram stop on the street;
+  nothing on a bus or ferry, or at a change.
   One number for every place. Why it may not carry over: the depth of stations (Moscow's or Kyiv's
   deep stations take minutes of escalator, a street-level light rail none), lifts and escalators. Check: station access times from a travel survey or an
   operator's published entrance-to-platform times.
@@ -666,7 +667,8 @@ notes/T-420.md has the tables.
 - **Trams** (T-2926). A tram line is a rail line: it boards with no penalty (as every line since T-3856), each tram section counts as three quarters of a rail car in seats, rated and crush loads,
   and a cell keeps at most 3 stops served only by tram lines among its 6 nearest stations, so a street of
   close stops does not crowd out the metro a short walk away. A stop a metro or rail line also serves is
-  an ordinary station. All three are one number for every place. Why they may not carry over: where
+  an ordinary station. All three are one number for every place, for commutes, everyday trips and the market
+  (longer trips, and commutes and outings across a zone line) alike (T-3909, T-3919). Why they may not carry over: where
   trams run in mixed traffic with long waits at signals or are unreliable, the missing boarding penalty
   makes them too attractive; where trams are the main mode (Melbourne, Zurich) a cap of 3 undercounts
   how many tram stops people choose among. Check: a city's tram boardings per route-km against its
@@ -723,7 +725,9 @@ notes/T-420.md has the tables.
   cap of bases a boarding times its own multiple, and never below 0 (T-3578): a line at 0 takes no base, and no
   line's fares go below 0. Which line's multiple set a trip's base is not traced; the pool's network-wide
   shares stand in, as for the base itself.
-  Ferry lines take the player's Ferry multiplier and bus lines the Bus multiplier (T-3028) the same way (defaults 1.00 and 0.80, T-2195, T-3856; "Ferries as lines" below).
+  Ferry lines take the player's Ferry multiplier (one per boat size, T-3892), bus lines the Bus multiplier (T-3028) and
+  BRT lines the BRT multiplier (T-3915) the same way (defaults 1.00, 0.80 and 1.00; Small boats 1.50; T-2195, T-3856;
+  "Ferries as lines" below).
   **Transfer fare** (T-1801): the player's, $0 by default, paid on each change of line except one
   inside a fare zone run (T-3784), times the
   country's scale and weighed at its `fare_w` like the curve; the regional market changes free. At
@@ -742,6 +746,16 @@ notes/T-420.md has the tables.
   are richer than the countryside), survey years differ by decades, and the trip rate by income
   within a country is taken from the one between countries. Check: a country's long-distance
   travel survey by income band.
+- **Which line riders take** (Anita 2026-11-22, T-4041). Where several lines go towards a
+  rider's stop, riders turn up at random; three quarters take whichever gets them there first
+  and a quarter the first train that comes (unless it is sure to arrive after the others would),
+  each line's wait uniform over its headway and independent of the others'; lines on one track and
+  stops with nowhere to pass are one evenly spaced service where their riders get off alike (T-4050:
+  two lines every 10 minutes wait 2.5 minutes, not 3.3; docs/demand-kernel.md 4). One rule for every
+  place. Why it may not carry over: elsewhere real timetables also space lines that share only a
+  platform or meet at a junction, and where riders check a live departure board or an app they
+  know the next train, which this rule assumes they act on. Check: the split between an express and a local on
+  a corridor with published line counts.
 - **Waiting and crowding penalties.** A wait counts as plain minutes, half the headway, with no
   weight (Anita, T-585), where the literature (mostly US and European) weighs a platform wait
   1.5-2.5 times a minute aboard and a long wait at home before a known departure less. The
@@ -771,8 +785,8 @@ notes/T-420.md has the tables.
   average extra wait for full trains, worked out per period with the boarding account's rule:
   arrivals peaking mid-period at the US busiest-hour factors, trains taking riders up to crush
   (240 a 20 m car, 150% of its rated 160, T-2186; a bus a third of a car, 80, T-2919), the extra wait in plain minutes like any wait (T-585) and
-  capped at 60 minutes. Riders left behind wait at their station: nobody changes onto the line
-  they left back towards the stop they came from, so nobody rides a full line the other way to
+  capped at 60 minutes. Riders left behind wait at their station: nobody changes onto a line
+  back towards the stop they came from (T-575, T-4064), so nobody rides a full line the other way to
   board upstream (Anita, T-575; a line passing a station twice may be changed onto there towards
   other stops, T-1268, and one looping back near itself across the bend, never back towards the
   stop walked from, T-3295), though
@@ -906,6 +920,22 @@ notes/T-420.md has the tables.
   people outside it, go to the neighbouring packs through `cross_everyday` (docs/zones.md 4a), so
   Wuhan's airport in the Huangpi zone takes its passengers from Wuhan. Unbuilt land and sea keep
   their share out (never handed to the built packs).
+- **Big airports reach farther** (T-3502, issue 6; everyday.rs `air_far`). An airport's O&D
+  passengers a year over 10M, kept between 1 and 3, multiply its 20 km decay and its 80 km reach,
+  the reach at most 150 km and faded over its last 40 km (today's 40-80 km at 10M and under): 20M
+  is 40 km and 150 km, 30M and over 60 km and 150 km. Its size is its terminal cells' outings (cells
+  within 4 km together) plus its sites' `outside_outings`, x 732; tier0's pack share and
+  `cross_everyday`'s draw take the same decay and reach (each site's `decay_m`, `reach_m`; a site
+  without them keeps 20 and 80 km), so trips from cities in other zones (Suzhou to Pudong) come
+  with the next airports step and cross_everyday; until then a pack holds only its own 80-150 km
+  (Seoul to Incheon, 50 km, is in the `seo` pack). Set on the CAA's 2023 survey of terminating
+  passengers by county and region against the rule on GHSL people (where a pack holds a band, the
+  game's share follows the kernel's: JFK 20.7% at 40-80 km against 20.6%): the share from 80-150 km comes out Heathrow
+  11% (published about 13%), Gatwick 11% (16%), Stansted 15% (17%), Manchester 18% (15%), and
+  Greater London's share Heathrow 52% (52%), Gatwick 50% (42%), Stansted 46% (47%). Why it may not
+  carry over: all of it is the UK, where few airports serve many people; the 10-30M ramp is
+  judgement, and Birmingham (12M, about 10% from 80-150 km) stays under it. Check: an airport
+  survey of where passengers start, outside the UK (Massport's Logan survey, Incheon's).
 - **Medical** (T-142, T-387; `enrich_medical.py`, numbers in `pipeline/hospital_beds.json`). OSM
   hospitals, clinics, doctors and dentists everywhere; a hospital draws 1,000 visits a year a bed.
   Beds are OSM's `beds` where tagged; else 0.588 x the square root of the site's floor area in m²
@@ -1016,6 +1046,12 @@ notes/T-420.md has the tables.
 
 - **Station merge and walking transfer distances** (100 m merge, 300 m walks). Fine for US
   stations; very large hubs (Shinjuku, Châtelet) have transfers over much longer underground walks.
+  A bus stop's walks reach 150 m (`network::BUS_WALK_M`, T-4079, Anita 2026-11-23: at 300 m a dense
+  bus network's connections looked "kinda silly / web-like"), against 300 m between stations.
+  A line's consecutive bus-only stops served by the same lines, within 500 m of each other, are one demand
+  station (`busmerge::MERGE_M`, T-4158, Anita 2026-11-24: "ok, lets do 500m"; 300 m in T-4094), for speed:
+  every figure is split back over the real stops. The lie: a ride between two stops of one group is lost, which
+  shows on short lines with close stops and on Auto lines (stops 400 m apart), about 1% of their riders.
   A trip may start with the same walk it may end with (to a station within 300 m or of its
   complex, at a walking transfer's cost, no change minutes or transfer fare; T-3718, Anita
   2026-11-18: "let trips start with walk"), so a commute's way home (its station pair reversed)
@@ -1041,6 +1077,13 @@ notes/T-420.md has the tables.
   (Paris's Chatelet, Tokyo's Otemachi, Hong Kong's Central-Hong Kong walkway) have stairs, gates
   and crowds that slow them below 2 m/s, and riders dislike them more than their minutes say.
   Check: a few published passage times against the rule.
+- **Bus connections without a passage** (T-4079, Anita 2026-11-23: "raw connections lose 1
+  minute"). A change on foot touching a bus stop or a BRT station, through no passage, takes 1 real
+  minute more than its walk (`network::CONNECTION_MIN`, in the walk edge, so the walking rule counts it
+  too), so a passage there saves that minute; train-to-train walks are unchanged. A judgement figure,
+  the size of a station building's saving. Why it may not carry over: a kerbside change between two
+  bus stops can be quicker than a station's, with no stairs or gates. Check: none needed; it is the
+  player's to buy away.
 - **Changes inside a station building** (T-2220, Anita's yes, 2026-11-03: "changes inside it a
   little faster"; T-2276, 2026-11-03: "reduce to 1 minute instead of 2. also it should count as a
   waiting room"). At a station the player has drawn a building round, a change's fixed 2 perceived
@@ -1088,7 +1131,9 @@ notes/T-420.md has the tables.
   extra minutes weigh less. Check: night and late-evening rail shares on a real network with
   service ending early (a commuter line without evening trains) against the model's.
 - **Bus corridors** (T-1464, Anita's yes to the design, 2026-10-26; docs/demand-kernel.md step 2).
-  A home within 600 m of a bus route walks its distance to the route plus 100 m and rides at the bus's run time (T-2904: a hop takes the
+  A home within 600 m of a bus route walks its distance to the route plus 100 m to the nearest of its stops, every stop
+  the line draws (T-3924, Anita: "if people are seeing bus stops the bus stops have to be real"; Auto's about every 400 m),
+  and rides at the bus's run time (T-2904: a hop takes the
   car's time at 85% of its speed, never under 30 km/h for a bus lane, plus 28 s for the stop; about 19 km/h at
   400 m stops in a dense centre, 22 in open country), on the network's fare curve, bus kilometres included. Boarding a
   bus costs what boarding a train does, the wait alone (Anita, T-3856: buses should be viable for short trips; a

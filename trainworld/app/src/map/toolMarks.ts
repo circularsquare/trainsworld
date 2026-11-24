@@ -1,9 +1,11 @@
 // The tools' marks on the map: the curve circle and tangent, the band, the marks and the tag (T-2374, moved out of tools.ts).
 
+import { render } from "preact";
 import { t as tr } from "../i18n";
+import { Icon } from "../ui/widgets";
 import { distance } from "../game/format";
 import { metresBetween } from "../game/walks";
-import { buildLevel, besideOn, tool, tramTrack } from "../game/ui";
+import { buildLevel, besideOn, buswayTrack, stationKind, tool, tramTrack } from "../game/ui";
 import { describeRemovable } from "../game/remove";
 import { realStationUnder } from "./realStations";
 import { world } from "../game/world";
@@ -12,10 +14,13 @@ import { toLngLat, toLocal } from "./geo";
 import { circleOnScreen, drawTangent, endHeading } from "./curveCircle";
 import { placeAt } from "./screenPlace";
 import { curveLabels, legCurveLabels, placeCurveLabels, placementTag, rampLabels } from "./trackTagRows";
+import { MODE_ICON_COLOURS } from "../game/palette";
 import { TRACK_SPECS } from "../game/trackKinds";
 import { logShare } from "./modeBar";
-import { notOnTrack, NEAR_BAR_LO, NEAR_BAR_HI, BESIDE_PX, type Snap, tooFarText, withName } from "./toolParts";
-import { tripsNear, lastPlacedName, el, svgMark, stationGhost, stationRings, checkGhost } from "./stationTool";
+import { NEAR_BAR_LO, NEAR_BAR_HI, BESIDE_PX, type Snap, tooFarText, withName } from "./toolParts";
+import { tripsNear, lastPlacedName, el, svgMark, stationGhost, stationRings, checkGhost, brtSpot, boxGhost, BRT_STATION_PLATFORM } from "./stationTool";
+import { hidePortGhost, portMarks } from "./stationPort";
+import { freeGhost, freeHint, freeStarted } from "./stationFree";
 import type { Tools } from "./tools";
 
 export function curveCircle(tk: Tools, pv: PreviewAnswer | null) {
@@ -100,19 +105,20 @@ export function placeMarks(tk: Tools) {
     placeAt(m, x, y, dx, dy);
   };
   const t = tool.peek();
-  if (t === "track" && tk.start) {
-    const pv = tk.lastPreview;
+  const start = t === "track" ? tk.ghostStart : null;
+  if (start) {
+    const pv = tk.shownPreview;
     // where the segment starts, which from a station is past its platform (T-1155)
     if (pv && pv.verts.length >= 2) put(el(tk, k++, "pi-mark"), pv.verts[0], pv.verts[1]);
-    else put(el(tk, k++, "pi-mark"), ...toLocal(tk.start.lng, tk.start.lat));
+    else put(el(tk, k++, "pi-mark"), ...toLocal(start.lng, start.lat));
     if (pv) {
       const from = k;
       k += placeCurveLabels([...legCurveLabels(pv.legs), ...rampLabels(pv.ramps), ...curveLabels(pv.verts)], (x, y) => tk.screen(x, y), tk.overlay.cssW, tk.overlay.cssH, (i) => el(tk, from + i, "pi-label"));
     }
   }
   for (let i = k; i < tk.marks.length; i++) tk.marks[i].style.display = "none";
-  curveCircle(tk, t === "track" && tk.start ? tk.lastPreview : null);
-  curveTangent(tk, t === "track" && tk.start ? tk.lastPreview : null);
+  curveCircle(tk, start ? tk.shownPreview : null);
+  curveTangent(tk, start ? tk.shownPreview : null);
 
   // the platform ghost shows only while the station tool snaps (below)
   if (tk.ghost) tk.ghost.style.display = "none";
@@ -145,16 +151,61 @@ export function placeMarks(tk: Tools) {
     return;
   }
   // the snap ring and the cursor tag
+  const kind = t === "station" ? stationKind.peek() : null;
+  if (kind !== "port") hidePortGhost();
+  if (kind === "port") {
+    tk.ring.style.display = "none";
+    tk.shown = null;
+    // T-1777: a pointer gone off the map (no hover) leaves no ghost or tag
+    if (!tk.hover) return void (hidePortGhost(), (tk.tag.style.display = "none"));
+    return portMarks(tk, (c, bad, x, y) => showTag(tk, c, bad, x, y));
+  }
+  // T-3802: the real station ring under the pointer, named first in the tag (it holds the hover's back)
+  const real = t === "station" && tk.pointer ? realStationUnder(tk.pointer.lng, tk.pointer.lat) : null;
+  if (kind === "bus") {
+    // T-3378: a BRT station's ghost along the road or bus route by the pointer; T-3999: the bus kind only
+    tk.ring.style.display = "none";
+    tk.shown = null;
+    const p = tk.pointer;
+    if (!p || !tk.hover || tk.ghostSpent) return void (tk.tag.style.display = "none");
+    const b = brtSpot(tk, p.lng, p.lat), here: Snap = { kind: "free", lx: 0, ly: 0 };
+    if (b) {
+      boxGhost(tk, b.lx, b.ly, b.ways, b.perM, false, null, BRT_STATION_PLATFORM, false, null, true);
+      stationRings(tk, { ...here, lx: b.lx, ly: b.ly });
+      const lines = helpLines(tk, { ...here, lx: b.lx, ly: b.ly }, null);
+      if (lines.length) showTag(tk, lines, false, p.px, p.py);
+      else tk.tag.style.display = "none";
+    } else if (b === null) showTag(tk, ...withName(real, tr("tools.notBesideRoad")), p.px, p.py);
+    else tk.tag.style.display = "none";
+    return;
+  }
+  const row = (s: string) => Object.assign(document.createElement("div"), { textContent: s });
+  if (t === "station" && freeStarted()) {
+    // T-3999 (T-794, T-907): after the first click on open ground, the station and its own piece toward the pointer
+    tk.ring.style.display = "none";
+    tk.shown = null;
+    const g = freeGhost(tk, (lx, ly, ways, perM, bad, plat, tram) => boxGhost(tk, lx, ly, ways, perM, bad, null, plat, false, null, tram));
+    const p = tk.pointer;
+    if (!g || !p) return void (tk.tag.style.display = "none");
+    stationRings(tk, g.mid);
+    if (g.ok === false) return void showTag(tk, g.why, true, p.px, p.py);
+    const lines = helpLines(tk, g.mid, freeHint());
+    if (g.text) lines.splice(1, 0, row(g.text));
+    showTag(tk, lines, false, p.px, p.py);
+    return;
+  }
   if (t === "station") checkGhost(tk);
   const h = t === "station" ? (tk.ghostSpent ? null : tk.stationSpot()) : tk.hover;
   const v = t === "station" ? tk.verdict() : null;
   if (t === "station") tk.shown = h && h.kind !== "free" ? v : null;
-  // T-3802: the real station ring under the pointer, named first in the tag (it holds the hover's back)
-  const real = t === "station" && tk.pointer ? realStationUnder(tk.pointer.lng, tk.pointer.lat) : null;
   if (t === "station" && h?.kind === "free") {
-    // T-1820: open ground takes no station; no ghost, only the reason by the pointer
-    tk.ring.style.display = "none";
-    showTag(tk, ...withName(real, notOnTrack()), ...tk.screen(h.lx, h.ly));
+    // T-3999: open ground takes a station by two clicks (its first end, then its direction); the ring marks the first
+    tk.ring.className = "snap-ring";
+    tk.ring.style.display = "";
+    put(tk.ring, h.lx, h.ly);
+    const lines = helpLines(tk, h, real);
+    lines.splice(real ? 1 : 0, 0, row(freeHint()));
+    showTag(tk, lines, false, ...tk.screen(h.lx, h.ly));
     return;
   }
   // T-1721: the track tool's point: red branching off a piece, yellow joining at a node, blue beside track
@@ -176,7 +227,7 @@ export function placeMarks(tk: Tools) {
     tk.ring.style.display = "";
     put(tk.ring, ...toLocal(...tk.street.ringAt));
   } else tk.ring.style.display = "none";
-  const pv = tk.lastPreview, rt = t === "track" && tk.start && h ? tk.real.tag() ?? tk.street.tag() : null;
+  const pv = tk.shownPreview, rt = t === "track" && tk.start && h ? tk.real.tag() ?? tk.street.tag() : null;
   const at = h ? tk.screen(h.lx, h.ly) : null;
   if (rt) {
     // T-727d: a real route still being found (the spinner once it takes a while), or none
@@ -185,10 +236,10 @@ export function placeMarks(tk: Tools) {
     if (rt.text) kids.push(rt.text);
     if (kids.length) showTag(tk, kids, rt.bad, ...at!);
     else tk.tag.style.display = "none";
-  } else if (t === "track" && tk.start && h && !tk.snapped && tk.tooFar(h)) {
+  } else if (t === "track" && tk.ghostStart && h && !tk.snapped && tk.tooFar(h, tk.ghostStart)) {
     showTag(tk, tooFarText(), true, ...at!);
-  } else if (t === "track" && tk.start && h && (pv || tk.waiting())) {
-    const rows: HTMLDivElement[] = pv ? placementTag(pv, buildLevel.peek(), !tramTrack.peek() ? TRACK_SPECS.regular : tk.street.active ? TRACK_SPECS.streetTram : TRACK_SPECS.tram) : [document.createElement("div")];
+  } else if (t === "track" && tk.ghostStart && h && (pv || tk.waiting())) {
+    const rows: HTMLDivElement[] = pv ? placementTag(pv, buildLevel.peek(), !tramTrack.peek() ? TRACK_SPECS.regular : buswayTrack.peek() ? TRACK_SPECS.busway : tk.street.active ? TRACK_SPECS.streetTram : TRACK_SPECS.tram) : [document.createElement("div")];
     // T-1039: still working on the newest ghost or the click
     if (tk.waiting()) rows[0].prepend(Object.assign(document.createElement("i"), { className: "spin row-dot" }));
     showTag(tk, rows, false, ...at!);
@@ -201,6 +252,9 @@ export function placeMarks(tk: Tools) {
     else tk.tag.style.display = "none";
   } else tk.tag.style.display = "none";
 }
+
+const KIND_ICON = { rail: Icon.train, tram: Icon.tram, bus: Icon.brt, port: Icon.anchor };
+const KIND_COLOUR = { rail: MODE_ICON_COLOURS.rail, tram: MODE_ICON_COLOURS.tram, bus: MODE_ICON_COLOURS.brt, port: MODE_ICON_COLOURS.ferry };
 
 /** The cursor tag with `content`, red when `bad`, by the screen point (x, y). */
 export function showTag(tk: Tools, content: string | (string | Node)[], bad: boolean, x: number, y: number) {
@@ -220,11 +274,20 @@ export function helpLines(tk: Tools, h: Snap, first: string | null): HTMLDivElem
   if (last) lines.push(row(tr("tools.fromLast", { distance: distance(metresBetween(lng, lat, last.lng, last.lat)), name: last.name })));
   const trips = tripsNear(tk, lng, lat);
   if (trips) {
+    const colour = KIND_COLOUR[stationKind.peek()];
     const bar = Object.assign(document.createElement("div"), { className: "size-bar" });
+    bar.style.setProperty("--kind", colour);
     const fill = document.createElement("i");
     fill.style.width = `${(100 * logShare(trips.legs, NEAR_BAR_LO, NEAR_BAR_HI)).toFixed(1)}%`;
     bar.append(fill);
-    lines.push(row(trips.text), bar);
+    const text = row(trips.text);
+    // T-4105, T-4135: the row starts with the icon of the kind a click would place; no row names the kind
+    const icon = Object.assign(document.createElement("span"), { className: "kind-icon" });
+    icon.style.color = colour;
+    render(KIND_ICON[stationKind.peek()](), icon);
+    text.prepend(icon);
+    text.className = "near-row";
+    lines.push(text, bar);
   }
   return lines;
 }

@@ -14,7 +14,7 @@ import { PlatformLines } from "./platformLines";
 import type { ClockNode, ClockState } from "./protocol";
 import { publishSlots, saves } from "./slots";
 import { META_PER_LINE, profileOf } from "../map/profiles";
-import { buildSnapshot, busRow, complexesOf, complexOfNodes, groundK, nodeComplexes, putXferSet, sendTrips, shownBuildings, snapTimer, StationGeo } from "./clockDemand";
+import { buildSnapshot, busRow, complexesOf, complexOfNodes, groundK, loadsLater, nodeComplexes, putXferSet, sendTrips, shownBuildings, snapTimer, StationGeo } from "./clockDemand";
 import { pinFareRef } from "./clockFares";
 import { moneyState } from "./clockMoney";
 import { keep } from "./clockPanic";
@@ -57,6 +57,44 @@ export const lineDrawn = new Map<number, Float32Array>();
  * changes, so a move re-expresses them without asking the track model */
 export const edgeMerc = new Map<number, Float64Array>();
 const lineMerc = new Map<number, Float64Array>();
+/** T-4075: each line's run 0 bends (`bendsOf`), made with its `lineMerc` */
+const lineBends = new Map<number, Float32Array>();
+/** How far (ground m) a train may be drawn off its track between two samples before the interval is cut (T-4075) */
+const BEND_TOL_M = 0.25;
+/** `run_bends`'s rows (interval, inner points, then the points in track units) as the same rows with each point
+ * given as its offset from the straight between the interval's samples (`merc`, a run's `drawnLine` points),
+ * local units, which no anchor move changes */
+function bendsOf(raw: ArrayLike<number>, merc: Float64Array): Float32Array {
+  const out: number[] = [];
+  for (let i = 0; i < raw.length; ) {
+    const k = raw[i], m = raw[i + 1];
+    const ax = merc[k * 2], ay = merc[k * 2 + 1], bx = merc[k * 2 + 2], by = merc[k * 2 + 3];
+    out.push(k, m);
+    i += 2;
+    for (let j = 1; j <= m; j++, i += 2) {
+      const [x, y] = toMerc01(...packLngLat(raw[i], raw[i + 1])), f = j / (m + 1);
+      out.push((x - ax - (bx - ax) * f) * EARTH_C, (y - ay - (by - ay) * f) * EARTH_C);
+    }
+  }
+  return new Float32Array(out);
+}
+/** The renderer's bend tables (T-4075) from each run's first sample and bends: per sample its interval's first point
+ * in `bends` times 32 plus its inner points' count (0 none), and the points' offsets (x, y each). */
+function bendTables(nSamples: number, runs: [number, Float32Array][]): { sampleBend: Float32Array; bends: Float32Array } {
+  let total = 0;
+  for (const [, b] of runs) for (let i = 0; i < b.length; i += 2 + 2 * b[i + 1]) total += b[i + 1];
+  const sampleBend = new Float32Array(nSamples), bends = new Float32Array(total * 2);
+  let at = 0;
+  for (const [first, b] of runs) for (let i = 0; i < b.length; i += 2 + 2 * b[i + 1]) {
+    const m = b[i + 1];
+    // (a float holds the packed index exactly below 2^24: past that, an interval is drawn straight)
+    if (at * 32 + m >= 1 << 24) break;
+    sampleBend[first + b[i]] = at * 32 + m;
+    bends.set(b.subarray(i + 2, i + 2 + 2 * m), at * 2);
+    at += m;
+  }
+  return { sampleBend, bends: at * 2 === bends.length ? bends : bends.slice(0, at * 2) };
+}
 /** mercator points (`stride` numbers each, x and y first) in the anchor's local units */
 export function localOf(m: Float64Array, stride: number): Float32Array {
   const a = anchor(), ax = a.merc[0], ay = a.merc[1], d = new Float32Array(m.length);
@@ -74,6 +112,7 @@ export function forget(all = false) {
     lineDrawn.clear();
     edgeMerc.clear();
     lineMerc.clear();
+    lineBends.clear();
     backDrawn.clear();
     shiftFrom = null;
     stateRows.reset();
@@ -83,7 +122,7 @@ export function forget(all = false) {
   }
   const edges = api!.dirty_edges();
   for (const e of edges) { edgeDrawn.delete(e); edgeSpeedDrawn.delete(e); edgeMerc.delete(e); platformLines.forgetEdge(e); }
-  for (const l of api!.dirty_lines()) { lineDrawn.delete(l); lineMerc.delete(l); backDrawn.delete(l); }
+  for (const l of api!.dirty_lines()) { lineDrawn.delete(l); lineMerc.delete(l); lineBends.delete(l); backDrawn.delete(l); }
   // (a way back is not on the edges' lines: any track edit may move one)
   if (edges.length) backDrawn.clear();
 }
@@ -118,7 +157,8 @@ function rowComplexes(rows: readonly ClockNode[]): Complexes {
   for (let k = 0; k + 1 < fl.length; k += 2) links.push([String(fl[k]), String(fl[k + 1])]);
   return complexesOf(nodeComplexes, geo, links);
 }
-export const rowEnv: RowEnv = { lngLat: packLngLat, periodHours: PERIOD_HOURS, busRow, platformLine: platformLineOf, complexes: rowComplexes };
+export const rowEnv: RowEnv = { lngLat: packLngLat, periodHours: PERIOD_HOURS, busRow, platformLine: platformLineOf, complexes: rowComplexes,
+  complexKey: (a) => a.station_links().join() + "|" + a.buildings_info().join() };
 /** the rows of the last states, read again only where the track model says something changed (T-1382);
  * `?patch=0` reads them whole */
 export const stateRows = new StateRows();
@@ -147,6 +187,13 @@ export function drawnEdge(a: TrackApi, id: number): Float32Array {
   }
   return d;
 }
+/** T-4148: an edge's points in local units, read from the track model again (the edit's word is built before the dirty
+ * edges' kept points are dropped) */
+export function drawnEdgeNow(a: TrackApi, id: number): Float32Array {
+  edgeDrawn.delete(id);
+  edgeMerc.delete(id);
+  return drawnEdge(a, id);
+}
 /** a line's first run, sampled, in local units (x, y each), made and kept if not yet */
 export function drawnLine(a: TrackApi, id: number): Float32Array {
   let d = lineDrawn.get(id);
@@ -157,6 +204,7 @@ export function drawnLine(a: TrackApi, id: number): Float32Array {
       m = new Float64Array(p.length);
       for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
       lineMerc.set(id, m);
+      lineBends.set(id, bendsOf(a.run_bends(id, 0, SAMPLE_STEP, BEND_TOL_M), m));
     }
     d = localOf(m, 2);
     lineDrawn.set(id, d);
@@ -165,7 +213,7 @@ export function drawnLine(a: TrackApi, id: number): Float32Array {
 }
 /** T-3250: a line's return run, sampled as `drawnLine`, where it takes its own way back (`back`, its
  * path; kept while that is unchanged) */
-const backDrawn = new Map<number, { key: string; merc: Float64Array; at: Anchor | null; d: Float32Array | null }>();
+const backDrawn = new Map<number, { key: string; merc: Float64Array; bends: Float32Array; at: Anchor | null; d: Float32Array | null }>();
 function drawnBack(a: TrackApi, id: number, back: readonly number[]): Float32Array {
   const key = back.join();
   let c = backDrawn.get(id);
@@ -173,7 +221,7 @@ function drawnBack(a: TrackApi, id: number, back: readonly number[]): Float32Arr
     const p = a.run_polyline(id, 1, SAMPLE_STEP);
     const m = new Float64Array(p.length);
     for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
-    backDrawn.set(id, (c = { key, merc: m, at: null, d: null }));
+    backDrawn.set(id, (c = { key, merc: m, bends: bendsOf(a.run_bends(id, 1, SAMPLE_STEP, BEND_TOL_M), m), at: null, d: null }));
   }
   if (!c.d || c.at !== anchor()) {
     c.d = localOf(c.merc, 2);
@@ -182,15 +230,32 @@ function drawnBack(a: TrackApi, id: number, back: readonly number[]): Float32Arr
   return c.d;
 }
 
-function buildState(): ClockState {
+/** T-4113: the view's bounds, west, south, east, north, from the page's "view"; a rows state reads the regions there
+ * first */
+let view: [number, number, number, number] | undefined;
+export function putView(w: number, s: number, e: number, n: number) { view = [w, s, e, n]; }
+function viewRect(): [number, number, number, number] | undefined {
+  if (!view) return undefined;
+  const [x0, y0] = frame.fromLonLat(view[0], view[1]), [x1, y1] = frame.fromLonLat(view[2], view[3]);
+  return [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)];
+}
+
+/** `rowsOnly`: for a rows state (`sendRows`), which carries no drawn pieces: none are made, and the rows read the
+ * regions in view and the edit's own first when many are dirty (T-4113) */
+function buildState(rowsOnly = false): ClockState {
   const tq0 = performance.now();
   const a = api!;
   if (patchMode === "0") stateRows.reset();
   stateRows.bind(a, frame);
+  // T-4113: `?patch=walk` makes every record's own calls on every read, as before regions (for timing against)
+  StateRows.bounded = patchMode !== "walk";
+  // (with `?patch=walk` a rows state is built as a full one, as before)
+  rowsOnly &&= StateRows.bounded;
+  stateRows.begin(a, rowsOnly ? { rect: viewRect() } : undefined);
   const edges = stateRows.edges(a);
   const drawn: Float32Array[] = [];
-  for (const { id } of edges) drawn.push(drawnEdge(a, id));
-  const speedParts = edges.map((e) => edgeSpeedDrawn.get(e.id));
+  if (!rowsOnly) for (const { id } of edges) drawn.push(drawnEdge(a, id));
+  const speedParts = rowsOnly ? [] : edges.map((e) => edgeSpeedDrawn.get(e.id));
   const tq1 = performance.now(); timing.sEdges = tq1 - tq0;
   const ups = upgradesOf(a);
   platformLines.sync(edges);
@@ -209,6 +274,8 @@ function buildState(): ClockState {
   const lines = stateRows.lines(a, rowEnv, nodes);
   platformLines.setLines(lines);
   const tq3 = performance.now(); timing.sLines = tq3 - tq2;
+  const w = stateRows.work;
+  timing.nEdges = w.edges; timing.nNodes = w.nodes; timing.nLines = w.lines; timing.nBuses = w.buses; timing.nRegions = w.leaves; timing.nLeft = w.left;
   if (patchMode === "check") checkRows({ edges, nodes, lines }, a, ups);
   // a bus line's stops that are no station were added to the nodes by its row
   const busNodes = new Map(nodes.slice(stationCount).map((n) => [n.id, n]));
@@ -216,8 +283,10 @@ function buildState(): ClockState {
     const n = stateRows.nodeRow(l.stops[0]) ?? busNodes.get(l.stops[0]);
     return [l.id, n ? [n.lng, n.lat] : null];
   }));
+  const tq3a = performance.now();
   placeLineCountries();
   termEnds = terminalEnds(edges, nodes, lines);
+  timing.sEnds = performance.now() - tq3a;
   let first: ClockNode | null = null;
   for (let k = 0; k < stationCount; k++) if (nodes[k].stationBuilt && (!first || nodes[k].id < first.id)) first = nodes[k];
   firstBuiltAt = first ? [first.lng, first.lat] : null;
@@ -233,23 +302,28 @@ function buildState(): ClockState {
   const backs = lines.filter((l) => l.ok && l.back?.length && l.id < nLines);
   const lineTable = new Float32Array(Math.max(1, nLines) * (backs.length ? 8 : 4));
   const runs: Float32Array[] = [];
+  // (T-4075: each run's first sample and its bends)
+  const runBends: [number, Float32Array][] = [];
   let nSamples = 0;
-  for (const l of lines) {
+  if (!rowsOnly) for (const l of lines) {
     if (!l.ok) continue;
     const d = drawnLine(a, l.id);
     runs.push(d);
+    runBends.push([nSamples, lineBends.get(l.id) ?? NO_PHASES]);
     lineTable.set([nSamples, d.length / 2, l.lengthM, SAMPLE_STEP], l.id * 4);
     nSamples += d.length / 2;
   }
-  for (const l of backs) {
+  if (!rowsOnly) for (const l of backs) {
     const d = drawnBack(a, l.id, l.back!);
     if (d.length < 4) continue;
     runs.push(d);
+    runBends.push([nSamples, backDrawn.get(l.id)!.bends]);
     lineTable.set([nSamples, d.length / 2, meta[profileOf(l.id, 1, 0) * 4 + 3] || l.lengthM, SAMPLE_STEP], (nLines + l.id) * 4);
     nSamples += d.length / 2;
   }
   const samples = new Float32Array(nSamples * 2);
   runs.reduce((o, d) => (samples.set(d, o), o + d.length), 0);
+  const { sampleBend, bends } = bendTables(nSamples, runBends);
   // T-3542: per period, read once per slot serving periods
   const slots = a.period_slots();
   const bySlot = new Map<number, ClockState["markers"][number]>();
@@ -280,13 +354,15 @@ function buildState(): ClockState {
   const [totalCost, builtCost] = a.costs();
   const blueprintCost = Math.max(totalCost - builtCost, 0);
   const tq5 = performance.now(); timing.sSums = tq5 - tq4a; timing.sCosts = tq5 - tq4;
-  const phases = stateRows.phases(a, meta);
-  timing.sPhases = performance.now() - tq5; timing.nPhaseLines = stateRows.phaseReads;
-  if (patchMode === "check" && !sameBytes(phases, a.phases())) console.error("T-1540 check: the phase tables read per line differ from a whole read");
+  // (a rows state carries none: the tables changed stay pending for the next full one)
+  const phases = rowsOnly ? NO_PHASES : stateRows.phases(a, meta);
+  timing.sPhases = performance.now() - tq5; timing.nPhaseLines = rowsOnly ? 0 : stateRows.phaseReads;
+  if (patchMode === "check" && !rowsOnly && !sameBytes(phases, a.phases())) console.error("T-1540 check: the phase tables read per line differ from a whole read");
   return {
     version: ++version,
     markers,
     fullTrack,
+    turnLimits: a.turn_limits(),
     periods: a.game_periods(),
     hours: Array.from(a.game_hours()),
     crossings,
@@ -302,7 +378,7 @@ function buildState(): ClockState {
     nodes,
     lines,
     links: Array.from(a.station_links()),
-    buildings: shownBuildings(a, nodes),
+    buildings: timed("sBld", () => shownBuildings(a, nodes)),
     render: {
       edgeParts: drawn,
       edgeSpeedParts: speedParts,
@@ -310,10 +386,19 @@ function buildState(): ClockState {
       meta,
       samples,
       lineTable,
+      sampleBend,
+      bends,
     },
     money: moneyState(),
     anchor: anchorSpec(),
   };
+}
+
+/** T-4149: `f`'s answer, its time in `timing[k]` (the edit's answer carries them) */
+function timed<T>(k: string, f: () => T): T {
+  const t0 = performance.now(), v = f();
+  timing[k] = performance.now() - t0;
+  return v;
 }
 
 /** whether the game just loaded was converted from an older frame (T-308), for the "loaded" message */
@@ -385,7 +470,7 @@ export function sendRows(built?: ClockState): boolean {
   if (!posted.net || shiftFrom) return false;
   const t0 = performance.now();
   // T-3803: rows a follow-up built before an edit came between its pieces, with the money as it is now
-  const s: ClockState = built ? { ...built, ...nowMoney(), effectiveAt: undefined, ghostFirst: undefined } : buildState();
+  const s: ClockState = built ? { ...built, ...nowMoney(), effectiveAt: undefined, ghostFirst: undefined } : buildState(true);
   s.rows = true;
   s.noTrips = true;
   s.render = { phases: NO_PHASES, meta: NO_PHASES, samples: NO_PHASES, lineTable: NO_PHASES };
@@ -396,6 +481,8 @@ export function sendRows(built?: ClockState): boolean {
   timing.rowsPost = performance.now() - t1;
   return true;
 }
+/** T-4114: whether a rows state can go now (`sendRows`'s own test) */
+export const rowsCanGo = () => !!posted.net && !shiftFrom;
 /** the parts of a state that can change between a follow-up's pieces without an edit: the cash and the money record
  * (the money tick, demand's money results) */
 const nowMoney = () => ({ cash: api!.cash(), money: moneyState() });
@@ -411,8 +498,9 @@ export function sendState(service = false, effectiveAt?: number, trips = true, g
 /** `sendState` in pieces of about 0.1 s on the biggest saves (T-3803): the rows, then the network's pieces
  * (`networkSteps`), then its post with the trips, the last never split (T-648: a state's trips follow it before
  * anything else). It yields only where an edit may come between (a first network posted, no anchor move pending);
- * `rowsBuilt` is told the rows, which go out as a rows state if one does. */
-export function* stateSteps(service = false, effectiveAt?: number, trips = true, ghostFirst = false, split = false, rowsBuilt?: (s: ClockState) => void): Generator<void, void, void> {
+ * `rowsBuilt` is told the rows, which go out as a rows state if one does. `boardAt`: a service edit's follow-up, begun
+ * then (`loadsLater`, T-3655). */
+export function* stateSteps(service = false, effectiveAt?: number, trips = true, ghostFirst = false, split = false, rowsBuilt?: (s: ClockState) => void, boardAt?: number): Generator<void, void, void> {
   if (midLoad) return; // (`restart` sends the loaded game's)
   freezeCheckpoint("build-state-start");
   const t0 = performance.now();
@@ -436,15 +524,17 @@ export function* stateSteps(service = false, effectiveAt?: number, trips = true,
     s.render.phases = r.phases.slice();
     posted.arrays.set("phases", r.phases);
     keepPosted("meta", r.meta);
+    const later = trips && loadsLater(boardAt);
+    if (later) s.loadsFollow = true;
     postState(s, [s.render.phases.buffer, r.meta.buffer, r.samples.buffer, r.lineTable.buffer]);
     timing.post = performance.now() - t1;
-    if (trips) sendTrips(split);
+    if (trips) sendTrips(split, undefined, !later);
     return;
   }
   // The renderer's buffers are built here too, so the main thread only uploads them (T-063).
   // the complexes: a waiting room or car park is drawn once for one (T-1528), and members whose boxes
   // do not touch are drawn joined (T-1859)
-  const complexOf = complexOfNodes();
+  const complexOf = timed("cxOf", complexOfNodes);
   const shifted = !!shiftFrom;
   const pieces = !shifted && !!posted.net;
   if (shiftFrom) {
@@ -452,7 +542,9 @@ export function* stateSteps(service = false, effectiveAt?: number, trips = true,
     shiftFrom = null;
     shiftWas = new Map();
   }
+  const tb0 = performance.now();
   const buildingLL = s.buildings?.map((b) => b.corners.flatMap((_, i) => (i % 2 ? [] : frame.toLonLat(b.corners[i], b.corners[i + 1]))));
+  timing.bldLL = performance.now() - tb0;
   const steps = networkSteps({ ...s, render: r, complexOf, buildingLL }, netCache, true);
   let n: NetworkBuffers;
   /** the time between pieces, no part of the build's */
@@ -482,11 +574,13 @@ export function* stateSteps(service = false, effectiveAt?: number, trips = true,
   for (const k of SAME_FIELDS) { const v = out[k]; if (v) bufs.add(v.buffer); }
   for (const v of out.edgePts.values()) bufs.add(v.buffer);
   if (out.patch) for (const v of [out.patch.track, out.patch.lines, out.patch.edgeIds]) bufs.add(v.buffer);
+  const later = trips && loadsLater(boardAt);
+  if (later) s.loadsFollow = true;
   postState(s, [...bufs] as Transferable[]);
   timing.post = performance.now() - t2;
   diagramIn = { lines: s.lines, edges: s.edges, pts: n.edgePts };
   if (diagramOn) postDiagram();
-  if (trips) sendTrips(split);
+  if (trips) sendTrips(split, undefined, !later);
 }
 
 export let diagramIn: DiagramIn | null = null;

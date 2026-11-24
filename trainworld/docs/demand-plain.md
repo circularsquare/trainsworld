@@ -26,7 +26,11 @@ station buildings and T-2278's parking by income). The full rules are in demand.
 - **Everyday trips.** Errands, visits, school, university, medical, airports. How often people make
   them comes from each country's travel survey. How far they go is one rule for the whole world:
   the chance of going somewhere halves about every 0.7 km for errands and visits, 1.0 km for
-  school, 1.4 km for medical, 2.4 km for university and 14 km for airports. Trips are
+  school, 1.4 km for medical, 2.4 km for university and 14 km for airports. Big airports reach
+  farther: from 10 million passengers a year (not counting those changing planes) their reach grows
+  with their passengers, to three times as far (42 km to halve) at 30 million, with trips from up to
+  150 km instead of 80 km, about as the UK's surveys show Heathrow, Gatwick, Stansted and Manchester
+  drawing. So Seoul goes to Incheon, 50 km off. Trips are
   kept short on purpose: real surveys have about half of everyday trips under 2 km, and short trips
   are the ones people walk. But one in five errands and visits goes into town instead: there each
   place counts by how much there is to visit times how tightly it is packed, and the chance halves
@@ -51,7 +55,8 @@ station buildings and T-2278's parking by income). The full rules are in demand.
   as if it were not there: a place right on the Guangzhou - Foshan line gets about a quarter of its
   visitors from the other side. Airport trips cross too: an airport in a county zone outside its
   city (Wuhan's, Istanbul's) takes its passengers from the city, up to the airport's published
-  passengers and never more. These come with the next rebuild of the data.
+  passengers and never more. These come with the next rebuild of the data, and so do a big
+  airport's trips from cities in other zones up to 150 km away (Suzhou to Pudong).
   A longer trip goes to a place by its people and jobs; in Japan, about 80 resort towns (Hakone,
   Atami, Kusatsu, Beppu and the like) also count 4 people for every visitor a day in their published
   tourism figures, so Tokyo's day trips and weekends away go to Hakone and Izu (Hakone about 9,100 a
@@ -111,7 +116,7 @@ counted in the totals, by no mode. Car ferries don't count as roads. The same go
 and commutes between places on two landmasses with no flight between them (Vancouver to Victoria,
 Singapore to Batam, Tenerife to Gran Canaria), and between an island and the rest of its own place
 (Sado and Niigata, Okinawa's outer islands and Naha, Aegina and Athens). People on such an island
-only reach stations on it.
+only reach stations on it. The city panel counts these trips as "No route" until a line carries them.
 
 ### By train
 
@@ -123,6 +128,22 @@ only reach stations on it.
 - Wait on the platform: half the time between trains, in plain minutes; at a station with a
   waiting room (a station upgrade the player buys) or inside a station building the player drew,
   each of those minutes counts 0.8, so a few more people take the train there.
+- Several lines to the same place (Anita, 2026-11-22): people turn up at a random time, each
+  line's next train somewhere in its own gap between trains. Three in four take whichever line gets
+  them to their stop first; the other one in four take the first train that comes, unless it is
+  sure to get there after the other line's latest. So an express every 36 minutes beside a local
+  every 23 that is 10 minutes slower takes 52% of the riders (59% of the first group). An express
+  every 40 beside a local every 10 that is 25 minutes slower leaves the local 41% (25% and 88%);
+  the local's share fades to nothing as it nears 40 minutes slower. Two lines every 10 minutes with the same ride but different stops or
+  platforms mean waiting a third of 10 minutes, not a quarter, since their trains aren't spread out
+  evenly.
+- Lines on the same track and the same stops (Anita, 2026-11-22, the 4 and 5 trains): the
+  timetable spaces them evenly, so for people disembarking at the same stop they are one line,
+  and two lines every 10 minutes mean waiting 2.5 minutes, people splitting by trains an hour. Where
+  one line skips a stop (the 4 beside the 6), stops at its own platform, or is a bus, they stay
+  separate as above. On a shared trunk that splits into branches, people going past the split
+  wait for their own branch's train at their own station (Anita, 2026-11-23): nobody rides the
+  other branch's train to the split to change there, since their own runs right behind it.
 - No train for hours: people differ in how long they would wait for the next train rather than go
   another way, from half an hour to 6 hours (half of them up to about 1 hour 45). At each stop and
   time of day the game works out what share of that period's riders have a train coming within
@@ -135,14 +156,18 @@ only reach stations on it.
   at 120% 5.4, at 150% (240 a car, as packed as a train gets) 10.8. Below 70% nobody minds the
   crowd.
 - Boarding: 2 minutes at the first train or tram of a trip, and 2 at the last one, at any station
-  (Anita, 2026-11-20). Nothing on a bus or ferry, or at a change (which has its own 2 below).
+  (Anita, 2026-11-20), but not at a tram stop on the street (Anita, 2026-11-22). Nothing on a bus
+  or ferry, or at a change (which has its own 2 below).
 - Changing trains: a fixed 2 minutes, plus the walk from the platform you arrive at to the one you
   leave from (centre to centre, at an easy walking pace, each minute counted 1.39), plus the wait
   for the next train. Platforms 80 m apart add 2 minutes; across one platform, nothing. Between
   two stations the player joined by a passage the walk is the straight line at 2 m/s, moving
-  walkways: 300 m takes 2.5 minutes rather than 5.4. Inside a station building the player drew,
-  the fixed 2 minutes count 1, and the wait counts as in a waiting room; the walk is as anywhere. Nobody changes back onto the line they just
-  left to go back the way they came: on a full line people wait at their station. Where a line
+  walkways: 300 m takes 2.5 minutes rather than 5.4. A bus stop changes on foot only within 150 m, and a
+  walk at a bus stop or BRT station with no passage takes a minute more (T-4079). To calculate faster, a bus
+  line's stops under 500 m apart that the same lines serve count as one stop for trips; every number shown is
+  shared back out over the real stops by the people and jobs near each (T-4094, T-4158). Inside a station building the player drew,
+  the fixed 2 minutes count 1, and the wait counts as in a waiting room; the walk is as anywhere. Nobody changes onto a line going back the
+  way they came: on a full line people wait at their station. Where a line
   comes back through a station (a loop on a stalk), people may change there onto the same line
   heading somewhere else, like any change.
 - A trip can start or end with a walk from its station to another within 300 m (or anywhere in
@@ -253,7 +278,10 @@ only reach stations on it.
 - Train: a trip between cities is planned, so its first train's wait is half the time between
   trains, but at most 5 minutes plus a sixth of it, and at most 30 minutes, and the "no train for
   hours" extra does not apply: 5 at a train every 10 minutes, 15 at an hourly train, 25 at one
-  every 2 hours, 30 at anything sparser. A change of trains on the way waits as on any trip, and
+  every 2 hours, 30 at anything sparser. Where several lines go, the train taken is again
+  chosen as on a local trip (three in four the one that gets there first), each line's wait spread
+  over twice its planned wait, and the riders
+  are put on the trains that way too. A change of trains on the way waits as on any trip, and
   commutes and outings between cities wait as local trips do.
 
 ### Walking the whole way
@@ -286,7 +314,7 @@ parking is paid, rail wins easily (Hempstead to Midtown). The trip explorer show
 The player's answer is a bus (since T-1464). Anyone within 600 m of a bus route (300 m before T-3856) walks to it (their
 distance to the route plus 100 m), waits and rides to a station at 85% of what a car does on the road there, never under 25 km/h while moving (a bus lane; 35 on a line upgraded to BRT), losing 28 seconds at each stop: about 17 km/h with stops every 400 m in a dense centre like Manhattan. The change to the
 train is free: one fare for the whole trip on the same curve, the bus kilometres' part above the base at 0.8
-times unless the player sets another Bus multiple. Boarding a bus costs only the wait, as boarding a train does
+times unless the player sets another Bus multiple (on a BRT line 1.0 times, the BRT multiple). Boarding a bus costs only the wait, as boarding a train does
 (since T-3856; before, every bus boarding added 4 perceived minutes). A home
 1.5 km from a station walks 29 perceived minutes to it, or about 18 by bus. Trips by bus alone count
 as rail. A bus is a third of a train car: riders mind its crowding from 45 aboard, it is at 100% with 53

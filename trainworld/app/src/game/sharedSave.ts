@@ -15,9 +15,10 @@
 // caught and the model replaced (clock.worker.ts `afterLoadPanic`), and the copy loads into a new slot, so nothing
 // of the viewer's is touched whatever happens.
 
+import { KIND_FARE_KEYS } from "./fareCurve";
 import { isLineShape } from "./lineShape";
 import { decompressGzip } from "../workers/gzip";
-import { encodeSave, isRetiredTrackFormat, isThisWorld, NEW_HEADWAY_KINDS, SAVE_FORMAT, SAVE_HEADER_FIELDS, SAVE_MAGIC, type SaveHeader } from "../workers/saveFile";
+import { encodeSave, isNewerTrackFormat, isRetiredTrackFormat, isThisWorld, NEW_HEADWAY_KINDS, SAVE_FORMAT, SAVE_HEADER_FIELDS, SAVE_LEVEL, SAVE_MAGIC, type SaveHeader } from "../workers/saveFile";
 
 /** shonei-server's MaxTwCommunitySave and MaxTwCommunitySaveUnpacked */
 export const MAX_SHARED_SAVE = 2 << 20;
@@ -50,7 +51,7 @@ const FIELDS: Record<keyof SaveHeader, (v: unknown) => boolean> = {
   fleet: opt(num), fleetFast: opt(num), fleetBus: opt(num), fleetFerry: opt(num), fleetFerrySmall: opt(num), fleetFerryLarge: opt(num), fleetTram: opt(num),
   fares: (v) => plain(v) && num(v.base) && num(v.perKm) && opt(arr((p) => Array.isArray(p) && p.length === 2 && p.every(num)))(v.nodes)
     && opt(rec(num))(v.scales) && opt(rec(num))(v.cityScales) && opt((b) => typeof b === "boolean")(v.byCity) && opt(rec(num))(v.lines) && opt(str)(v.baseline) && opt(str)(v.ref) && opt((b) => b === "usd")(v.basis)
-    && ["income", "hsr", "ferry", "ferrySmall", "ferryLarge", "bus", "transfer"].every((k) => opt(num)(v[k])),
+    && ["income", ...KIND_FARE_KEYS, "transfer"].every((k) => opt(num)(v[k])),
   ledger: entries, hours: opt(entries),
   regions: opt(rec((r) => plain(r) && opt(entries)(r.ledger) && opt(entries)(r.hours))),
   lineDays: opt(rec(arr(num))),
@@ -93,13 +94,15 @@ async function readChecked(gz: Uint8Array): Promise<{ header: SaveHeader; track:
   if (!plain(parsed) || !withinLimits(parsed)) throw new CopyRefused("bad");
   if (parsed.game !== "anitabuilder") throw new CopyRefused("bad");
   if (!num(parsed.format) || (parsed.format as number) > SAVE_FORMAT) throw new CopyRefused("version");
+  // T-4014: a newer build's level; its unknown fields are dropped below, which a copy may do
+  if (parsed.level !== undefined && !((parsed.level as number) <= SAVE_LEVEL)) throw new CopyRefused("version");
   const header: Record<string, unknown> = {};
   for (const k of Object.keys(parsed)) if (SAVE_HEADER_FIELDS.has(k)) header[k] = parsed[k];
   for (const [k, ok] of Object.entries(FIELDS)) if (!ok(header[k])) throw new CopyRefused("bad");
   const track = raw.slice(8 + n);
   const magic = new TextDecoder().decode(track.subarray(0, 4));
-  if (isRetiredTrackFormat(track)) throw new CopyRefused("version");
-  if (!/^TWT[4-6]$/.test(magic)) throw new CopyRefused(/^TWT\d$/.test(magic) ? "version" : "bad");
+  if (isRetiredTrackFormat(track) || isNewerTrackFormat(track)) throw new CopyRefused("version");
+  if (!/^TWT[4-6]$/.test(magic)) throw new CopyRefused("bad");
   const h = header as unknown as SaveHeader;
   if (!isThisWorld(h)) throw new CopyRefused("version");
   return { header: h, track };

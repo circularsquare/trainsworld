@@ -3,6 +3,9 @@
 //   TW_CORES=n          use n cores, no ledger claim (the caller owns the budget)
 //   TW_CORE_MASK=0xC000 which cores (hex mask); default: the top cores down, skipping those a live check holds
 //   TW_CORES_WANT=n     cores to ask the ledger for when TW_CORES is unset (default 3)
+//   TW_CORES_MIN=n      take fewer than asked, down to n (default 2); the claim waits until n are free, up to
+//                       TW_CORES_TIMEOUT seconds (default 1800), then the check stops: it never runs over the cap
+// A process that holds its own claim and starts checks (perf_bench) sets TW_CORES for them, or they would wait for it.
 //   TW_NOPIN=1          no pinning and no ?demandWorkers (timing runs against a quiet machine)
 // With TW_CORES unset it claims from the ledger (`python cores.py claim`, at the maps root) and
 // releases at exit. The page gets ?demandWorkers = cores - 1 (at least 1), added by an init script.
@@ -12,10 +15,10 @@ import { cpus } from 'node:os';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// the shared ledger is the main tree's: from an agent's worktree (maps/.tw-trees/<name>/) a claim in the tree's own
-// copy of cores.py went to a cores.json nobody else reads
-const MAPS = fileURLToPath(new URL('../../', import.meta.url)).replace(/[\\/]\.tw-trees[\\/][^\\/]+[\\/]?$/, '/');
-const ARTIFACTS = MAPS + 'artifacts/trainworld/'; // and so is the registry of which cores each check holds
+// cores.py finds the shared ledger itself from a worktree; the registry of which cores each check holds is the main tree's
+const TREE = fileURLToPath(new URL('../../', import.meta.url));
+const MAPS = TREE.replace(/[\\/]\.tw-trees[\\/][^\\/]+[\\/]?$/, '/');
+const ARTIFACTS = MAPS + 'artifacts/trainworld/';
 
 const REGISTRY = ARTIFACTS + 'check-cores.json';
 let PLAN = null;
@@ -24,10 +27,13 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { 
 const readRegistry = () => { try { return JSON.parse(readFileSync(REGISTRY, 'utf8')); } catch { return {}; } };
 const writeRegistry = (r) => { try { mkdirSync(ARTIFACTS, { recursive: true }); writeFileSync(REGISTRY, JSON.stringify(r)); } catch { /* best effort */ } };
 
+// Cores 0-1 stay Anita's (tools/ops/reserve_cores.ps1 keeps sessions off them too).
+const RESERVED = 2;
+
 /** `n` core numbers from the top down, skipping those in `taken` (a bit mask) while enough remain */
 function pickCores(n, total, taken) {
   const free = [], used = [];
-  for (let c = total - 1; c >= 0; c--) (taken & (1 << c) ? used : free).push(c);
+  for (let c = total - 1; c >= RESERVED; c--) (taken & (1 << c) ? used : free).push(c);
   return [...free, ...used].slice(0, n).sort((a, b) => a - b);
 }
 
@@ -44,9 +50,10 @@ export function corePlan() {
   else {
     const name = `check-${basename(process.argv[1] ?? 'node').replace(/\.mjs$/, '')}-${process.pid}`;
     const want = Number(process.env.TW_CORES_WANT ?? 3);
-    const r = spawnSync('python', [MAPS + 'cores.py', 'claim', String(want), name, '--pid', String(process.pid), 'Playwright check'], { encoding: 'utf8', windowsHide: true });
+    const min = Math.min(want, Number(process.env.TW_CORES_MIN ?? 2));
+    const r = spawnSync('python', [TREE + 'cores.py', 'claim', String(want), name, '--pid', String(process.pid), '--min', String(min), '--timeout', String(process.env.TW_CORES_TIMEOUT ?? 1800), 'Playwright check'], { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
     n = Number(r.stdout?.trim().split('\n').at(-1));
-    if (!(n >= 1)) n = 1;
+    if (r.status !== 0 || !(n >= 1)) { console.error('no cores from the ledger (see above); not running'); process.exit(2); }
     claimed = name;
   }
   const reg = readRegistry();
@@ -61,7 +68,7 @@ export function corePlan() {
   PLAN = { n: cores.length, cores, mask, workers: Math.max(1, cores.length - 1), claimed };
   process.on('exit', () => {
     const r = readRegistry(); delete r[process.pid]; writeRegistry(r);
-    if (claimed) spawnSync('python', [MAPS + 'cores.py', 'release', claimed], { stdio: 'ignore', windowsHide: true });
+    if (claimed) spawnSync('python', [TREE + 'cores.py', 'release', claimed], { stdio: 'ignore', windowsHide: true });
   });
   console.log(`      cores: ${cores.length} (${cores.join(',')}, mask 0x${mask.toString(16).toUpperCase()})${claimed ? ', from the ledger' : ''}, demandWorkers ${PLAN.workers}`);
   return PLAN;

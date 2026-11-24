@@ -10,6 +10,8 @@ import { listSlots, writeSlot, SlotTakenError, renameSlot, leaseSlot, ORIGINAL_S
 import type { FromClock, ToClock } from "./protocol";
 import { claim, editedHere, editedThere, fetchGame, GAP_MS, lastListFailure, listGames, newGameId, onTokenGone, removeSlot, sendDeletes, settle as settleCloud, splitOff, tieNew, tiedTo, upload, writeFetched, type CloudContext } from "./cloud";
 import { editOf, syncedEditOf } from "./versions";
+import { modelDown } from "./clockPanic";
+import { SAVE_DB } from "../game/trackBuild";
 
 /** What this module needs of the clock worker: the game in hand, its model and its message queue. */
 export interface SlotHost {
@@ -81,11 +83,6 @@ export const saves = {
   switching: false,
   /** T-2552: the slot a game is being loaded into, which becomes the active one only after; for the "loaded" message */
   loadingInto: null as string | null,
-  /** T-1826: the game in hand was saved by a newer build that wrote parts this one does not read, so
-   * nothing writes its slot or sends it to the account (writing it would drop them). Download gives
-   * `newerFile`, the file as it was loaded; Make a copy keeps the game as played here without them. */
-  newer: false,
-  newerFile: null as Uint8Array | null,
   /** T-1826: a player's change (an edit, a list order, sandbox) not yet written, for the page's
    * "leave page?" prompt; the clock's own settling is not one */
   edited: false,
@@ -132,9 +129,8 @@ export function letGoSlot() {
   saves.newSlotName = null;
 }
 
-const slotChanges = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("anitabuilder-save-slots");
+const slotChanges = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(`${SAVE_DB}-save-slots`);
 slotChanges?.addEventListener("message", () => { if (host.api()) void publishSlots(); });
-const NEWER: MessageKey = "clockWorker.newer";
 /** T-3869: a save or download that found no memory even after the demand workers were replaced */
 export const NO_MEMORY_TO_SAVE: MessageKey = "clockWorker.noMemoryToSave";
 
@@ -153,9 +149,8 @@ export function heldNew() {
 /** T-3734: why the game in hand may not be written to its slot now, first match in the order the saves panel names
  * it; null if it may. `attempting`: for a write about to be tried, which is itself the retry of a failed write or
  * of missing storage, so those two do not block it. */
-type WriteBlock = "newer" | "failed" | "storage" | "otherDevice" | "viewing" | "testPage" | "otherTab" | "noLease" | "switching";
+type WriteBlock = "failed" | "storage" | "otherDevice" | "viewing" | "testPage" | "otherTab" | "noLease" | "switching";
 function writeBlock(attempting = false): WriteBlock | null {
-  if (saves.newer) return "newer";
   if (!attempting && saves.saveFailure) return "failed";
   if (!attempting && !saves.storageReady) return "storage";
   if (saves.activeSlot && saves.cloudTaken === saves.activeSlot) return "otherDevice";
@@ -164,9 +159,9 @@ function writeBlock(attempting = false): WriteBlock | null {
   return null;
 }
 /** the slot is someone else's to write, or nobody's: leaving loses only a player's change */
-const NOT_MINE: ReadonlySet<WriteBlock | null> = new Set(["newer", "otherDevice", "viewing", "testPage", "otherTab", "noLease"]);
+const NOT_MINE: ReadonlySet<WriteBlock | null> = new Set(["otherDevice", "viewing", "testPage", "otherTab", "noLease"]);
 const BLOCK_REASON: Record<Exclude<WriteBlock, "failed" | "switching">, MessageKey> = {
-  newer: NEWER, storage: "clockWorker.noStorage", otherDevice: "clockWorker.otherDevice", viewing: "clockWorker.viewing",
+  storage: "clockWorker.noStorage", otherDevice: "clockWorker.otherDevice", viewing: "clockWorker.viewing",
   testPage: "clockWorker.testPage", otherTab: "clockWorker.otherTabSaved", noLease: "clockWorker.otherTabOpened",
 };
 /** a swap lasts a moment and the slot stays this page's, so the page is told it is writable meanwhile */
@@ -197,7 +192,7 @@ export async function publishSlots(error?: string) {
     : block === "noLease" && !navigator.locks ? "clockWorker.noLocks"
     : BLOCK_REASON[block];
   const view = saves.viewing !== null ? { viewing: { ...saves.viewCard, key: "", name: saves.viewing, at: 0, day: Math.floor(gameNow() / 86400) } } : {};
-  send({ kind: "saveSlots", slots, active: saves.activeSlot, game: saves.slotGame, writable, at: slots.find(s => s.key === saves.activeSlot)?.at ?? 0, reason, error, backups, ...(saves.newer ? { newer: saves.newer } : {}), ...view });
+  send({ kind: "saveSlots", slots, active: saves.activeSlot, game: saves.slotGame, writable, at: slots.find(s => s.key === saves.activeSlot)?.at ?? 0, reason, error, backups, ...view });
 }
 
 async function flushBeforeSwitch() {
@@ -206,10 +201,12 @@ async function flushBeforeSwitch() {
   // T-1826, T-2843 finding 4: a slot this page may not write is left as it was; only a change the player made here
   // would be lost (the clock's own settling is not one)
   if (NOT_MINE.has(writeBlock(true))) {
-    if (saves.edited) throw new Error("Make a copy of this game before leaving it, or download it as a file and reload this page.");
+    if (saves.edited) throw new Error("clockWorker.copyBeforeLeaving" satisfies MessageKey);
     return;
   }
-  if (!await autosave()) throw new Error("This game could not be saved. Download it as a file before leaving it.");
+  // the stopped model cannot be saved; the last autosave is what stays
+  if (modelDown) return;
+  if (!await autosave()) throw new Error("clockWorker.couldNotSaveLeaving" satisfies MessageKey);
 }
 
 /** T-743: New game, Open a file and a backup's restore each put the game in a slot of its own,
@@ -248,9 +245,8 @@ export async function intoNewSlot(name: string, load: () => Promise<unknown> | v
   saves.saveFailure = undefined;
   saves.dirty = writeNow;
   saves.savedAt = Date.now();
-  if (saves.newer && saves.newerFile) await keepAsLoaded(key);
   // T-3687: an empty game is not written (autosave), and the page must still hear which slot it is in
-  else if (!writeNow || !await autosave() || saves.unwritten === key) await publishSlots();
+  if (!writeNow || !await autosave() || saves.unwritten === key) await publishSlots();
   slotChanges?.postMessage({ key });
 }
 
@@ -280,19 +276,6 @@ export async function intoView(name: string, load: () => Promise<unknown>) {
 async function saveView() {
   await manageSlot({ kind: "saveSlot", action: "create", name: saves.viewing ?? undefined });
   if (saves.viewing === null) send({ kind: "savedByHand", at: saves.savedAt });
-}
-
-/** T-1826: a newer build's file opened into slot `key` is written there as it was loaded, so nothing
- * it holds is lost; the card's picture and figures are this build's. */
-async function keepAsLoaded(key: string) {
-  const name = saves.newSlotName?.key === key ? saves.newSlotName.name : undefined;
-  try {
-    await writeSlot(key, { bytes: saves.newerFile!, at: Date.now(), day: Math.floor(gameNow() / 86400), city, ...await slotSummary(), name });
-    if (name) saves.newSlotName = null;
-    if (saves.unwritten === key) saves.unwritten = null;
-    saves.dirty = false;
-  } catch { /* storage unavailable: publishSlots says so */ }
-  await publishSlots();
 }
 
 // T-988: games on the account (workers/cloud.ts, notes/T-988.md). The main thread posts the account;
@@ -331,7 +314,7 @@ export function cloudUp(key: string, force = false): Promise<unknown> {
 }
 async function upNow(key: string, force: boolean) {
   const ctx = saves.cloudCtx;
-  if (!ctx?.on || saves.testPage || (key === saves.activeSlot && saves.newer)) return;
+  if (!ctx?.on || saves.testPage) return;
   if (key === saves.activeSlot && !force && saves.cloudClaimed !== key) { await openOnAccount(ctx); await publishSlots(); return; }
   const [s, rec] = await Promise.all([readStored(key), readSync(key)]);
   // T-2030: the clock's own saves go up with the next player change, a save by hand or a rename
@@ -388,8 +371,7 @@ export function cloudKick(): Promise<unknown> {
  * the old slot takes the account's. Offline it plays on and claims when back. */
 async function openOnAccount(ctx: CloudContext) {
   const key = saves.activeSlot;
-  // T-1826: a newer game is not claimed, so the device playing it in the newer build keeps it
-  if (!key || !saves.activeLease || saves.cloudClaimed === key || saves.cloudTaken === key || saves.newer) return;
+  if (!key || !saves.activeLease || saves.cloudClaimed === key || saves.cloudTaken === key) return;
   let [stored, rec] = await Promise.all([readStored(key), readSync(key)]);
   if (!stored || !tiedTo(rec, ctx)) return; // a new game not written yet, or not on this account
   const list = await listGames(ctx);
@@ -457,7 +439,7 @@ async function openOnAccount(ctx: CloudContext) {
     saves.savedAt = got.stored.at;
     took = true;
   });
-  if (took && saves.activeSlot === key && !saves.newer) {
+  if (took && saves.activeSlot === key) {
     const now = await readSync(key);
     if (now && await claim(ctx, now) === "ok") saves.cloudClaimed = key;
   }
@@ -619,7 +601,6 @@ async function saveByHand() {
   if (saves.viewing !== null) return void await saveView();
   try {
     if (saves.testPage || !saves.activeSlot) throw new Error("This test page keeps no saved game. Make a copy to keep it.");
-    if (saves.newer) throw new Error(NEWER);
     if (!saves.activeLease) {
       const lease = await leaseSlot(saves.activeSlot, true);
       if (!lease) throw new Error("This browser cannot protect save slots. Download the game as a file instead.");
@@ -671,9 +652,6 @@ export async function manageSlot(msg: Extract<ToClock, { kind: "saveSlot" }>) {
         hold(lease);
         saves.viewing = saves.viewCard = null;
         saves.saveFailure = undefined;
-        // T-1826: the copy is this build's game, without what only the newer build read
-        saves.newer = false;
-        saves.newerFile = null;
         saves.dirty = true;
         saves.savedAt = Date.now();
       } catch (err) { lease.release(); throw err; }

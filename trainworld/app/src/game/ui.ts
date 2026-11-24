@@ -130,6 +130,9 @@ export interface DisplaySettings {
    * device: on by default on a computer, off on a phone or tablet. Read at each solve, so it applies from the next
    * one; the start menu's ticked box is what a game opened there gets. */
   intercityTrips: boolean;
+  /** T-4117: every zone held coarse (workers/demandLod.ts), the zone in view too; per browser, on by default on a
+   * phone or tablet. A change applies at once: each open zone opens again at its new level. */
+  coarseDemand: boolean;
   /** T-3319: the bullet shape of each mode's lines that have none of their own (game/lineShapeState.ts) */
   modeShapes: Record<Vehicle, LineShape>;
 }
@@ -179,7 +182,7 @@ const DEFAULT_DISPLAY: DisplaySettings = {
   basemapContrast: 1,
   hillshade: true,
   rotateMap: false,
-  zoomButtons: true,
+  zoomButtons: !mobileDevice(),
   legacyTime: false,
   transitModes: false,
   busOneWay: false,
@@ -187,6 +190,7 @@ const DEFAULT_DISPLAY: DisplaySettings = {
   bindNew: false,
   chartOtherLines: true,
   intercityTrips: !mobileDevice(),
+  coarseDemand: mobileDevice(),
   modeShapes: { ...MODE_SHAPES },
 };
 
@@ -205,9 +209,9 @@ export interface DockLayout {
 /** The stored settings' version: 2 since complex view became the default (T-192), 3 since Nunito and
  * 90% did (T-703), 4 since the real network did (T-727), 5 since the ramp went red to blue (T-812), 6 since Train share became the bubble colouring (T-833), 7 since keep placing is on by default (T-942), 8 since unopened zones' dots are light grey (T-976). Settings stored before a version had
  * saved the old default with everything else, so that setting is dropped once and the new default applies; 9 since the ramp's ends are lighter (T-1138); 10 since the track display starts on Line (T-1244); 11 since the station circles start off (T-1585); 12 since lines side by side are on (T-2346); 13 since everyone starts on High map detail (T-2840); 14 since the currency starts from the browser's region (T-2860). */
-const VERSION = 15;
+const VERSION = 16;
 
-function load(): Partial<{ tab: Tab; theme: Theme; shade: Shade; display: Partial<DisplaySettings>; dock: DockLayout; build: Partial<{ level: Level; ramp: boolean; tracks: 1 | 2 | 4; hsr: boolean; tram: boolean; keep: boolean; snap: boolean; tramSnap: boolean; streets: boolean; roads: boolean; beside: boolean; design: number; fly: number; advanced: boolean; platform: number; tramPlatform: number; oneTrack: boolean }>; guide: boolean; v: number }> {
+function load(): Partial<{ tab: Tab; theme: Theme; shade: Shade; display: Partial<DisplaySettings>; dock: DockLayout; build: Partial<{ level: Level; ramp: boolean; tracks: 1 | 2 | 4; hsr: boolean; tram: boolean; busway: boolean; keep: boolean; snap: boolean; tramSnap: boolean; streets: boolean; roads: boolean; beside: boolean; design: number; fly: number; advanced: boolean; platform: number; tramPlatform: number; oneTrack: boolean; stationKind: StationChoice }>; guide: boolean; v: number }> {
   try {
     return JSON.parse(localStorage.getItem(STORE) || "{}");
   } catch {
@@ -249,6 +253,8 @@ if ((saved.v ?? 1) < 12) delete migratedDisplay.lineBands;
 if ((saved.v ?? 1) < 14 && migratedDisplay.currency === "USD") delete migratedDisplay.currency;
 // Terrain shading became the default (Anita, 2026-11-17); the old default (off) was stored, so it is dropped once
 if ((saved.v ?? 1) < 15) delete migratedDisplay.hillshade;
+// T-4138: zoom buttons went off by default on phones; the old default (on) was stored with everything else, so a phone's is dropped once
+if ((saved.v ?? 1) < 16 && mobileDevice()) delete migratedDisplay.zoomButtons;
 // T-3814: binding new stations went off by default; a player with anything stored and no choice of their own had it
 // on (the default from T-3759 until then), so they keep it
 if (Object.keys(saved).length && migratedDisplay.bindNew === undefined) migratedDisplay.bindNew = true;
@@ -285,6 +291,8 @@ export const display = signal<DisplaySettings>({ ...DEFAULT_DISPLAY, ...migrated
 export const dropMarket = () => setDisplay("intercityTrips", false);
 /** T-2802, T-2838, T-3630: no market (no trips between cities) while the setting is off */
 export const marketOff = () => !display.peek().intercityTrips;
+/** T-4117: every zone coarse by the player's setting */
+export const coarseDemand = () => display.peek().coarseDemand;
 // bubble colours are module state in palette.ts (the bubble worker has its own); views that colour
 // bubbles read the setting and call this again before building, so the order of effects is moot
 effect(() => setBubbleColours(display.value.bubbleColours, display.value.rampFrom, display.value.rampTo));
@@ -301,6 +309,13 @@ effect(() => setBubbleShade(mapShade.value));
  * remove what is clicked (T-096), pick a trip's two ends (T-195), give stations a fare zone (T-3740). */
 export type Tool = "select" | "track" | "station" | "line" | "delete" | "trip" | "blueprint" | "bus" | "ferry" | "building" | "fares";
 export const tool = signal<Tool>("select");
+/** T-4214: a tool switch the player makes while map clicks wait for the map goes after them, in order (map/toolWait.ts) */
+let switchGate: ((f: () => void) => boolean) | null = null;
+export function setSwitchGate(g: (f: () => void) => boolean) { switchGate = g; }
+/** Run `f`, a tool switch the player made, now or in its turn after the map clicks waiting. */
+export function inClickOrder(f: () => void) {
+  if (!switchGate?.(f)) f();
+}
 /** T-1207: the map's camera is moving (set by map/overlay.ts); live counts in panels wait for it. */
 export const cameraMoving = { now: false };
 /** The Build tab's tools: while one is on, the demand views draw beneath the network (T-526). The
@@ -356,8 +371,18 @@ function savedLength(v: unknown, min: number, max: number, step: number, fallbac
 /** T-3332: new stations have their platform on one track (on double track the one nearer the pointer; on
  * single track a stop where trains cannot pass); remembered in the browser. */
 export const stationOneTrack = signal(saved.build?.oneTrack === true);
-/** The station tool's pointer is on tram track, so the station bar steps tram stops' length (T-2926). */
-export const stationOnTram = signal(false);
+/** T-3999: what the station tool places: a train station or a tram stop (on its own kind of track, or on open ground with its own
+ * piece), a BRT station beside a road, or a port with no ferry line yet; remembered in the browser. */
+export type StationKind = "rail" | "tram" | "bus" | "port";
+/** T-4105: what the player picked: a kind, or "auto", which takes the kind from what is under the pointer (a browser that never picked starts on "rail"). */
+export type StationChoice = StationKind | "auto";
+export const stationChoice = signal<StationChoice>(["rail", "tram", "bus", "port"].includes(saved.build?.stationKind as string) ? (saved.build!.stationKind as StationKind) : saved.build?.stationKind === "auto" ? "auto" : "rail");
+/** T-4105: the kind "auto" has found under the pointer (map/stationAuto.ts) */
+export const autoKind = signal<StationKind>("rail");
+/** the kind the station tool places now: the pick, or under "auto" what the pointer is over */
+export const stationKind = computed<StationKind>(() => (stationChoice.value === "auto" ? autoKind.value : stationChoice.value));
+/** The tram stop kind is picked, so the station bar steps tram stops' length (T-2926, T-4010). */
+export const stationOnTram = computed(() => stationKind.value === "tram");
 /** T-468: the track bar's settings below are remembered per browser with the rest of the
  * UI state; anything unreadable falls back to the defaults. */
 export const buildLevel = signal<Level>(saved.build?.tram === true ? 0 : LEVELS.includes(saved.build?.level as Level) ? (saved.build!.level as Level) : 1);
@@ -405,8 +430,12 @@ export const highSpeed = signal(saved.build?.hsr === true && saved.build?.tram !
 /** T-2926: the track tool lays tram track (always double, ground level to start with), the third type beside
  * Regular and High speed. Drawn by hand it is the off-street kind (`TrackApi::set_route_kind(3)`). */
 export const tramTrack = signal(saved.build?.tram === true);
+/** T-3378 stage 4: the track tool lays an off-road busway (`TrackApi::set_route_kind(4)`), the fourth type. It is
+ * drawn as off-street tram track is, so `tramTrack` is on with it; the street and real network snaps are off and the
+ * track double while it is picked, and come back as they were when another type is. */
+export const buswayTrack = signal(saved.build?.tram === true && saved.build?.busway === true);
 /** T-2931: the track tool lays quad track (two pairs) instead of double; high-speed (T-3126) and tram (T-3166) too. */
-export const quadTrack = signal(saved.build?.tracks === 4);
+export const quadTrack = signal(saved.build?.tracks === 4 && saved.build?.busway !== true);
 /** T-3262: the track count the player last picked. Single is kept here while High speed or Tram shows it as
  * double, and comes back with Regular; it is what the browser remembers. */
 const countPicked = signal<1 | 2 | 4>(saved.build?.tracks === 1 || saved.build?.tracks === 4 ? saved.build.tracks : 2);
@@ -420,7 +449,7 @@ export function setQuadTrack(on: boolean) {
   });
 }
 /** T-3093: the track tool lays single track (0.6x the cost), beside double and quad; with any track type. */
-export const singleTrack = signal(saved.build?.tracks === 1);
+export const singleTrack = signal(saved.build?.tracks === 1 && saved.build?.busway !== true);
 /** T-3352: single track goes with every track type. */
 export function setSingleTrack(on: boolean): boolean {
   if (on === singleTrack.peek()) return true;
@@ -444,15 +473,35 @@ export const trackCountPicked = (): 1 | 2 | 4 => countPicked.value;
 let designBeforeHsr: DesignSpeed | null = null;
 /** The level before Tram was picked, put back when another type is. */
 let levelBeforeTram: Level | null = null;
-export type TrackType = 2 | "hsr" | "tram";
-export const trackType = computed<TrackType>(() => (tramTrack.value ? "tram" : highSpeed.value ? "hsr" : 2));
+export type TrackType = 2 | "hsr" | "tram" | "busway";
+export const trackType = computed<TrackType>(() => (buswayTrack.value ? "busway" : tramTrack.value ? "tram" : highSpeed.value ? "hsr" : 2));
+/** T-3378: the street snaps as they were before Busway was picked, put back when it is left. */
+let snapsBeforeBusway: { streets: boolean; real: boolean } | null = null;
 /** The track bar's Regular / High speed choice. High speed sets the design speed to its top (the
  * player can step it down); leaving it puts back the speed there was before. One batch, so the track
  * tool never sees the old type with the new speed (T-1001). */
 export function setTrackType(t: TrackType) {
-  const was = highSpeed.peek(), wasTram = tramTrack.peek();
-  if ((t === "hsr" && was) || (t === "tram" && wasTram) || (t === 2 && !was && !wasTram)) return;
+  const was = highSpeed.peek(), wasTram = tramTrack.peek(), wasBusway = buswayTrack.peek();
+  if ((t === "hsr" && was) || (t === "busway" && wasBusway) || (t === "tram" && wasTram && !wasBusway) || (t === 2 && !was && !wasTram)) return;
   batch(() => {
+    if (wasBusway && t !== "busway") {
+      buswayTrack.value = false;
+      const s = snapsBeforeBusway ?? { streets: true, real: false };
+      snapStreets.value = s.streets && !s.real;
+      snapRealTram.value = s.real;
+      snapsBeforeBusway = null;
+      singleTrack.value = countPicked.peek() === 1;
+      quadTrack.value = countPicked.peek() === 4;
+      if (t === "tram") return;
+    }
+    if (t === "busway") {
+      snapsBeforeBusway = { streets: snapStreets.peek(), real: snapRealTram.peek() };
+      snapStreets.value = snapRealTram.value = false;
+      singleTrack.value = quadTrack.value = false;
+      buswayTrack.value = true;
+      if (wasTram) return;
+      t = "tram";
+    }
     if (t === "tram") {
       if (quadTrack.peek()) snapStreets.value = false;
       if (was && designBeforeHsr !== null) designSpeed.value = designBeforeHsr;
@@ -533,7 +582,7 @@ if (typeof window !== "undefined") {
 void loadNunito().then(() => document.dispatchEvent?.(new Event("tw-fontchange")));
 effect(() => {
   if (VIDEO) return; // T-2774
-  const s = { tab: tab.value, theme:theme.value, shade: shade.value, display: display.value, dock: dockLayout.value, build: { level: buildLevel.value, ramp: autoRamp.value, hsr: highSpeed.value, tram: tramTrack.value, tracks: countPicked.value, keep: keepPlacing.value, snap: snapReal.value, tramSnap: snapRealTram.value, streets: snapStreets.value, roads: snapRoads.value, beside: snapBeside.value, design: designSpeed.value, fly: flyoverSpeed.value, advanced: buildAdvanced.value, platform: buildPlatform.value, tramPlatform: buildTramPlatform.value, oneTrack: stationOneTrack.value }, guide: guideFinished.value, v: VERSION };
+  const s = { tab: tab.value, theme:theme.value, shade: shade.value, display: display.value, dock: dockLayout.value, build: { level: buildLevel.value, ramp: autoRamp.value, hsr: highSpeed.value, tram: tramTrack.value, busway: buswayTrack.value, tracks: countPicked.value, keep: keepPlacing.value, snap: snapReal.value, tramSnap: snapRealTram.value, streets: snapStreets.value, roads: snapRoads.value, beside: snapBeside.value, design: designSpeed.value, fly: flyoverSpeed.value, advanced: buildAdvanced.value, platform: buildPlatform.value, tramPlatform: buildTramPlatform.value, oneTrack: stationOneTrack.value, stationKind: stationChoice.value }, guide: guideFinished.value, v: VERSION };
   try {
     localStorage.setItem(STORE, JSON.stringify(s));
   } catch {

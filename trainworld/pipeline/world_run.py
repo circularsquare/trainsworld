@@ -18,7 +18,7 @@ agent judgement (docs/world-run.md "Running the pipeline"; design notes/T-535.md
              --no-join        stop after the regions: gated rows stay registered, status "gated",
                               for one `join` once every parallel run is done (T-786)
              --build-only     download, read and build only: rows stay "built", for a later run
-                              to gate (a rented machine's wave, T-1065; docs/aws.md)
+                              to gate (once a rented machine's wave, T-1065)
              --keep-downloads keep the region's .osm.pbf and OSM caches
              --coarse T       4 km blocks where every 2 km zone makes under T trip ends a weekday
                               (T-852, coarse_zones.py, a step before routes); off by default
@@ -32,7 +32,7 @@ see the solve's changes.
 
 A run goes a region at a time: rows sharing a Geofabrik extract, chained, in plan order. For each:
 download (or reuse) and read its extracts, then per row build_city, places, routes, merge_cells,
-nocar, everyday_rates (status "built"); meanwhile the gate on the built rows in chunks (T-1978),
+everyday_rates (status "built"); meanwhile the gate on the built rows in chunks (T-1978),
 each registered with its market pack against a snapshot taken before the chunk (status "shipped",
 or "parked" with the failing checks, unregistered again); then the region's downloads are deleted.
 The next region downloads and reads while this one builds (T-1980, one ahead). After the last
@@ -81,9 +81,8 @@ HERE = Path(os.path.dirname(os.path.abspath(__file__)))
 REAL = HERE.parent
 MAPS = REAL.parent
 OSM = REAL / "data/raw/osm"
-GEOFABRIK = "https://download.geofabrik.de/{}-latest.osm.pbf"
 UA = {"User-Agent": "trainworld-pipeline/0.1 (rail game data build; python-requests)"}
-BUILD_STEPS = ["build", "stations", "places", "routes", "merge", "nocar", "everyday"]
+BUILD_STEPS = ["build", "stations", "places", "routes", "merge", "everyday"]
 VITE_FILES = (".json", ".bin", ".boundary.geojson", ".places.json", ".market.json")  # vite.config.ts copies these
 CACHES = (".points.fgb", ".stations.fgb", ".areas.fgb", ".water.fgb", ".ways2.npz")  # an extract's OSM caches
 QUIET_S = 1200  # a step whose log has not grown this long dumps its stack into the log (T-764)
@@ -1097,16 +1096,18 @@ class Run:
     def downloads(self, exs, admin):
         """Each extract whose caches are not all on disk, unless its .osm.pbf is: four tries."""
         import requests
+        import geofabrik
         failed = {}
         for e in exs:
             stem = str(OSM / e.replace("/", "_"))
             need = CACHES + ((".admin.fgb",) if e in admin else ())
             if all(Path(stem + c).exists() for c in need) or Path(stem + ".osm.pbf").exists():
                 continue
-            path, url = Path(stem + ".osm.pbf"), GEOFABRIK.format(e)
+            path = Path(stem + ".osm.pbf")
             for attempt in range(4):
                 t = time.time()
                 try:
+                    url = geofabrik.url(e)
                     with requests.get(url, headers=UA, timeout=600, stream=True) as r:
                         r.raise_for_status()
                         with open(str(path) + ".part", "wb") as f:
@@ -1115,7 +1116,7 @@ class Run:
                     os.replace(str(path) + ".part", path)
                     print(f"    downloaded {e}: {path.stat().st_size / 1e6:.0f} MB in {time.time() - t:.0f} s", flush=True)
                     break
-                except (requests.RequestException, OSError) as x:
+                except (requests.RequestException, OSError, RuntimeError) as x:
                     print(f"    download {e} try {attempt + 1}: {type(x).__name__} {x}", flush=True)
                     if attempt == 3:
                         failed[e] = f"download failed: {type(x).__name__} {x}"
@@ -1139,7 +1140,7 @@ class Run:
         cmds = {"build": ("build_city", [cid] + (["--coarse-next"] if self.o.get("coarse") else [])), "stations": ("pack_gate", ["stations", cid, "--extracts", ex]),
                 "places": ("places", [cid]),
                 "routes": ("routes", [cid, "--extracts", ex, "--workers", str(self.threads), "--keep-pbf"]),
-                "merge": ("merge_cells", [cid]), "nocar": ("nocar", [cid]), "everyday": ("everyday_rates", [cid]),
+                "merge": ("merge_cells", [cid]), "everyday": ("everyday_rates", [cid]),
                 "coarse": ("coarse_zones", [cid, "--under", str(self.o.get("coarse"))])}
         # T-852: the coarse grid re-solves the gravity before the routes are made for its zones
         order = BUILD_STEPS if not self.o.get("coarse") else [x for s in BUILD_STEPS for x in (["coarse", s] if s == "routes" else [s])]
@@ -1481,6 +1482,12 @@ class Run:
                 print(f"  warning: zone search aliases not rebuilt: {str(tail)[-200:]}", flush=True)
         except Exception as e:
             print(f"  warning: zone search aliases not rebuilt: {e}", flush=True)
+        try:  # T-4004: the world name index search finds far towns with; a failure only leaves it as it was
+            ok, _, tail = self.step("place_index", [], f"{L}.placeindex.log")
+            if not ok:
+                print(f"  warning: place name index not rebuilt: {str(tail)[-200:]}", flush=True)
+        except Exception as e:
+            print(f"  warning: place name index not rebuilt: {e}", flush=True)
 
     def market_step(self, ids, L):
         """The join's market and trips step for `ids` (registry order). Its limit grows with the registry,

@@ -21,7 +21,6 @@ export const DEAD_PX = 3, DOT_MIN_PX = 6;
 /** T-2404: the pointer this near a segment whose state is held (twice the node snap, so the state
  * lands before the pointer reaches what it could snap to), unless this near the start */
 export const HELD_NEAR_PX = 2 * TRACK_NODE_PX, HELD_START_PX = 3 * TRACK_NODE_PX;
-export const notOnTrack = () => tr("tools.notOnTrack");
 /** T-2271: the station tool's trips-near bar is empty at 1,000 trips and full at 1M, log scaled
  * (New York's lines have 30k-1M within 1 km); its ticks (style.css `.size-bar`) are 10k and 100k */
 export const NEAR_BAR_LO = 1e3, NEAR_BAR_HI = 1e6;
@@ -73,6 +72,9 @@ export interface Placed {
   /** T-3260: the way track leaves here (local units, unit length), for Ctrl's straight line: the end's heading
    * of the segment placed last, else the first leg of a ghost from here; none from a start on open ground */
   dir?: [number, number];
+  /** T-4210: the bare end of the segment this run placed last, on open ground, at this build level: a segment from here
+   * onto open ground is the tangent route, laid on the page (map/ghostLocal.ts) */
+  tangent?: { level: number };
 }
 
 /** The longest piece of free-drawn track one click lays, straight-line km between its ends (T-1020:
@@ -105,6 +107,33 @@ export function placedAt(end: RouteEnd, lx: number, ly: number, ring: [number, n
   return { end, lng, lat, ring };
 }
 
+
+/** T-4143: the stand-in ghost before a run's first answer, x, y, z points from the start (sx, sy) to the pointer (ex, ey):
+ * straight, or from a start with a heading (`dir`, unit length) the circular arc that leaves along it and ends there
+ * (straight when the pointer is behind the start, where no such arc looks like track); heights from z0 to z1, m. */
+export function standInPts(sx: number, sy: number, ex: number, ey: number, dir: [number, number] | undefined, z0: number, z1: number): Float32Array {
+  const dx = ex - sx, dy = ey - sy;
+  let n = 2, at = (t: number): [number, number] => [sx + t * dx, sy + t * dy];
+  if (dir) {
+    const [ux, uy] = dir, ang = Math.atan2(ux * dy - uy * dx, ux * dx + uy * dy);
+    if (Math.abs(ang) > 1e-3 && Math.abs(ang) < Math.PI / 2) {
+      // a chord at `ang` to the heading turns the arc through twice that, on a circle to that side
+      const r = Math.hypot(dx, dy) / (2 * Math.sin(Math.abs(ang))), sg = Math.sign(ang);
+      const cx = sx - uy * r * sg, cy = sy + ux * r * sg, ox = sx - cx, oy = sy - cy;
+      n = 17;
+      at = (t) => {
+        const c = Math.cos(2 * ang * t), s = Math.sin(2 * ang * t);
+        return [cx + ox * c - oy * s, cy + ox * s + oy * c];
+      };
+    }
+  }
+  const pts = new Float32Array(n * 3);
+  for (let k = 0; k < n; k++) {
+    const t = k / (n - 1), [x, y] = at(t);
+    pts.set([x, y, z0 + t * (z1 - z0)], k * 3);
+  }
+  return pts;
+}
 
 /** A refusal's tag content and redness, with `name` above it in the ordinary ink when there is one. */
 export function withName(name: string | null, why: string): [string | HTMLDivElement[], boolean] {

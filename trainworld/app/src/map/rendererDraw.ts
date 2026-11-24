@@ -3,6 +3,7 @@
 import { rgbf } from "../game/palette";
 import { ANNEX_ROOM, ST_ROOM, BOX_WIDTH_ZOOM, boxHalfPxAtBoxZoom, BRIDGE_HALF_PX, connectorHalfPx, dotRing, spanningPairs, PLATFORM_HALF_M, SEL_GLOW_PX, SEL_OUTLINE_PX, shapePoints, STATION_BOX_ZOOM, STATIONS_ZOOM, TRAINS_ZOOM, stationRadii, stationRing, stationShape, type Project, type StationShape } from "./stationGeometry";
 import { shadeColours } from "../game/shades";
+import { world } from "../game/world";
 import { MOVING_PLACE_MS } from "./moving";
 import { anchor, anchorPsi, EARTH_C, kAtY, localToMercMatrix, mul4, pxPerUnitAt, unitPerPxAt, type Anchor } from "./geo";
 import { clipToCss, interp, localCamera, mercToCss, setCamera, viewCentreMerc, type Camera, type LocalCamera } from "./gl";
@@ -92,7 +93,7 @@ function frameSetup(rnd: NetworkRenderer, cam: Camera, time: number, zoom: numbe
   if (!view) rnd.busesShown = buses;
   const stationsOff = opt.showStations === false;
   rnd.stationsOff = stationsOff;
-  const redraw = !cache || cache.stale(vp[0], vp[1], [zoom, dpr, ...lc.m, ...lc.globe, ...lc.plane, ...lc.at, k, opt.byLevel ? 1 : 0, opt.bySpeed ? 1 : 0, opt.byProfit ? 1 : 0, opt.selLine, (opt.selLines ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), opt.selEdge, opt.hotLine ?? -1, opt.hotEdge ?? -1, (opt.hotBuses ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), (opt.hotStops ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), rnd.hide[0], rnd.hide[1], opt.dimOthers ?? 1, opt.flatMarks !== false ? 1 : 0, opt.rampMarks !== false ? 1 : 0, buses ? rnd.buses.version : -1, through ? 1 : 0, rnd.uploads, rnd.strokeCull ? 1 : 0, rnd.strokeLod ? 1 : 0, rnd.strokeGather ? 1 : 0, rnd.lineBands ? 1 : 0, stationsOff ? 1 : 0, vis.v], shadeColours());
+  const redraw = !cache || cache.stale(vp[0], vp[1], [zoom, dpr, ...lc.m, ...lc.globe, ...lc.plane, ...lc.at, k, opt.byLevel ? 1 : 0, opt.bySpeed ? 1 : 0, opt.byProfit ? 1 : 0, opt.selLine, (opt.selLines ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), opt.selEdge, opt.hotLine ?? -1, opt.hotEdge ?? -1, (opt.hotBuses ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), (opt.hotStops ?? []).reduce((h, v) => (h * 31 + v + 1) | 0, 7), opt.dimOthers ?? 1, opt.flatMarks !== false ? 1 : 0, opt.rampMarks !== false ? 1 : 0, buses ? rnd.buses.version : -1, through ? 1 : 0, rnd.uploads, rnd.strokeCull ? 1 : 0, rnd.strokeLod ? 1 : 0, rnd.strokeGather ? 1 : 0, rnd.lineBands ? 1 : 0, stationsOff ? 1 : 0, vis.v], shadeColours());
   return { cam, time, zoom, dpr, opt, view, gl, n, uTime, a, lc, vp, pxPerUnit, k, wLine, wTrack, wSel, casing, boxes, hidden, ring, boxLinePx, boxRingPx, pass, project, midX, midY, through, boxWhite, trackCap, cache, buses, stationsOff, redraw };
 }
 
@@ -106,7 +107,7 @@ function beginStrokes(rnd: NetworkRenderer, c: Ctx1) {
   // bus lines have no strokes: their own pass, under the track (T-1464, busLayer.ts)
   if (redraw && buses) {
     const sh = shadeColours();
-    rnd.buses.draw(lc, a, vp, zoom, dpr, { wLine, casing, wSel, rail: BP_RAIL_RGB, railShare: BP_RAIL_SHARE, sel: opt.selLine, hot: opt.hotLine ?? -1, lit: opt.hotBuses ?? [], litStops: opt.hotStops ?? [], stationInk: rgbf(sh.stationInk), dim: opt.dimOthers ?? 1, shades: sh, fill: rgbf(sh.casing), casingRgb: rgbf(sh.casing),
+    rnd.buses.draw(lc, a, vp, zoom, dpr, { wLine, casing, wSel, rail: BP_RAIL_RGB, railShare: BP_RAIL_SHARE, sel: opt.selLine, hot: opt.hotLine ?? -1, lit: opt.hotBuses ?? [], litStops: opt.hotStops ?? [], dim: opt.dimOthers ?? 1, shades: sh, fill: rgbf(sh.casing), casingRgb: rgbf(sh.casing),
       paint: opt.byLevel ? "level" : opt.bySpeed ? "speed" : opt.byProfit ? "profit" : null, phases: n.phases, meta: n.meta, trackRgb: TRACK_RGB });
   }
 }
@@ -121,7 +122,16 @@ function strokeUniforms(rnd: NetworkRenderer, c: Ctx1) {
   setSelLines(gl, u, opt.selLines);
   gl.uniform1i(u.u_sel_edge, opt.selEdge);
   gl.uniform2i(u.u_hot, opt.hotLine ?? -1, opt.hotEdge ?? -1);
-  gl.uniform2i(u.u_hide, rnd.hide[0], rnd.hide[1]);
+  // T-4145: what is drawn ahead of the network hides the network's own strokes (map/lineAhead.ts)
+  gl.uniform2i(u.u_ahead_n, rnd.aheadLinesTex ? rnd.aheadN[0] : 0, rnd.aheadEdgesTex ? rnd.aheadN[1] : 0);
+  gl.activeTexture(gl.TEXTURE14);
+  gl.bindTexture(gl.TEXTURE_2D, rnd.aheadLinesTex);
+  gl.uniform1i(u.u_ahead_lines, 14);
+  gl.activeTexture(gl.TEXTURE15);
+  gl.bindTexture(gl.TEXTURE_2D, rnd.aheadEdgesTex);
+  gl.uniform1i(u.u_ahead_edges, 15);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(u.u_ahead, 0);
   gl.uniform1i(u.u_level_hide, vis.levels);
   // T-2058: the other lines thinner, faded and solid
   const mute = MUTE && (opt.dimOthers ?? 1) < 1 ? MUTE : null;
@@ -247,12 +257,26 @@ function strokeDraws(rnd: NetworkRenderer, c: Ctx2) {
   // Colour by height: the track itself, at line width, and no line strokes over it. Blueprint
   // track and the lines planned on it go over built track and its lines (T-695).
   const trackStrokes = (cap = 0) => {
-    for (const part of rnd.hasBlueprint ? [1, 2] : [0]) {
+    for (const part of rnd.hasBlueprint ? (vis.blueprints ? [1] : [1, 2]) : [0]) {
       gl.uniform1i(u.u_bp_part, part);
       // through a station's box blueprint track is drawn whole (rails and middle) over a blueprint box
       const c = part === 2 ? 0 : cap;
       stroke(rnd.track, 0, opt.byLevel || opt.bySpeed || opt.byProfit ? wLine : wTrack, opt.selEdge >= 0, c);
-      if (!opt.byLevel && !opt.bySpeed && !opt.byProfit) stroke(rnd.lines, 1, wLine, opt.selLine >= 0 || !!opt.selLines?.length, c);
+      // T-4145: track drawn ahead of the network
+      if (rnd.aheadTrackVao) {
+        gl.uniform1i(u.u_ahead, 1);
+        stroke(rnd.aheadTrackVao, 0, opt.byLevel || opt.bySpeed || opt.byProfit ? wLine : wTrack, opt.selEdge >= 0, c);
+        gl.uniform1i(u.u_ahead, 0);
+      }
+      if (!opt.byLevel && !opt.bySpeed && !opt.byProfit) {
+        stroke(rnd.lines, 1, wLine, opt.selLine >= 0 || !!opt.selLines?.length, c);
+        // T-4114: lines drawn ahead of the network, over the others
+        if (rnd.aheadVao) {
+          gl.uniform1i(u.u_ahead, 1);
+          stroke(rnd.aheadVao, 1, wLine, opt.selLine >= 0 || !!opt.selLines?.length, c);
+          gl.uniform1i(u.u_ahead, 0);
+        }
+      }
     }
     gl.uniform1i(u.u_bp_part, 0);
     // passing stations' outer tracks along their platforms (T-2233)
@@ -282,7 +306,7 @@ function rampEndSizes(c: Ctx3) {
 }
 
 function strokesPass(rnd: NetworkRenderer, c: Ctx3) {
-  const { zoom, dpr, opt, gl, lc, vp, wLine, wTrack, pass, through, trackCap, cache, redraw, u, mute, lanes, bandOn, shades, bpMid, bpRail, G, modes, stroke, trackStrokes } = c;
+  const { zoom, dpr, opt, gl, lc, vp, wLine, wTrack, pass, through, trackCap, cache, redraw, u, mute, lanes, bandOn, shades, bpMid, bpRail, G, stroke, trackStrokes } = c;
   if (redraw) {
   if (rnd.highlight) {
     // T-1679: picked track gets a selected station's look, an ink outline (2 px) apart from the
@@ -314,8 +338,39 @@ function strokesPass(rnd: NetworkRenderer, c: Ctx3) {
   trackStrokes();
   // where lines turn back, over their tracks (T-658d), and passing stations' outer tracks (T-2233)
   if (lanes.t > 0 || pass) stroke(rnd.turnback, 0, wTrack, false);
+  rnd.marks.draw(lc, vp, zoom, dpr, rnd.levelColours, opt.flatMarks !== false, opt.rampMarks !== false, opt.byLevel ? rampEndSizes(c) : null, "built");
+  // T-2991: one-way loops' chevrons on the Line view's strokes (the Traffic view's bands move apart)
+  if (!opt.byLevel && !opt.bySpeed && !opt.byProfit && !rnd.trafficWidths)
+    rnd.oneWay.draw(lc, vp, zoom, dpr, { wLine, band: bandOn, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: mute ? opt.selLine : -1 });
+  rnd.oneWayTrack.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
+  }
+  if (cache) {
+    if (redraw) {
+      cache.end(0, vp);
+      if (through) {
+        cache.begin(1);
+        gl.useProgram(rnd.strokeProg);
+        trackStrokes(trackCap);
+        gl.uniform1f(u.u_cap, 0);
+        cache.end(1, vp);
+      }
+    }
+    cache.draw(0);
+  }
+  ghostPass(rnd, c);
+}
+
+/** The ghost, and a placed segment's stand-in until its network is drawn (T-1407), over the strokes' cached layer
+ * (T-4136): a ghost that follows the pointer every frame redraws only itself, never the network under it. */
+function ghostPass(rnd: NetworkRenderer, c: Ctx3) {
+  const { zoom, dpr, opt, gl, lc, vp, wLine, u, modes, stroke } = c;
+  if (!rnd.placed.length && !rnd.preview?.count && !rnd.marks.previewing) return;
+  gl.useProgram(rnd.strokeProg);
+  // (the cache's layer was drawn from the profit view's texture unit)
+  gl.activeTexture(gl.TEXTURE12);
+  gl.bindTexture(gl.TEXTURE_2D, rnd.profitTex);
+  gl.activeTexture(gl.TEXTURE0);
   gl.uniform1i(u.u_ghost, 1);
-  // the ghost, and a placed segment's stand-in until its network is drawn (T-1407)
   for (const g of [...rnd.placed, rnd.preview]) {
     stroke(g, 2, wLine, false);
     if (!g?.count) continue;
@@ -336,26 +391,8 @@ function strokesPass(rnd: NetworkRenderer, c: Ctx3) {
     gl.uniform1i(u.u_lane_mode, 0);
   }
   gl.uniform1i(u.u_ghost, 0);
-  rnd.marks.draw(lc, vp, zoom, dpr, rnd.levelColours, opt.flatMarks !== false, opt.rampMarks !== false, opt.byLevel ? rampEndSizes(c) : null);
-  // T-2991: one-way loops' chevrons on the Line view's strokes (the Traffic view's bands move apart)
-  if (!opt.byLevel && !opt.bySpeed && !opt.byProfit && !rnd.trafficWidths)
-    rnd.oneWay.draw(lc, vp, zoom, dpr, { wLine, band: bandOn, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: mute ? opt.selLine : -1 });
-  rnd.oneWayTrack.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
+  rnd.marks.draw(lc, vp, zoom, dpr, rnd.levelColours, opt.flatMarks !== false, opt.rampMarks !== false, opt.byLevel ? rampEndSizes(c) : null, "drawing");
   if (rnd.preview) rnd.oneWayGhost.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
-  }
-  if (cache) {
-    if (redraw) {
-      cache.end(0, vp);
-      if (through) {
-        cache.begin(1);
-        gl.useProgram(rnd.strokeProg);
-        trackStrokes(trackCap);
-        gl.uniform1f(u.u_cap, 0);
-        cache.end(1, vp);
-      }
-    }
-    cache.draw(0);
-  }
 }
 
 function stationsPass(rnd: NetworkRenderer, c: Ctx3) {
@@ -363,7 +400,8 @@ function stationsPass(rnd: NetworkRenderer, c: Ctx3) {
   // the station buildings' hall crowds (T-2219), over the track and under the boxes
   if (!stationsOff) rnd.floors.drawHall(lc, vp, dpr, zoom, rnd.board && !hidden ? rnd.crowds.hall : null);
 
-  if (n.stationCount && !stationsOff) {
+  // (a game's first station is drawn ahead while the network has none)
+  if ((n.stationCount || rnd.standCount) && !stationsOff) {
     // Platforms along the track from STATION_BOX_ZOOM, each one shape at every zoom (T-204), dots
     // further out (T-189), one for a whole complex (T-217), and below STATIONS_ZOOM only the
     // selected ones (T-205).
@@ -391,6 +429,7 @@ function stationsPass(rnd: NetworkRenderer, c: Ctx3) {
     gl.uniform1f(su.u_line, wLine);
     gl.uniform3f(su.u_lanes, lanes.gap * dpr, lanes.t, lanes.narrow);
     gl.uniform1f(su.u_boxes, boxes ? 1 : 0);
+    gl.uniform1i(su.u_no_bp, vis.blueprints ? 1 : 0);
     const hotSt = (opt.hotStations ?? []).filter((i) => i >= 0 && i < n.stationCount);
     rnd.hotList.fill(-1);
     hotSt.slice(0, HOT_STATIONS).forEach((i, k) => (rnd.hotList[k] = i));
@@ -476,6 +515,18 @@ function stationsPass(rnd: NetworkRenderer, c: Ctx3) {
       gl.uniform1i(su.u_layer, layer);
       gl.bindVertexArray(rnd.stationVao);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n.stationCount);
+      // T-4145: station boxes drawn ahead of the network, their centre lines from their own texture, never hovered
+      if (rnd.standCount && rnd.standVao && pass === 0) {
+        gl.uniform1i(su.u_hot_n, 0);
+        gl.activeTexture(gl.TEXTURE11);
+        gl.bindTexture(gl.TEXTURE_2D, rnd.standLineTex);
+        gl.bindVertexArray(rnd.standVao);
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, rnd.standCount);
+        gl.bindTexture(gl.TEXTURE_2D, rnd.tex.stationLine);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.uniform1i(su.u_hot_n, Math.min(hotSt.length, HOT_STATIONS));
+        gl.bindVertexArray(rnd.stationVao);
+      }
       if (annexes && boxes && rnd.annexes) {
         for (const [kind, bit] of [[ANNEX_ROOM, ST_ROOM]]) {
           if (!(rnd.annexes & bit)) continue;
@@ -710,6 +761,7 @@ export function useBridges(rnd: NetworkRenderer, lc: LocalCamera, vp: readonly [
   gl.uniform3fv(bu.u_bad, BAD_RGB);
   gl.uniform3fv(bu.u_crowd_rgb, CROWD_RGB);
   gl.uniform1f(bu.u_mask, 0);
+  gl.uniform1i(bu.u_no_bp, vis.blueprints ? 1 : 0);
 }
 
 /** Local units of anchor `a` to CSS px on the canvas (y down) through the draw's camera; NaN
@@ -780,18 +832,21 @@ export function syncGroups(rnd: NetworkRenderer, n: NetworkBuffers, groups: Stat
   const mid = (i: number): [number, number] => [S[i * 3] + (sh?.[i * 4] ?? 0), S[i * 3 + 1] + (sh?.[i * 4 + 1] ?? 0)];
   const pairs: number[] = [];
   const groupOf = new Int32Array(Math.max(1, n.stationCount)).fill(-1);
+  let brt = new Set<string>();
   if (groups) {
     const index = new Map(n.stationIds.map((id, i) => [id, i]));
+    // T-4079: a BRT station's joins with no passage are the bus layer's dashed lines (`brtJoins`)
+    brt = new Set((world.peek()?.save.stations ?? []).filter((s) => s.brt).map((s) => s.id));
     groups.members.forEach((ids, k) => {
       const m = ids.map((id) => index.get(id)).filter((i): i is number => i !== undefined);
       for (const i of m) groupOf[i] = k;
-      for (const [a, b] of spanningPairs(m.map(mid))) pairs.push(m[a], m[b]);
+      for (const [a, b] of spanningPairs(m.map(mid))) if (!brt.has(n.stationIds[m[a]]) && !brt.has(n.stationIds[m[b]])) pairs.push(m[a], m[b]);
     });
   }
   const idx = n.stationLinkIdx;
   for (let k = 0; idx && k < idx.length / 2; k++) {
     const i = idx[k * 2], j = idx[k * 2 + 1];
-    if (groupOf[i] < 0 || groupOf[i] !== groupOf[j]) pairs.push(i, j);
+    if (groupOf[i] < 0 || groupOf[i] !== groupOf[j] || brt.has(n.stationIds[i]) || brt.has(n.stationIds[j])) pairs.push(i, j);
   }
   rnd.connPairs = Int32Array.from(pairs);
   const count = pairs.length / 2;
@@ -848,6 +903,9 @@ export function bindTrainTextures(rnd: NetworkRenderer, u: Record<string, WebGLU
   bind(3, rnd.tex.phases, u.u_phases);
   bind(4, rnd.tex.meta, u.u_meta);
   bind(0, rnd.tex.samples, u.u_samples);
+  // (units the stroke and station passes bind for themselves before they draw)
+  bind(5, rnd.tex.bendAt, u.u_bend_at);
+  bind(14, rnd.tex.bends, u.u_bends);
   bind(1, rnd.tex.lines, u.u_lines);
   gl.uniform1i(u.u_back_base, rnd.net ? backBaseOf(rnd.net.lineTable, rnd.net.meta) : 0);
   gl.activeTexture(gl.TEXTURE2);

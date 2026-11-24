@@ -12,7 +12,7 @@
 //                          T-1146; a line saved with no trains is given them on load)
 //
 // Nothing in it depends on wall time, so saving the same game twice gives the same bytes.
-// Autosaves live in IndexedDB (database "anitabuilder", store "saves", one key per slot; the original game keeps key "autosave";
+// Autosaves live in IndexedDB (database "anitabuilder", the track build's "anitabuilder-track" (T-4126), store "saves", one key per slot; the original game keeps key "autosave";
 // beside each slot its demand cache and backups under keys the saves list does not show).
 
 import registry from "../game/registry.json";
@@ -22,9 +22,13 @@ import { compressGzip, decompressGzip } from "./gzip";
 import { compressGzipParts, GZIP_DAMAGED } from "./gzipCore";
 import { editOf } from "./versions";
 import type { LineShape } from "../game/lineShape";
+import { MAIN_SAVE_DB, SAVE_DB, TRACK_BUILD } from "../game/trackBuild";
 
 export const SAVE_MAGIC = "TWG1";
 export const SAVE_FORMAT = 1;
+/** T-4014: this build's save level, sim/src/track/save.rs `LEVEL` (a Rust test there pins this line to it), here so
+ * both threads can refuse a newer save without the track model. */
+export const SAVE_LEVEL = 39;
 /** SPEC 8: a new game starts on day 1 at 07:00 (game seconds). */
 export const START_CLOCK = 86400 + 7 * 3600;
 /** SPEC 6.4: US$10B to start (T-2271), in US$M; a sandbox's money since the start is the cash minus this (T-728). */
@@ -117,7 +121,7 @@ export interface SaveHeader {
   /** T-2926: tram cars owned; absent for none */
   fleetTram?: number;
   /** fare curve (game/fareCurve.ts): its first stretch as a base and rate, and its nodes (none in a save from before T-883) */
-  fares: { base: number; perKm: number; nodes?: [number, number][]; scales?: Record<string, number>; byCity?: boolean; cityScales?: Record<string, number>; baseline?: string; basis?: "usd"; income?: number; hsr?: number; ferry?: number; ferrySmall?: number; ferryLarge?: number; bus?: number; transfer?: number; ref?: string; lines?: Record<string, number>; zones?: { id: number; name: string; prices: number[]; off?: boolean }[]; zoneNext?: number };
+  fares: { base: number; perKm: number; nodes?: [number, number][]; scales?: Record<string, number>; byCity?: boolean; cityScales?: Record<string, number>; baseline?: string; basis?: "usd"; income?: number; hsr?: number; ferry?: number; ferrySmall?: number; ferryLarge?: number; bus?: number; brt?: number; transfer?: number; ref?: string; lines?: Record<string, number>; zones?: { id: number; name: string; prices: number[]; off?: boolean }[]; zoneNext?: number };
   /** recent days, oldest first (today last) */
   ledger: DayLedger[];
   /** recent hours, oldest first (T-447; absent in older saves) */
@@ -204,9 +208,9 @@ export const SAVE_HEADER_FIELDS: ReadonlySet<string> = new Set(Object.keys(HEADE
  * level, or (in a save with a level, so from a build that lists its fields) a field it does not know.
  * Saves from before levels can carry retired fields (`points`, T-694) and are judged by their
  * network bytes alone. */
-export function headerUnread(h: SaveHeader, level: number): boolean {
+export function headerUnread(h: SaveHeader, level = SAVE_LEVEL): boolean {
   if (h.level === undefined) return false;
-  return h.level > level || Object.keys(h).some((k) => !(k in HEADER_FIELDS));
+  return !(h.level <= level) || Object.keys(h).some((k) => !(k in HEADER_FIELDS));
 }
 
 /** T-728: a sandbox is the normal game with nothing refused for money and the cash not shown. */
@@ -299,6 +303,15 @@ export function isRetiredTrackFormat(track: Uint8Array): boolean {
   return m === "TWT2" || m === "TWT3";
 }
 
+/** T-3948: whether the network bytes are in a format a newer build wrote and this one cannot read at all (TWT7 and
+ * later, the track rework's; `save::is_newer_magic` in the sim). Such a game does not open here and its slot is left
+ * as it is, never marked damaged. */
+export function isNewerTrackFormat(track: Uint8Array): boolean {
+  if (track.length < 4 || track[0] !== 0x54 || track[1] !== 0x57 || track[2] !== 0x54) return false;
+  const c = String.fromCharCode(track[3]);
+  return c > "6" && /[0-9A-Za-z]/.test(c);
+}
+
 /** Header and network bytes -> the compressed file. In a worker (the clock worker's saves) it is made in parts
  * (`encodeSaveParts`) and joined; on the page the codec worker packs it. */
 export async function encodeSave(h: SaveHeader, track: Uint8Array): Promise<Uint8Array> {
@@ -388,7 +401,10 @@ export const SAVE_UNCHECKED = "The save could not be read"; // i18n-ignore: inte
 /** T-3395: whether an error is `SAVE_UNCHECKED`'s. */
 export const isUncheckedError = (err: unknown): boolean => errorText(err).includes(SAVE_UNCHECKED);
 const NOT_SAVE = "This file is not a trainsworld save.";
-const NEWER_SAVE = "This save is from a newer version of the game.";
+/** T-3948, T-4014: the message key a save from a newer build throws (`isNewerSave`): it does not open here. */
+export const SAVE_NEWER = "clockWorker.newer";
+/** T-3948: whether an error is `SAVE_NEWER`'s. */
+export const isNewerError = (err: unknown): boolean => errorText(err).includes(SAVE_NEWER);
 
 /** The compressed file -> header and network bytes; throws a player-readable reason (`SAVE_DAMAGED`, a key,
  * for a damaged save). */
@@ -412,8 +428,17 @@ export async function decodeSave(file: Uint8Array): Promise<{ header: SaveHeader
     throw new Error(err instanceof SyntaxError ? SAVE_DAMAGED : `${SAVE_UNCHECKED}: ${errorText(err)}`);
   }
   if (!header || typeof header !== "object" || header.game !== "anitabuilder" || typeof header.format !== "number") throw new Error(NOT_SAVE);
-  if (header.format > SAVE_FORMAT) throw new Error(NEWER_SAVE);
-  return { header, track: raw.slice(8 + n) };
+  const track = raw.slice(8 + n);
+  if (isNewerSave(header, track)) throw new Error(SAVE_NEWER);
+  return { header, track };
+}
+
+/** T-3948, T-4014: whether a newer build wrote this save, so this one cannot read all of it: a newer header format, a
+ * level above this build's or a header field it does not know (`headerUnread`), or a newer network magic. Every read of
+ * a save passes here (`decodeSave`); the clock worker also refuses network bytes its track model finds left over
+ * (`TrackApi.save_unread`). Such a save never opens here, so nothing this build writes can drop what it holds. */
+export function isNewerSave(h: SaveHeader, track: Uint8Array): boolean {
+  return h.format > SAVE_FORMAT || headerUnread(h) || isNewerTrackFormat(track);
 }
 
 /** T-3395: what a strict read of a save finds: "intact" (it unpacks to its end with its checksum, its
@@ -421,10 +446,11 @@ export async function decodeSave(file: Uint8Array): Promise<{ header: SaveHeader
  * save, or one from a newer or retired version: kept as it is, never called damaged), or "unchecked"
  * (the check itself failed: the codec worker did not load, memory ran out; nothing is marked, try later). */
 export type SaveCheck = "intact" | "damaged" | "other" | "unchecked";
-let networkCheck: ((track: Uint8Array) => boolean) | null = null;
-/** T-3395: the clock worker's network decode (`TrackApi`). The main thread has no track model, so its check
- * is the gzip and the header, which is what a cut-short save fails. */
-export function setNetworkCheck(f: (track: Uint8Array) => boolean) { networkCheck = f; }
+type NetworkCheck = (track: Uint8Array) => "intact" | "damaged" | "other";
+let networkCheck: NetworkCheck | null = null;
+/** T-3395: the clock worker's network decode (`TrackApi`; T-4014: "other" for bytes it does not read). The main
+ * thread has no track model, so its check is the gzip and the header, which is what a cut-short save fails. */
+export function setNetworkCheck(f: NetworkCheck) { networkCheck = f; }
 export async function checkSave(bytes: Uint8Array): Promise<SaveCheck> {
   let track: Uint8Array;
   try {
@@ -432,11 +458,11 @@ export async function checkSave(bytes: Uint8Array): Promise<SaveCheck> {
   } catch (err) {
     if (isDamagedError(err)) return "damaged";
     const why = errorText(err);
-    return why === NOT_SAVE || why === NEWER_SAVE ? "other" : "unchecked";
+    return why === NOT_SAVE || why === SAVE_NEWER ? "other" : "unchecked";
   }
   if (!networkCheck || isRetiredTrackFormat(track)) return "intact";
   try {
-    return networkCheck(track) ? "intact" : "damaged";
+    return networkCheck(track);
   } catch {
     return "unchecked"; // a trap in the decode (memory) says nothing about the bytes
   }
@@ -444,7 +470,7 @@ export async function checkSave(bytes: Uint8Array): Promise<SaveCheck> {
 
 // ---------------------------------------------------------------- IndexedDB
 
-const DB = "anitabuilder";
+const DB = SAVE_DB;
 const STORE = "saves";
 
 /** What the saves list shows of a slot without opening it (T-241), made by the clock worker each
@@ -678,11 +704,54 @@ async function readApart<T>(key: string): Promise<T | undefined | typeof UNREADA
   }
 }
 
+/** T-4126: the track build's first list copies in, once, the games the main build's database holds in the track model
+ * (network bytes "TWT7"): those saved on 8800 while it ran the track branch, which the main build does not open. Each
+ * gets a new key here; the main database is only read, so its copy stays as it is. The number copied. */
+let trackCopy: Promise<number | void> | null = null;
+const TRACK_COPIED = "track-copied";
+export async function copyTrackGames(): Promise<number> {
+  const copy = async (): Promise<number> => {
+    if (await req((await store("readonly")).get(TRACK_COPIED))) return 0;
+    const main = await new Promise<IDBDatabase | null>((res) => {
+      const r = indexedDB.open(MAIN_SAVE_DB);
+      r.onupgradeneeded = () => r.transaction?.abort(); // no main database: none is made
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => res(null);
+    });
+    const found: StoredSave[] = [];
+    if (main) {
+      try {
+        if (main.objectStoreNames.contains(STORE)) {
+          const s = main.transaction(STORE, "readonly").objectStore(STORE);
+          const keys = (await req(s.getAllKeys())).filter((k): k is string => typeof k === "string" && (k === ORIGINAL_SLOT || k.startsWith("slot-")));
+          const saves = await Promise.all(keys.map((k) => req<StoredSave | undefined>(s.get(k))));
+          for (const v of saves) {
+            if (!v?.bytes) continue;
+            try {
+              const { track } = await decodeSave(v.bytes);
+              if (new TextDecoder().decode(track.subarray(0, 4)) === "TWT7") found.push(v);
+            } catch { /* not one this build reads either */ }
+          }
+        }
+      } finally { main.close(); }
+    }
+    const s = await store("readwrite");
+    const done = committed(s.transaction);
+    for (const v of found) s.put(v, "slot-" + crypto.randomUUID());
+    s.put(Date.now(), TRACK_COPIED);
+    await done;
+    return found.length;
+  };
+  // one copier at a time across this build's tabs and threads, so a game is never copied twice
+  return navigator.locks ? navigator.locks.request(`${DB}-copy`, copy) : copy();
+}
+
 /** Metadata only leaves the worker; unreadable-save recovery copies are kept out of the list. Only
  * the slots are read, not the demand caches beside them (several MB each, T-328). Also read by the
  * start menu on the main thread (T-677). Throws a blocked storage's error as it is, and a
  * StorageReadError when the reads keep failing (T-2705). */
 export async function listSlots(): Promise<SaveSlot[]> {
+  if (TRACK_BUILD) await (trackCopy ??= copyTrackGames().catch((err) => { console.error("T-4126: the track games were not copied:", err); })); // i18n-ignore: console text
   const [keys, saves, syncs] = await retried("the slot list", "list", async () => { // i18n-ignore: console text
     const keys = (await req((await store("readonly")).getAllKeys())).filter((k): k is string => typeof k === "string" && (k === ORIGINAL_SLOT || k.startsWith("slot-")));
     const saves = await Promise.all(keys.map((k) => readApart<StoredSave>(k)));
@@ -1127,7 +1196,7 @@ export async function leaseSlot(key: string, steal = false): Promise<SlotLease |
   const lost = new Promise<void>((r) => { lose = r; });
   let granted = false;
   return new Promise((resolve, reject) => {
-    void navigator.locks.request("anitabuilder-save-" + key, steal ? { steal: true } : { ifAvailable: true }, (lock) => {
+    void navigator.locks.request(`${DB}-save-${key}`, steal ? { steal: true } : { ifAvailable: true }, (lock) => {
       if (!lock) { resolve(null); return; }
       granted = true;
       return new Promise<void>((release) => resolve({ release, lost }));

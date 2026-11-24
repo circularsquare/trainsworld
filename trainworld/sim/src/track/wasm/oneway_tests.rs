@@ -140,6 +140,46 @@ fn deleting_the_track_a_return_run_uses_breaks_the_line() {
     assert!(a.w.net.line_broken[l as usize], "its way back is gone");
 }
 
+/// T-4000: removing the track a line runs on is never refused because the way it would reroute by has
+/// no way back over one-way track: the line is left broken, as removed track leaves any line.
+#[test]
+fn removing_track_is_never_refused_for_a_reroute_with_no_way_back() {
+    let (mut a, n, e) = triangle();
+    // BC one way into B: A - B could go out round by C, but never come back that way
+    assert_eq!(a.set_edge_oneway(e[1], 2), 0, "{}", a.issues());
+    let l = line(&mut a.w, &[n[0], n[1]], [8.0, 4.0, 2.0]);
+    assert_eq!(a.w.net.line_path(l), &[e[0] << 1]);
+    assert!(!a.w.net.line_broken[l as usize]);
+    let len = a.w.net.edge_len[e[0] as usize];
+    assert_eq!(a.delete_edge(e[0]), 0, "{}", a.issue_kinds());
+    // (trimmed to A's platform end: T-1161)
+    assert!(!a.w.net.edge_ok(e[0]) || a.w.net.edge_len[e[0] as usize] < len / 2.0);
+    assert!(a.w.net.line_ok(l) && a.w.net.line_broken[l as usize], "A - B is left broken");
+    assert_eq!(a.undo(), 0);
+    assert!(a.w.net.edge_ok(e[0]) && !a.w.net.line_broken[l as usize], "undo puts it back running");
+    // the same picked for removal with the delete tool's pick
+    assert_eq!(a.removal_lines(&[e[0]], &[]), vec![l as f64, 0.0, 1.0], "the ask names it as left broken");
+    assert_eq!(a.delete_pieces(&[e[0]], &[]), 0, "{}", a.issue_kinds());
+    assert!(!a.w.net.edge_ok(e[0]) && a.w.net.line_broken[l as usize]);
+}
+
+/// T-3945: a platform only a line's way back passes (C, round the one-way ring) goes with the line
+/// when the line changes. Left behind, it kept the old run's stop indices, and the next holds pass
+/// panicked once the line had fewer stops (a street tram's stop on each side of the road).
+#[test]
+fn a_platform_only_the_way_back_uses_goes_with_the_line() {
+    let (mut a, n, e) = triangle();
+    let l = line(&mut a.w, &[n[0], n[1]], [8.0, 4.0, 2.0]);
+    assert_eq!(a.set_edge_oneway(e[0], 1), 0, "{}", a.issues());
+    let ls = &a.w.svc.lines[l as usize];
+    assert!(!ls.runs[0].nodes.contains(&n[2]) && ls.runs[1].nodes.contains(&n[2]), "only the way back passes C");
+    assert!(a.w.svc.cap.res.iter().any(|r| r.kind == ResKind::Platform && r.node == n[2]));
+    assert_eq!(a.remove_line(l), 0, "{}", a.issues());
+    let mut g = crate::track::service::Service::default();
+    g.update_all(&a.w.net);
+    assert_eq!(a.w.svc.cap.canonical(), g.cap.canonical(), "nothing of the line is left at C");
+}
+
 #[test]
 fn one_way_single_track_has_double_tracks_capacity_per_direction() {
     let (mut a, n, e) = triangle();
@@ -212,4 +252,65 @@ fn a_stop_with_no_way_back_says_so() {
     // with the way back open it is accepted
     let l = a.new_line_id();
     assert_eq!(a.set_line_with_trains(l, &[n[2], n[0]], 4, 2, 0, 30.0, 180.0, 0, 0, "Line".into()), 0, "{}", a.issue_kinds());
+}
+
+/// T-4098: a double line splitting into a one-way loop (J to Pa to K out, K to Pb to J back) and joining
+/// again before a terminus T; nodes S0, J, Pa, Pb, K, T, stations at S0, Pa, Pb and T.
+fn loop_past(a: &mut TrackApi) -> [u32; 6] {
+    let w = &mut a.w;
+    let n = [node(w, 0.0, 0.0, 0), node(w, 2000.0, 0.0, 0), node(w, 5000.0, 600.0, 0), node(w, 5000.0, -600.0, 0), node(w, 8000.0, 0.0, 0), node(w, 10000.0, 0.0, 0)];
+    let [s0, j, pa, pb, k, t] = n;
+    edge(w, s0, j, &[], 0).unwrap();
+    let one = [
+        edge(w, j, pa, &[(2300.0, 0.0), (2900.0, 600.0)], 0).unwrap(),
+        edge(w, pa, k, &[(7100.0, 600.0), (7700.0, 0.0)], 0).unwrap(),
+        edge(w, k, pb, &[(7700.0, 0.0), (7100.0, -600.0)], 0).unwrap(),
+        edge(w, pb, j, &[(2900.0, -600.0), (2300.0, 0.0)], 0).unwrap(),
+    ];
+    edge(w, k, t, &[], 0).unwrap();
+    for &x in &one {
+        let mut d = w.net.edge_data(x).unwrap();
+        d.tracks = 1;
+        w.apply(Op::Edge { id: x, data: Some(d) }).unwrap();
+    }
+    for x in [s0, pa, pb, t] {
+        station(w, x, 200);
+    }
+    for &x in &one {
+        assert_eq!(a.set_edge_oneway(x, 1), 0, "{}", a.issues());
+    }
+    n
+}
+
+/// T-4098, a player's path: a line out over the one-way loop to stations past it, its way back stopping at
+/// the loop's other leg, played from a load; each terminus deleted in turn, a train count set after each.
+/// The capacity stays what a fresh build gives (v0.4.5 kept the way back's old platform users, T-3945).
+#[test]
+fn deleting_termini_past_one_way_stations_keeps_capacity_whole() {
+    let mut a = api();
+    let [s0, _, pa, pb, _, t] = loop_past(&mut a);
+    let x1 = node(&mut a.w, 12000.0, 0.0, 0);
+    let x2 = node(&mut a.w, 14000.0, 0.0, 0);
+    edge(&mut a.w, t, x1, &[], 0).unwrap();
+    edge(&mut a.w, x1, x2, &[], 0).unwrap();
+    station(&mut a.w, x1, 200);
+    station(&mut a.w, x2, 200);
+    let l = line(&mut a.w, &[s0, pa, pb, t, x1, x2], [8.0, 4.0, 2.0]);
+    let bytes = a.save();
+    let mut a = api();
+    assert!(a.load(&bytes));
+    let fresh = |a: &TrackApi| {
+        let mut g = crate::track::service::Service::default();
+        g.update_all(&a.w.net);
+        a.w.svc.cap.canonical() == g.cap.canonical()
+    };
+    for s in [x2, x1] {
+        assert_eq!(a.remove_station(s), 0, "{}", a.issue_kinds());
+        assert!(fresh(&a), "after removing {s}");
+        let d = a.w.net.line_data(l).unwrap();
+        assert_eq!(a.set_line_with_trains(l, &d.stops, 3, 2, 1, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issue_kinds());
+        assert!(fresh(&a), "after the train count");
+    }
+    assert_eq!(a.w.net.line_data(l).unwrap().stops, vec![s0, pa, pb, t]);
+    assert!(a.w.svc.lines[l as usize].running);
 }

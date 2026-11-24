@@ -242,7 +242,9 @@ impl TrackApi {
         };
         let mut verts: Vec<Pi> = vec![Pi::new(ra.x, ra.y, 0.0, ra.level)];
         let next_a = pis.first().map_or((rb.x, rb.y), |p| (p.x, p.y));
-        let prev_b = pis.last().map_or((ra.x, ra.y), |p| (p.x, p.y));
+        let beside_on = self.beside_on;
+        let plain = |r: &Resolved, toward| lead_in(r, toward, scaled, cap).filter(|_| !beside_on);
+        let (lead_a, lead_b) = tram_leads.unwrap_or_else(|| end_leads(|t| plain(&ra, t), |t| plain(&rb, t), (ra.x, ra.y), (rb.x, rb.y), &pis));
         let tangent = through && rb.dirs.is_empty() && (!quad || beside_a.is_some()) && !self.beside_on;
         if let (true, Some(dir)) = (tangent, nearer_dir(&ra, next_a)) {
             let (pi, circle) = tangent_arc(ra.x, ra.y, ra.level, rb.level, dir, next_a, scaled, cap);
@@ -256,12 +258,11 @@ impl TrackApi {
                     return Err(Issue::Geom { edge: u32::MAX, issue: GeomIssue::Reversal(1) });
                 }
             }
-        } else if let Some(p) = tram_leads.map_or_else(|| lead_in(&ra, next_a, scaled, cap).filter(|_| !self.beside_on), |l| l.0) {
+        } else if let Some(p) = lead_a {
             verts.push(p);
         }
         let first_click = verts.len();
         verts.extend_from_slice(&pis);
-        let lead_b = tram_leads.map_or_else(|| lead_in(&rb, prev_b, scaled, cap).filter(|_| !self.beside_on), |l| l.1);
         if let Some(p) = lead_b {
             verts.push(p);
         }
@@ -832,7 +833,7 @@ impl TrackApi {
     /// Clamped to `DESIGN_MIN_KMH`..320 (T-3121: any speed, below 160 too, curves as tight as it
     /// allows); 160 is the drawing tool as before.
     pub fn set_design_speed(&mut self, kmh: f64) {
-        let kmh = if kmh.is_finite() { kmh.clamp(DESIGN_MIN_KMH, DESIGN_SPEEDS[DESIGN_SPEEDS.len() - 1]) } else { DESIGN_SPEEDS[0] };
+        let kmh = design_kmh(kmh);
         self.route_cap = design_radius(kmh);
         self.route_kmh = kmh;
     }
@@ -1028,7 +1029,7 @@ impl TrackApi {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn station_at(&mut self, kind: u32, id: u32, x: f64, y: f64, platform: u16, name: String, dry: bool) -> u32 {
         let own = self.new_own(&name);
-        let mut st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own };
+        let mut st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own, road: None };
         // On quad track only the pair clicked gets the station (T-1687); one level with it on the
         // pair beside lends its name, so the two read as one station.
         if kind == 1 {
@@ -1132,7 +1133,7 @@ impl TrackApi {
             return self.refuse(Issue::Geom { edge: u32::MAX, issue: GeomIssue::ZeroLeg(0) });
         };
         let own = self.new_own(&name);
-        let st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own };
+        let st = StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own, road: None };
         // on quad, the drawn pair's only (T-1687)
         let r = self.station_ops(Some(&route), &[(e, s)], &st, dry);
         if r != 0 || dry {
@@ -1237,6 +1238,10 @@ impl TrackApi {
         // something the player drew (T-1917)
         if r != 0 && self.issues.iter().any(|i| matches!(i, Issue::PlatformNotLevel { .. })) {
             self.issues.retain(|i| !matches!(i, Issue::Geom { .. } | Issue::NodeHeading { .. }));
+        }
+        // a station on a busway is refused for the busway; its ramp or length is not what the player must fix
+        if r != 0 && self.issues.iter().any(|i| matches!(i, Issue::BuswayStation { .. })) {
+            self.issues.retain(|i| !matches!(i, Issue::PlatformNotLevel { .. } | Issue::PlatformTooLong { .. } | Issue::PlatformJoint { .. } | Issue::PlatformJunction { .. } | Issue::PlatformStation { .. } | Issue::PlatformCrossing { .. }));
         }
         r
     }

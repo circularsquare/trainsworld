@@ -26,7 +26,7 @@ import { api, messages, mode, putApi, putHolidaysSent, putMessages, putRowsSent,
 
 export const EDIT_UNDONE: MessageKey = "issues.internal";
 export const MODEL_RESTORED: MessageKey = "clockWorker.modelRestored";
-const MODEL_DOWN: MessageKey = "clockWorker.modelDown";
+export const MODEL_DOWN: MessageKey = "clockWorker.modelDown";
 export const SAVE_PANIC: MessageKey = "clockWorker.savePanic";
 /** more panics than this in a minute, or in all, and the model is left down: it is failing for a reason a rebuild does not cure */
 const MAX_PANICS_PER_MINUTE = 3;
@@ -47,6 +47,9 @@ export function keep() {
 const panicTimes: number[] = [];
 let panicCount = 0;
 export let modelDown = false;
+/** the page has been sent the stopped notice, so an edit after it is refused with nothing more said (T-4109) */
+export let downTold = false;
+export function putDownTold(v: boolean) { downTold = v; }
 /** when the last recovery ended; an error raised before it came from the model it replaced */
 let recoveredAt = 0;
 /** `?debug=1` probes (dev server only): the next edit panics after it is applied */
@@ -101,6 +104,7 @@ function replaceModel() {
   newModel();
   masksIn.clear();
   streetsIn.clear();
+  send({ kind: "townClear" });
   putRowsSent(""); putHolidaysSent(rowsSent);
 }
 
@@ -158,6 +162,7 @@ export async function recover(err: unknown, what: string, notice: string, at: nu
     send({ kind: "recovered", detail, notice });
   } catch (e) {
     modelDown = true;
+    downTold = true;
     send({ kind: "recovered", detail: `${detail}\nnot rebuilt: ${e}`, notice: MODEL_DOWN, down: true }); // i18n-ignore
   }
   recoveredAt = performance.now();

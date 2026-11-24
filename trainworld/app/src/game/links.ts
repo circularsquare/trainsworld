@@ -15,6 +15,22 @@ import { linkFarePlan } from "./fareZonePaint";
 import type { Selection, StationId } from "./types";
 import { ask } from "./ui";
 import { edit, say, world } from "./world";
+import { ahead, shown, type Show } from "./pending";
+import type { EditOp } from "../workers/protocol";
+import { passagePrice } from "./upgrades";
+
+/** T-4146: the player's links as the panels show them, one still on its way to the world included */
+const shownLinks = (): readonly [StationId, StationId][] => shown("links", "pairs", world.value?.save.links ?? []);
+/** T-4170: a link added or taken away, in the panels' list at the click (game/editGuess.ts) */
+export function linkGuess(op: EditOp): Show | null {
+  if (op.op !== "link") return null;
+  const st = world.peek()?.save.stations ?? [];
+  const a = st.find((s) => s.num === op.a)?.id, b = st.find((s) => s.num === op.b)?.id;
+  if (a === undefined || b === undefined) return null;
+  const now = shownLinks();
+  const pairs = op.on ? [...now, [a, b] as [StationId, StationId]] : now.filter(([x, y]) => !((x === a && y === b) || (x === b && y === a)));
+  return { fields: new Map([["links", { pairs }]]) };
+}
 
 /** The station a link starts from while the player picks the other one; null otherwise. */
 export const linking = signal<StationId | null>(null);
@@ -48,6 +64,11 @@ export function linkRefusal(a: StationId, b: StationId): string | null {
 export async function linkPicked(picked: Selection): Promise<void> {
   const from = linking.peek();
   if (from === null) return;
+  // T-4079: a bus stop is no station (its line's stops move with every edit), so it takes no passage
+  if (picked?.kind === "busStop") {
+    say(t("links.busStop"), true);
+    return; // still picking
+  }
   if (picked?.kind !== "station") {
     linking.value = null;
     return;
@@ -65,7 +86,9 @@ export async function linkPicked(picked: Selection): Promise<void> {
   if (fares?.ask && !(await new Promise<boolean>((yes) => {
     ask.value = { text: t("fareZonePaint.moveAsk"), yes: t("fareZonePaint.move"), no: t("toolNotes.cancel"), run: () => yes(true), stay: () => yes(false) };
   }))) return;
-  const a = await edit({ op: "link", a: sa.num, b: sb.num, on: true });
+  // T-4146: listed and paid at the click; a passage between constructed stations is paid at once (T-1281)
+  const cost = sa.built && sb.built ? passagePrice(groundDist(sa.x, sa.y, sb.x, sb.y)) : 0;
+  const a = await ahead({ cost }).send(() => edit({ op: "link", a: sa.num, b: sb.num, on: true }));
   if (a.ok && fares) await fares.apply();
   if (a.ok) say(a.charge > 0 ? t("links.built", { a: sa.name, b: sb.name, cost: money(a.charge * 1e6) }) : t("links.added", { a: sa.name, b: sb.name }));
 }
@@ -82,5 +105,5 @@ export async function unlink(a: StationId, b: StationId) {
 /** The player's links with an end in `members` (a station or a complex). */
 export function linksAmong(members: readonly StationId[]): [StationId, StationId][] {
   const inside = new Set(members);
-  return (world.value?.save.links ?? []).filter(([a, b]) => inside.has(a) || inside.has(b));
+  return shownLinks().filter(([a, b]) => inside.has(a) || inside.has(b));
 }

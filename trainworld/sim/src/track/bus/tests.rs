@@ -8,7 +8,7 @@ fn profile_runs_flat_and_stands_between() {
     assert_eq!(p.arr, vec![0.0, hop, hop + 30.0 + pace.auto_time(1000.0, 3000.0)]);
     assert_eq!(p.dep[1] - p.arr[1], 30.0);
     assert!((p.duration - p.arr[2]).abs() < 1e-9);
-    assert_eq!(state_at(&p.phases, hop / 2.0).0, 500.0);
+    assert!((state_at(&p.phases, hop / 2.0).0 - 500.0).abs() < 1e-6);
     assert_eq!(state_at(&p.phases, hop + 10.0), (1000.0, 0.0));
     assert_eq!(state_at(&p.phases, p.duration + 100.0), (3000.0, 0.0));
 }
@@ -21,7 +21,7 @@ fn a_route_that_loops_back_stops_both_ways_on_its_way_out() {
     let mut net = Network::new(-73.985, 40.758, true);
     let n = net.alloc_node();
     net.set_node(n, Some(NodeData { x: 500.0, y: 40.0, level: 0, flying: false })).unwrap();
-    net.set_station(n, Some(StationData { platform: 2, name: "S".into(), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new() })).unwrap();
+    net.set_station(n, Some(StationData { platform: 2, name: "S".into(), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None })).unwrap();
     let pts = [[0.0, 0.0], [2000.0, 0.0], [3000.0, 0.0], [3000.0, 1000.0], [2000.0, 1000.0], [2000.0, 0.0], [0.0, 0.0]];
     assert_eq!(loop_back_at(&pts), Some(1));
     assert_eq!(loop_back_at(&[[0.0, 0.0], [2000.0, 0.0], [3000.0, 0.0], [3000.0, 1000.0], [0.0, 0.0]]), None, "a plain loop");
@@ -30,7 +30,7 @@ fn a_route_that_loops_back_stops_both_ways_on_its_way_out() {
     assert_eq!(at.len(), 2, "the station both ways: {at:?}");
     assert!((at[0] - 500.0 * ROAD_FACTOR).abs() < 1.0 && (p.len - at[1] - 500.0 * ROAD_FACTOR).abs() < 1.0);
     let hand = [[1500.0, 0.0], [3000.0, 500.0]];
-    let p = plan_by(&net, 0, &pts, &[], false, StopRule::Hand(&hand));
+    let p = plan_by(&net, 0, &pts, &[], false, StopRule::Hand(&hand, &[]));
     let middles = p.stops.iter().filter(|s| s.kind == KIND_MIDDLE).count();
     assert_eq!(middles, 3, "{:?}", p.stops.iter().map(|s| s.s).collect::<Vec<_>>());
 }
@@ -38,19 +38,22 @@ fn a_route_that_loops_back_stops_both_ways_on_its_way_out() {
 #[test]
 fn plan_on_an_empty_network() {
     let net = Network::new(-73.985, 40.758, true);
-    // 1 km: two ends, no middle stop, street stops every 400 m between
+    // 1 km drawn, 1.2 km of road: two ends and a stop every 400 m between, each one demand sees (T-3924)
     let p = plan(&net, 0, &[[0.0, 0.0], [1000.0, 0.0]], &[], false);
-    assert_eq!(p.stops.len(), 2);
-    assert_eq!((p.stops[0].kind, p.stops[1].kind), (KIND_END, KIND_END));
-    assert_eq!(p.street.len(), 2);
-    assert_eq!(p.stops[0].cover, Some([0.0, 600.0]));
-    assert_eq!(p.stops[1].cover, Some([600.0, 1200.0]));
-    // 10 km of drawn route, 12 km of road: five middles
+    assert_eq!(p.stops.iter().map(|s| (s.kind, s.s.round() as i64)).collect::<Vec<_>>(), vec![(KIND_END, 0), (KIND_MIDDLE, 400), (KIND_MIDDLE, 800), (KIND_END, 1200)]);
+    assert!(p.street.is_empty());
+    assert_eq!(p.stops[0].cover, Some([0.0, 200.0]));
+    assert_eq!(p.stops[1].cover, Some([200.0, 600.0]));
+    assert_eq!(p.stops[3].cover, Some([1000.0, 1200.0]));
+    // 10 km of drawn route, 12 km of road: 29 middles
     let p = plan(&net, 3, &[[0.0, 0.0], [5000.0, 0.0], [5000.0, 5000.0]], &[], false);
-    assert_eq!(p.stops.iter().filter(|s| s.kind == KIND_MIDDLE).count(), 5);
+    assert_eq!(p.stops.iter().filter(|s| s.kind == KIND_MIDDLE).count(), 29);
     assert!(p.stops.iter().enumerate().all(|(k, s)| s.id == stop_id(3, k)));
     assert!((p.len - 12_000.0).abs() < 1e-6);
     assert_eq!(plan(&net, 0, &[[0.0, 0.0], [50.0, 0.0]], &[], false), Plan::default());
+    // 1,000 km of road: the grid widens so the stop ids still fit
+    let p = plan(&net, 1, &[[0.0, 0.0], [1_000_000.0 / ROAD_FACTOR, 0.0]], &[], false);
+    assert!(p.stops.len() <= SPACED_MAX_STOPS as usize + 1 && p.stops.len() > 900, "{}", p.stops.len());
 }
 
 #[test]
@@ -105,7 +108,7 @@ fn a_spaced_trip_takes_each_hops_time_and_stands_inside_it() {
 
 /// A route with the car's local streets at `car` km/h all the way, of `km` km.
 fn flat(car: f64, km: f64) -> Pace {
-    Pace { step: 100.0, car: vec![car; (km * 10.0).ceil() as usize], trunk: vec![], lane: 0.0 }
+    Pace { step: 100.0, car: vec![car; (km * 10.0).ceil() as usize], trunk: vec![], lane: 0.0, busway: vec![] }
 }
 
 fn hop_kmh(p: &Pace, m: f64) -> f64 {
@@ -147,11 +150,12 @@ fn spacing_rises_smoothly_and_400_m_matches_automatic_stops() {
             assert!(v > last, "{m}: {v} after {last}");
             last = v;
         }
-        // five 400 m hops, as a line spaced at 400 m runs them, and one automatic 2 km hop with its street stops
+        // five 400 m hops, as a line spaced at 400 m and an automatic line run them, each standing at its stops
         let stops: Vec<f64> = (0..6).map(|i| i as f64 * 400.0).collect();
         let spaced = spaced_profile(&stops, &[0.0; 6], &pace);
-        let auto = profile(&[0.0, 2000.0], &[0.0, 0.0], &[400.0, 800.0, 1200.0, 1600.0], &pace);
+        let auto = profile(&stops, &[0.0; 6], &[], &pace);
         assert!((spaced.duration - auto.duration).abs() < 1e-6, "{} {}", spaced.duration, auto.duration);
+        assert!((spaced.dwell - auto.dwell).abs() < 1e-6 && auto.dwell > 0.0, "{} {}", spaced.dwell, auto.dwell);
         assert!((pace.auto_time(0.0, 400.0) - pace.hop_time(0.0, 400.0)).abs() < 1e-9);
     }
 }
@@ -224,7 +228,7 @@ fn simplify_keeps_the_shape_within_the_tolerance() {
 #[test]
 fn a_hop_takes_the_time_of_the_streets_it_crosses() {
     // 100 m steps: the car at 100 km/h for the first 300 m, 40 for the next 200, then 100 again; the bus at its share
-    let pace = Pace { step: 100.0, car: vec![100.0, 100.0, 100.0, 40.0, 40.0, 100.0, 100.0, 100.0, 100.0, 100.0], trunk: vec![], lane: 0.0 };
+    let pace = Pace { step: 100.0, car: vec![100.0, 100.0, 100.0, 40.0, 40.0, 100.0, 100.0, 100.0, 100.0, 100.0], trunk: vec![], lane: 0.0, busway: vec![] };
     let (fast, slow) = (100.0 * super::super::streets::BUS_SHARE / 3.6, 40.0 * super::super::streets::BUS_SHARE / 3.6);
     assert!(slow * 3.6 > 30.0, "the slow stretch is above the bus lane's floor");
     let t = |p: &Pace, a: f64, b: f64| p.seconds(a, b, street_bus_kmh_at);
@@ -238,10 +242,31 @@ fn a_hop_takes_the_time_of_the_streets_it_crosses() {
     // the same route from its other end
     assert!((t(&pace.reversed(), 0.0, 1000.0) - all).abs() < 1e-9);
     assert!((t(&pace.reversed(), 0.0, 500.0) - 500.0 / fast).abs() < 1e-9);
-    // the profile runs each hop at its mean
+    // the profile speeds up from each stop and brakes into the next, in the hop's time
+    // (standing at the stop between inside the first hop's time)
     let p = profile(&[0.0, 500.0, 1000.0], &[0.0, 0.0, 0.0], &[], &pace);
-    assert!((p.arr[1] - pace.auto_time(0.0, 500.0)).abs() < 1e-9 && (p.arr[2] - pace.auto_time(0.0, 1000.0)).abs() < 1e-9);
-    assert!((p.phases[0].v - 500.0 / pace.auto_time(0.0, 500.0)).abs() < 1e-9);
+    assert!((p.dep[1] - pace.auto_time(0.0, 500.0)).abs() < 1e-9 && p.arr[1] < p.dep[1] && (p.arr[2] - pace.auto_time(0.0, 1000.0)).abs() < 1e-9);
+    assert_eq!((p.phases[0].v, p.phases[0].a), (0.0, BUS_ACCEL));
+    let (hop, mid) = (p.arr[1], 0.5 * p.arr[1]);
+    let (s, v) = state_at(&p.phases, mid);
+    assert!((s - 250.0).abs() < 1e-6 && v > 500.0 / hop, "fastest in the middle: {v}");
+    assert!(state_at(&p.phases, 1.0).1 < 1.2);
+}
+
+/// T-3908: every stretch between standstills takes the time it took at constant speed, whatever its length,
+/// and the speed never needs more than `BUS_ACCEL` unless the stretch is too short to cruise.
+#[test]
+fn a_ramp_takes_exactly_the_stretch_time() {
+    for (d, dur) in [(400.0, 58.0), (2000.0, 200.0), (100.0, 14.0), (30.0, 3.0), (5000.0, 300.0)] {
+        let mut ph = vec![];
+        ramp(&mut ph, 10.0, 100.0, d, dur);
+        ph.push(crate::track::profile::Phase { t: 10.0 + dur, s: 100.0 + d, v: 0.0, a: 0.0 });
+        let (s, v) = crate::track::profile::state_at(&ph, 10.0 + dur - 1e-9);
+        assert!((s - (100.0 + d)).abs() < 1e-3 && v < 1e-3, "{d} m in {dur} s: {s} {v}");
+        let (s, _) = crate::track::profile::state_at(&ph, 10.0 + 0.5 * dur);
+        assert!((s - (100.0 + 0.5 * d)).abs() < 1e-6);
+        assert!(ph.iter().all(|p| p.a.abs() <= BUS_ACCEL + 1e-9) || d / dur > 0.2 * BUS_ACCEL * dur, "{d} {dur}");
+    }
 }
 
 #[test]
@@ -323,4 +348,19 @@ fn a_trunk_road_is_capped_at_its_share_over_the_street_speed_and_brt_keeps_its_f
     // and both ways
     assert!((moving(&flat(16.5, 30.0).brt(true).reversed()) - lane_kmh(true)).abs() < 1e-9);
     assert_eq!(Pace::default().brt(true).auto_time(0.0, 1000.0), Pace::default().auto_time(0.0, 1000.0));
+}
+
+/// T-3378: a stop that costs less (a BRT line at a BRT station) comes that much sooner, and with no dwell of its
+/// own the bus stands what the stop costs, on either rule.
+#[test]
+fn a_cheaper_stop_comes_sooner_and_stands_its_cost() {
+    let pace = Pace::default();
+    let (s, dw) = ([0.0, 2000.0, 4000.0], [0.0, 0.0, 0.0]);
+    for spaced in [false, true] {
+        let plain = profile_cut(&s, &dw, &[], &[], &pace, spaced);
+        let cut = profile_cut(&s, &dw, &[0.0, 10.0, 0.0], &[], &pace, spaced);
+        assert!((plain.arr[1] - cut.arr[1] - 10.0 - (cut.dep[1] - cut.arr[1]) + (plain.dep[1] - plain.arr[1])).abs() < 1e-9, "{spaced}");
+        assert!((cut.dep[1] - cut.arr[1] - 18.0).abs() < 1e-9, "{spaced} {:?}", cut);
+        assert!((plain.duration - cut.duration - 10.0).abs() < 1e-9, "{spaced}");
+    }
 }

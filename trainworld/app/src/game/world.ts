@@ -13,7 +13,7 @@ import type { EditAnswer } from "../workers/clockClient";
 import { describeIssues, type Buys } from "./issues";
 import { vehicleOf, type Vehicle } from "./vehicle";
 import { tidyNodes, type FareNode } from "./fareCurve";
-import { groundDist } from "./coords";
+import { groundDist, groundScale } from "./coords";
 import { noteEdit } from "./editCap";
 import type { Demand, LineId, LineInput, LineStats, RowFigs, Save, StationInput, WorldView } from "./types";
 import { DEMAND_INDEX, DEMANDS, loopHalves } from "./types";
@@ -77,7 +77,8 @@ export function setAfterEdit(f: (op: EditOp, a: EditAnswer) => void) {
 }
 
 /** T-3731: the line tool's stop clicks, each sent once the one before is answered (it reads the stops that one
- * left). A click is kept when stop editing ends; only a game loaded since drops it. */
+ * left), but a plain click (`sendStopEdit`, T-4114). A click is kept when stop editing ends; only a game loaded since
+ * drops it. */
 let stopQueue: Promise<void> = Promise.resolve();
 /** stop clicks made and not yet answered */
 export const stopsQueued = signal(0);
@@ -89,8 +90,22 @@ const STOPS_GIVE_UP_MS = 10000;
 export function queueStopEdit(f: () => Promise<void>): Promise<void> {
   if (stopsQueued.peek() === 0) stopsMoved = performance.now();
   stopsQueued.value++;
-  const p = stopQueue.then(f).finally(() => { stopsQueued.value--; stopsMoved = performance.now(); });
+  chained++;
+  const p = stopQueue.then(f).finally(() => { chained--; stopsQueued.value--; stopsMoved = performance.now(); });
   stopQueue = p.catch(() => {});
+  return p;
+}
+/** queued stop edits not yet answered (`queueStopEdit`) */
+let chained = 0;
+/** T-4114: a plain stop click (`toggleStop`, which the worker reads against the stops it holds), sent at once, not after
+ * the clicks still out; edits queued after it wait for it as for the others. Behind a queued edit it keeps its place. */
+export function sendStopEdit(f: () => Promise<void>): Promise<void> {
+  if (chained > 0) return queueStopEdit(f);
+  if (stopsQueued.peek() === 0) stopsMoved = performance.now();
+  stopsQueued.value++;
+  const p = f().finally(() => { stopsQueued.value--; stopsMoved = performance.now(); });
+  const was = stopQueue;
+  stopQueue = Promise.all([was, p.catch(() => {})]).then(() => {});
   return p;
 }
 const stopsStuck = () => performance.now() - stopsMoved >= STOPS_GIVE_UP_MS;
@@ -100,6 +115,23 @@ export async function afterStopEdits(): Promise<void> {
   while (stopsQueued.peek() > 0 && !stopsStuck()) {
     await Promise.race([stopQueue, new Promise((r) => setTimeout(r, STOPS_GIVE_UP_MS - (performance.now() - stopsMoved)))]);
   }
+}
+
+/** T-4214: whether a map click waits for the map or is being carried out (map/toolWait.ts) */
+let clicksBusy: () => boolean = () => false;
+let clickWaiters: (() => void)[] = [];
+/** a waiter gives up on the clicks after this long, ms (a click waits for the map at most 5 s, then for its edit's answer) */
+const CLICKS_GIVE_UP_MS = 10000;
+export function setClicksBusy(f: () => boolean) { clicksBusy = f; }
+/** map/toolWait.ts: the clicks moved on */
+export function clicksMoved() {
+  if (!clickWaiters.length || clicksBusy()) return;
+  const w = clickWaiters;
+  clickWaiters = [];
+  for (const f of w) f();
+}
+function afterClicks(): Promise<unknown> {
+  return Promise.race([new Promise<void>((r) => clickWaiters.push(r)), new Promise((r) => setTimeout(r, CLICKS_GIVE_UP_MS))]);
 }
 
 /** Send an edit; a refusal is explained in `notice`. Resolves with the answer either way. `silent`:
@@ -115,20 +147,22 @@ export async function edit(op: EditOp, quiet = false, silent = false, early: boo
   breakDeleteRun();
   if (!silent) beforeEdit?.(op);
   if (!sink) return { ok: false, issues: [], charge: 0 };
-  // T-3731: an undo or redo takes back the last stop click shown, so it waits for the clicks still out
+  // T-3731: an undo or redo takes back the last stop click shown, so it waits for the clicks still out; T-4214: and the
+  // last map click, waiting for the map or being carried out
   if ((op.op === "undo" || op.op === "redo") && stopsQueued.peek() > 0) await afterStopEdits();
+  if ((op.op === "undo" || op.op === "redo") && clicksBusy()) await afterClicks();
   noteEdit(op, world.peek());
   if (op.op !== "fares" && op.op !== "undo" && op.op !== "redo") editsSent.value++;
   // `early` (T-1407): the answer may come before `world` holds the edit (`a.early`); "rows" (T-2766, a stop click):
   // the answer comes with `world` holding the edit, its network a moment later
-  const a = await sink(op, early, game);
+  const a = await sink!(op, early, game);
   if (!a.ok && !quiet && a.issues.length) say(describeIssues(a.issues, buysOf(op), lineVehicle((op as { line?: number }).line)), true);
   else if (a.ok && !silent) afterEdit?.(op, a);
   return a;
 }
 
-const TRAIN_OPS = new Set(["setStops", "insertStop", "oneWayStop", "dropStop", "endLineAt", "stopPassed", "orderStops", "sortStops", "turnEnd", "openLoop", "setTrainCount", "setHeadway", "weekendShare", "weekendCounts", "weekendShareAll", "setPeriods", "setHours", "setRowTrains", "setRowHeadways", "rowWeekend", "lineCars", "copyLine", "undo", "redo"]);
-const BUILD_OPS = new Set(["route", "construct", "constructAll", "constructLine", "addStation", "crossover", "doubleUp", "stationUpgrade", "rebuild"]);
+const TRAIN_OPS = new Set(["setStops", "insertStop", "toggleStop", "oneWayStop", "dropStop", "endLineAt", "stopPassed", "orderStops", "sortStops", "turnEnd", "openLoop", "setTrainCount", "setHeadway", "weekendShare", "weekendCounts", "weekendShareAll", "setPeriods", "setHours", "setRowTrains", "setRowHeadways", "rowWeekend", "lineCars", "copyLine", "undo", "redo"]);
+const BUILD_OPS = new Set(["route", "construct", "constructAll", "constructLine", "addStation", "addBrtStation", "addPort", "crossover", "doubleUp", "stationUpgrade", "rebuild"]);
 /** What a refused-for-money edit would have paid for: line edits cost trains only, track edits construction. */
 function buysOf(op: EditOp): Buys | undefined {
   return TRAIN_OPS.has(op.op) ? "trains" : BUILD_OPS.has(op.op) ? "construction" : undefined;
@@ -902,9 +936,9 @@ export function setFareHsr(mul: number) {
 export function setFareFerry(mul: number, boat: 0 | 1 | 2 = 1) {
   return edit({ op: "fareFerry", mul, ...(boat !== 1 ? { boat } : {}) });
 }
-/** T-3028: the fare multiplier on bus lines. */
-export function setFareBus(mul: number) {
-  return edit({ op: "fareBus", mul });
+/** T-3028: the fare multiplier on bus lines; T-3915: on BRT lines with `brt`. */
+export function setFareBus(mul: number, brt = false) {
+  return edit({ op: "fareBus", mul, ...(brt ? { brt: true as const } : {}) });
 }
 /** T-3567: line `line`'s own fare multiplier. */
 export function setLineFare(line: number, mul: number) {
@@ -946,6 +980,28 @@ const stopMemo = new WeakMap<WorldView, { byId: Map<string, StationInput>; names
 /** T-1464: the stations and a bus line's other stops (no station, no name of their own) by id: a stop's
  * place for the figures, its words for the panels. A bus stop is named for the station within 1 km
  * (the nearest), else "Bus stop". `stationsById` stays stations only. */
+const BUS_NAME_M = 1000;
+/** T-4125: named stations in squares of this many world metres, per stations list (kept while no station changed) */
+const NAMED_CELL = 2048;
+const namedGrids = new WeakMap<readonly StationInput[], Map<number, number[]>>();
+const cellKey = (cx: number, cy: number) => cx * 0x200000 + cy;
+/** The named stations within `r` world metres of (x, y) on each axis, perhaps with others, in the list's order. */
+function namedNear(stations: readonly StationInput[], x: number, y: number, r: number): StationInput[] {
+  let g = namedGrids.get(stations);
+  if (!g) {
+    g = new Map();
+    stations.forEach((s, i) => {
+      if (!s.name) return;
+      const k = cellKey(Math.floor(s.x / NAMED_CELL), Math.floor(s.y / NAMED_CELL));
+      (g!.get(k) ?? g!.set(k, []).get(k)!).push(i);
+    });
+    namedGrids.set(stations, g);
+  }
+  const out: number[] = [];
+  for (let cx = Math.floor((x - r) / NAMED_CELL); cx <= Math.floor((x + r) / NAMED_CELL); cx++)
+    for (let cy = Math.floor((y - r) / NAMED_CELL); cy <= Math.floor((y + r) / NAMED_CELL); cy++) out.push(...(g.get(cellKey(cx, cy)) ?? []));
+  return out.sort((a, b) => a - b).map((i) => stations[i]);
+}
 function stopsOf(w: WorldView) {
   let m = stopMemo.get(w);
   if (m) return m;
@@ -960,9 +1016,9 @@ function stopsOf(w: WorldView) {
       byId.set(id, stop);
       bus.set(id, stop);
       let near = "", best = 1000;
-      for (const s of w.save.stations) {
+      for (const s of namedNear(w.save.stations, p.x, p.y, BUS_NAME_M * groundScale(p.y) * 1.1)) {
         const d = groundDist(s.x, s.y, p.x, p.y);
-        if (s.name && d < best) { best = d; near = s.name; }
+        if (d < best) { best = d; near = s.name; }
       }
       names.set(id, near ? t("world.busStopNear", { name: near }) : t("world.busStop"));
     }
@@ -993,6 +1049,19 @@ export const linesAtMap = (w: WorldView) => lookup(w, "linesAt", (s) => {
       if (!v.includes(l)) v.push(l);
     }
   }
+  return at;
+});
+
+/** T-4125: the lines stopping at each station, as indices into the save's lines, ascending and once each (twins as
+ * themselves) */
+export const lineIndicesAt = (w: WorldView) => lookup(w, "lineIndicesAt", (s) => {
+  const at = new Map<string, number[]>();
+  s.lines.forEach((l, i) => {
+    for (const st of l.stops) {
+      const v = at.get(st) ?? at.set(st, []).get(st)!;
+      if (v[v.length - 1] !== i) v.push(i);
+    }
+  });
   return at;
 });
 

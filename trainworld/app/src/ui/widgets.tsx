@@ -20,7 +20,11 @@ import { mobileDevice } from "../workers/deviceMemory";
 /** the snap switches' magnet, its two pole tips apart from its body (T-3069) */
 const SNAP_MAGNET = "M1.75 1.5v1.2M6.75 1.5v1.2M1.75 4.2v1.3a2.5 2.5 0 005 0V4.2";
 
+/** T-4135: the station tool's Auto, the A of Nunito (700) outlined, its ink centred in the 16 box */
+const AUTO_A = "M3.58 13.5Q3.22 13.5 3 13.33Q2.77 13.16 2.73 12.88Q2.68 12.6 2.84 12.25L6.86 3.32Q7.06 2.88 7.34 2.69Q7.63 2.5 7.99 2.5Q8.34 2.5 8.63 2.69Q8.91 2.88 9.11 3.32L13.15 12.25Q13.32 12.6 13.27 12.89Q13.23 13.18 13.01 13.34Q12.8 13.5 12.45 13.5Q12.02 13.5 11.78 13.29Q11.55 13.09 11.36 12.66L10.37 10.36L11.2 10.89H4.76L5.58 10.36L4.61 12.66Q4.41 13.1 4.19 13.3Q3.98 13.5 3.58 13.5ZM7.96 4.74 5.83 9.82 5.43 9.33H10.53L10.14 9.82L7.99 4.74Z";
+
 export const Icon = {
+  auto: () => <svg viewBox="0 0 16 16"><path class="solid" stroke="none" d={AUTO_A} /></svg>,
   minus: () => <svg viewBox="0 0 16 16"><path d="M4 8h8" /></svg>,
   plus: () => <svg viewBox="0 0 16 16"><path d="M4 8h8M8 4v8" /></svg>,
   pencil: () => <svg viewBox="0 0 16 16"><path d="M10.5 3l2.5 2.5L6 12.5H3.5V10z" /></svg>,
@@ -88,6 +92,10 @@ export const Icon = {
   kofi: () => <svg viewBox="0 0 24 24"><path class="solid" style="stroke:none" d="M23.881 8.948c-.773-4.085-4.859-4.593-4.859-4.593H.723c-.604 0-.679.798-.679.798s-.082 7.324-.022 11.822c.164 2.424 2.586 2.672 2.586 2.672s8.267-.023 11.966-.049c2.438-.426 2.683-2.566 2.658-3.734 4.352.24 7.422-2.831 6.649-6.916zm-11.062 3.511c-1.246 1.453-4.011 3.976-4.011 3.976s-.121.119-.31.023c-.076-.057-.108-.09-.108-.09-.443-.441-3.368-3.049-4.034-3.954-.709-.965-1.041-2.7-.091-3.71.951-1.01 3.005-1.086 4.363.407 0 0 1.565-1.782 3.468-.963 1.904.82 1.832 3.011.723 4.311zm6.173.478c-.928.116-1.682.028-1.682.028V7.284h1.77s1.971.551 1.971 2.638c0 1.913-.985 2.667-2.059 3.015z" /><path style="fill:#ff5e5b;stroke:none" d="M12.819 12.459c-1.246 1.453-4.011 3.976-4.011 3.976s-.121.119-.31.023c-.076-.057-.108-.09-.108-.09-.443-.441-3.368-3.049-4.034-3.954-.709-.965-1.041-2.7-.091-3.71.951-1.01 3.005-1.086 4.363.407 0 0 1.565-1.782 3.468-.963 1.904.82 1.832 3.011.723 4.311z" /></svg>,
   // trains reverse at this stop
   uturn: () => <svg viewBox="0 0 16 16"><path d="M5 13.5V7a3.25 3.25 0 0 1 6.5 0v4.5M8.8 9.2l2.7 2.8 2.7-2.8" /></svg>,
+  // T-4013: riders at a stop, the train's side on the right: on and off, on only, off only
+  boardBoth: () => <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" /></svg>,
+  boardOnly: () => <svg viewBox="0 0 16 16"><rect x="11" y="2.5" width="3.5" height="11" rx="1" /><path d="M1.5 8H9M6.5 5.5L9 8l-2.5 2.5" /></svg>,
+  alightOnly: () => <svg viewBox="0 0 16 16"><rect x="11" y="2.5" width="3.5" height="11" rx="1" /><path d="M9 8H1.5M4 5.5L1.5 8 4 10.5" /></svg>,
   // the line panel's related lines (T-1168), as its diagram looks (T-1860, Anita's sketch): two lines side by side, a station pill across both, the right one curving away at the bottom
   allStops: () => <svg viewBox="0 0 16 16"><path d="M8 1.5v13M5 3.5h6M5 6.5h6M5 9.5h6M5 12.5h6" /></svg>,
   related: () => <svg viewBox="0 0 16 16"><path d="M6 1.5v13M10 1.5v8c0 1.8 1 3 3 5" /><rect x="3.5" y="4.5" width="9" height="3.5" rx="1.75" /></svg>,
@@ -98,7 +106,9 @@ export const Icon = {
   addPoint: () => <svg viewBox="0 0 16 16"><path d="M1.5 13.5l4.5-3M10 10.5l4.5 3M12 1.5v5M9.5 4h5" /><rect x="6" y="8.5" width="4" height="4" /></svg>,
   bus: () => <svg viewBox="0 0 16 16"><rect x="3" y="2.5" width="10" height="9" rx="2" /><path d="M3 7h10M5.5 11.5v2M10.5 11.5v2" /><circle class="solid" cx="5.5" cy="9.3" r=".7" /><circle class="solid" cx="10.5" cy="9.3" r=".7" /></svg>,
   // T-2194: a boat on waves
-  tram: () => <svg viewBox="0 0 16 16"><rect x="3.5" y="4" width="9" height="7.5" rx="1.8" /><path d="M3.5 8h9M6 4V2.5h4V4M5 13.8l1.2-2.3M11 13.8l-1.2-2.3" /><circle class="solid" cx="5.8" cy="9.8" r=".7" /><circle class="solid" cx="10.2" cy="9.8" r=".7" /></svg>,
+  /** T-3944, T-4010: a road's two edges with its lane line dashed (BRT) */
+  brt: () => <svg viewBox="0 0 16 16"><path d="M2.5 1.5v13M13.5 1.5v13M8 2v2M8 7v2M8 12v2" /></svg>,
+  tram: () => <svg viewBox="0 0 16 16"><rect x="3.5" y="4" width="9" height="7.5" rx="1.8" /><path d="M3.5 8h9M5.5 4V1.5h5V4M5 13.8l1.2-2.3M11 13.8l-1.2-2.3" /><circle class="solid" cx="5.8" cy="9.8" r=".7" /><circle class="solid" cx="10.2" cy="9.8" r=".7" /></svg>,
   ferry: () => <svg viewBox="0 0 16 16"><path d="M2.5 8.5h11l-1.8 3H4.3zM5 8.5V6h5.5l1 2.5M7 6V4" /><path d="M1.5 13.8c1.1-.7 2.1-.7 3.2 0s2.1.7 3.3 0 2.1-.7 3.2 0 2.1.7 3.3 0" /></svg>,
   // T-2565: three rows of waves, the diagram's water switch
   waves: () => <svg viewBox="0 0 16 16"><path d="M1.5 4.8c1.1-.7 2.1-.7 3.2 0s2.1.7 3.3 0 2.1-.7 3.2 0 2.1.7 3.3 0M1.5 8.5c1.1-.7 2.1-.7 3.2 0s2.1.7 3.3 0 2.1-.7 3.2 0 2.1.7 3.3 0M1.5 12.2c1.1-.7 2.1-.7 3.2 0s2.1.7 3.3 0 2.1-.7 3.2 0 2.1.7 3.3 0" /></svg>,
@@ -134,7 +144,7 @@ export const Icon = {
   walk: () => <svg viewBox="0 0 16 16"><circle cx="9.5" cy="2.8" r="1.3" /><path d="M9.5 5.2l-1.8 3 2.3 2.3v3.7M7.7 8.2L5.3 9.4M9.6 6.4l2.4 1.8M7.7 8.2L6.2 14" /></svg>,
   ride: () => <svg viewBox="0 0 16 16"><path d="M1.8 11.2V8.4l1.6-3.4h9.2l1.6 3.4v2.8zM1.8 8.4h12.4" /><circle cx="4.8" cy="11.4" r="1.3" class="bg" /><circle cx="11.2" cy="11.4" r="1.3" class="bg" /></svg>,
   // an inter-region trip's modes (with `ride` for the car)
-  train: () => <svg viewBox="0 0 16 16"><rect x="3.8" y="1.8" width="8.4" height="9.7" rx="2" /><path d="M3.8 7h8.4M6 14.2l1-2.7M10 14.2l-1-2.7" /></svg>,
+  train: () => <svg viewBox="0 0 16 16"><rect x="3" y="2.5" width="10" height="8.5" rx="2" /><path d="M3 6.8h10M5.8 11l-1.9 2.9M10.2 11l1.9 2.9" /><circle class="solid" cx="5.6" cy="9" r=".7" /><circle class="solid" cx="10.4" cy="9" r=".7" /></svg>,
   // T-3798: a high-speed train's long nose, side on, over the rail
   highSpeed: () => <svg viewBox="0 0 16 16"><path d="M1.5 11.5h9.6c2 0 3.4-.7 3.4-1.7 0-1.4-3-3.9-6.8-4.3H1.5zM9 5.8l1.6 2.6h2.8M1.5 13.8h13" /></svg>,
   plane: () => <svg viewBox="0 0 16 16"><path d={PLANE_PATH} /></svg>,
@@ -162,6 +172,8 @@ export const Icon = {
   // T-3115: a share's link, two links of a chain
   link: () => <svg viewBox="0 0 16 16"><path d="M6.4 9.6l3.2-3.2M7.2 4.8l1.3-1.3a2.6 2.6 0 013.7 3.7l-1.3 1.3M8.8 11.2l-1.3 1.3a2.6 2.6 0 01-3.7-3.7l1.3-1.3" /></svg>,
   heart: () => <svg viewBox="0 0 16 16"><path d="M8 13.8S2 10.3 2 6.1A3.1 3.1 0 018 5a3.1 3.1 0 016 1.1c0 4.2-6 7.7-6 7.7z" /></svg>,
+  // T-4005: a bookmark; filled by `.cm-bm.on` in community.css
+  bookmark: () => <svg viewBox="0 0 16 16"><path d="M4 2.5h8v11L8 10.5l-4 3z" /></svg>,
   flag: () => <svg viewBox="0 0 16 16"><path d="M3.5 14.5v-12M3.5 2.5h9l-2 3 2 3h-9" /></svg>,
   // T-3466: the changelog's areas without an icon of their own: a folded map (map and schematic), a bug (a fix that
   // fits no area), a computer (performance)

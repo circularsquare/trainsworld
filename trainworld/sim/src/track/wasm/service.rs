@@ -135,6 +135,14 @@ impl TrackApi {
             })
             .collect()
     }
+    /// T-4075: where the track bends between a run's samples (`run_polyline`'s, every `step` m), past
+    /// `tol` ground metres: per such interval its index, its inner points' count and the points (x, y),
+    /// as `service::bends::bends` gives them.
+    pub fn run_bends(&self, line: u32, run: usize, step: f64, tol: f64) -> Vec<f64> {
+        let Some(l) = self.w.svc.lines.get(line as usize).filter(|l| l.ok) else { return vec![] };
+        let len = l.runs[run].len;
+        crate::track::service::bends::bends(len, step, tol, |s| self.w.svc.position(&self.w.net, line, run, s.min(len)))
+    }
     /// T-3346: the departures board. Line `line`'s trains leaving station node `node` in
     /// `[t0, t1)`, game seconds: per departure its run, the stop's index in that run and the time
     /// it leaves (its trip's `draw` plus its profile's `dep` there), sorted by time. A run's last
@@ -354,6 +362,42 @@ impl TrackApi {
         if short > 0.01 { short } else { 0.0 }
     }
 
+    /// What limits a line at slot `lev` (`Capacity::line_limits`'s resource `r`): wire kind, node or -1, x, y; a full
+    /// BRT lane (T-3378, `LANE_RES`) by its fullest way's middle.
+    fn limit_place(&self, line: u32, lev: usize, r: u32) -> (f64, f64, f64, f64) {
+        let cap = &self.w.svc.cap;
+        if r == crate::track::capacity::LANE_RES {
+            let (_, x, y) = self.lane_load(line, lev).unwrap_or((0.0, 0.0, 0.0));
+            return (crate::track::capacity::LANE_KIND as f64, -1.0, x, y);
+        }
+        let res = &cap.res[r as usize];
+        (cap.wire_kind(r as usize) as f64, if res.node == u32::MAX { -1.0 } else { res.node as f64 }, res.x, res.y)
+    }
+
+    /// T-3378: the fullest way of a BRT lane line `line` runs on at slot `lev`: buses an hour through it, x, y.
+    fn lane_load(&self, line: u32, lev: usize) -> Option<(f64, f64, f64)> {
+        let n = &self.w.net;
+        n.brt_room().fullest(line, |l| n.line_tph.get(l as usize).map_or(0.0, |t| t[lev] as f64))
+    }
+
+    /// T-3378: `line_held`'s seven numbers where a full BRT lane keeps some of a bus line's buses from running at slot
+    /// `lev`: [buses that wait, `LANE_KIND`, -1, x, y, buses an hour through it, the most it takes].
+    fn lane_held(&self, line: u32, lev: usize) -> Option<[f64; 7]> {
+        let wait = self.waiting(line, lev);
+        let (load, x, y) = self.lane_load(line, lev)?;
+        let most = crate::track::bus::lanes::LANE_BUSES_H;
+        (wait > 0.0 && load >= most * FULL_RHO).then_some([wait, crate::track::capacity::LANE_KIND as f64, -1.0, x, y, load, most])
+    }
+
+    /// T-3378: per demand period (0-4), the buses an hour one way on the fullest stretch of BRT lane a line runs on (0
+    /// where it has none), then `LANE_BUSES_H`.
+    pub fn bus_lane_load(&self, line: u32) -> Vec<f64> {
+        let ps = self.w.net.period_slot();
+        let mut out: Vec<f64> = ps.iter().map(|&lev| self.lane_load(line, lev).map_or(0.0, |x| x.0)).collect();
+        out.push(crate::track::bus::lanes::LANE_BUSES_H);
+        out
+    }
+
     /// Per level, where full track holds a line back (T-517): `[trains that wait, kind (ResKind
     /// as u8), node or -1, x, y, trains an hour through it, the most it takes]`, all zero where the
     /// line's whole fleet runs. Then per level what limits the line (T-679): `[shortest headway s
@@ -384,14 +428,18 @@ impl TrackApi {
             if r == u32::MAX {
                 continue;
             }
-            let res = &cap.res[r as usize];
-            out[7 * ROWS + 5 * row..7 * ROWS + 5 * row + 5].copy_from_slice(&[if tph > 0.0 { 3600.0 / tph } else { f64::INFINITY },cap.wire_kind(r as usize) as f64, if res.node == u32::MAX { -1.0 } else { res.node as f64 }, res.x, res.y]);
+            let (kind, node, x, y) = self.limit_place(line, slot(row), r);
+            out[7 * ROWS + 5 * row..7 * ROWS + 5 * row + 5].copy_from_slice(&[if tph > 0.0 { 3600.0 / tph } else { f64::INFINITY }, kind, node, x, y]);
         }
         let worst = cap.bottlenecks(self.w.net.line_count())[line as usize];
         for row in 0..ROWS {
             let lev = slot(row);
             let (rho, r) = worst[lev];
             let wait = self.waiting(line, lev);
+            if let Some(h) = self.lane_held(line, lev).filter(|_| rho < FULL_RHO || r == u32::MAX) {
+                out[7 * row..7 * row + 7].copy_from_slice(&h);
+                continue;
+            }
             if rho < FULL_RHO || r == u32::MAX || wait <= 0.0 {
                 continue;
             }
@@ -423,10 +471,15 @@ impl TrackApi {
             out[12 * n + row] = tight;
             if let Some(s) = slots.iter().copied().filter(|&s| most[s].1 != u32::MAX).max_by(|&a, &b| limit_s(most[a].0).total_cmp(&limit_s(most[b].0))) {
                 let (tph, r) = most[s];
-                let res = &cap.res[r as usize];
-                out[7 * n + 5 * row..7 * n + 5 * row + 5].copy_from_slice(&[limit_s(tph), cap.wire_kind(r as usize) as f64, if res.node == u32::MAX { -1.0 } else { res.node as f64 }, res.x, res.y]);
+                let (kind, node, x, y) = self.limit_place(line, s, r);
+                out[7 * n + 5 * row..7 * n + 5 * row + 5].copy_from_slice(&[limit_s(tph), kind, node, x, y]);
             }
             let held = slots.iter().copied().map(|s| (s, self.waiting(line, s))).filter(|&(s, w)| worst[s].0 >= FULL_RHO && worst[s].1 != u32::MAX && w > 0.0).max_by(|a, b| a.1.total_cmp(&b.1));
+            // T-3378: else a full BRT lane, at the slot holding the most buses back
+            let lane = slots.iter().copied().filter_map(|s| self.lane_held(line, s)).max_by(|a, b| a[0].total_cmp(&b[0]));
+            if let (None, Some(h)) = (held, lane) {
+                out[7 * row..7 * row + 7].copy_from_slice(&h);
+            }
             if let Some((lev, wait)) = held {
                 let (rho, r) = worst[lev];
                 let res = &cap.res[r as usize];
@@ -440,6 +493,14 @@ impl TrackApi {
     /// T-3542: `markers` in demand period `period` (0-4): at the slot serving it.
     pub fn markers_in(&self, period: usize) -> Vec<f32> {
         self.markers_at(self.w.net.period_slot()[period.min(4)])
+    }
+    /// T-4178: the turns partway that limit their line (`Capacity::turn_limits`): `[line, node, the most trains an
+    /// hour the turn lets the line run]` for each.
+    pub fn turn_limits(&self) -> Vec<f64> {
+        let lines = &self.w.svc.lines;
+        // a line's own end is the last node of the run turning there; any other turn is partway
+        let partway = |l: u32, r: u8, n: u32| lines.get(l as usize).and_then(|ls| ls.runs.get(r as usize)).is_some_and(|run| run.nodes.last() != Some(&n));
+        self.w.svc.cap.turn_limits(&self.w.net, partway).into_iter().flat_map(|(l, n, t)| [l as f64, n as f64, t]).collect()
     }
     /// T-3542: `full_track` in demand period `period` (0-4).
     pub fn full_track_in(&self, period: usize) -> Vec<f64> {
@@ -585,4 +646,35 @@ impl TrackApi {
 /// A trip's place in `profile_meta` (T-3346 stage 2: its variant's).
 fn profile_index(t: &crate::track::service::Trip) -> u32 {
     ((t.line * 2 + t.run as u32) * SLOTS as u32 + t.level as u32) * PROFILE_VARS as u32 + t.var as u32
+}
+
+/// T-4116: what bin/edit_fuzz checks after every edit (native builds only, not in the WASM interface).
+#[cfg(not(target_arch = "wasm32"))]
+impl TrackApi {
+    /// Per running line whose live runs name a derived edge on no live piece: the line, the run and the entry's index.
+    pub fn stale_runs(&self) -> Vec<(u32, usize, usize)> {
+        let n = &self.w.net;
+        let mut out = vec![];
+        for (l, ls) in self.w.svc.lines.iter().enumerate() {
+            if !ls.ok || ls.is_bus() {
+                continue;
+            }
+            for (r, run) in ls.runs.iter().take(ls.live_runs()).enumerate() {
+                if let Some(k) = run.segs.iter().position(|x| !n.edge_ok(*x >> 1)) {
+                    out.push((l as u32, r, k));
+                }
+            }
+        }
+        out
+    }
+
+    /// Per line the network has (not broken) whose path names a track or part its piece does not have: the line, 9 and
+    /// the entry's index (a colour change re-checks the path and is refused then).
+    pub fn bad_paths(&self) -> Vec<(u32, usize, usize)> {
+        let n = &self.w.net;
+        (0..n.line_count() as u32)
+            .filter(|&l| n.line_ok(l) && !n.line_broken[l as usize] && !n.is_bus(l) && !n.is_ferry(l))
+            .filter_map(|l| n.line_path(l).iter().position(|&p| !n.edge_ok(p >> 1)).map(|k| (l, 9, k)))
+            .collect()
+    }
 }

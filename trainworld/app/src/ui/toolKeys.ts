@@ -2,19 +2,20 @@
 
 import type { JSX } from "preact";
 import { LEVELS, type Level } from "../game/types";
-import { closeNetworkView, isBuildTool, tool, type Tab, type Tool } from "../game/ui";
+import { closeNetworkView, inClickOrder, isBuildTool, tool, type Tab, type Tool } from "../game/ui";
 import { live } from "../map/live";
 import { Icon } from "./widgets";
+import { tipMuted } from "./tip";
 import { t, type MessageKey } from "../i18n";
 import { mobileDevice } from "../workers/deviceMemory";
 
 type ToolEntry = [Tool, string, () => JSX.Element, string, string];
 /** A tool's entry whose label (index 1) and hover (index 4) are read through `t` each time they are
  * used, so a list kept at module level still follows the language. */
-function toolEntry(id: Tool, icon: () => JSX.Element, key: string, label: MessageKey, tip: MessageKey, touchTip?: MessageKey): ToolEntry {
+function toolEntry(id: Tool, icon: () => JSX.Element, key: string, label: MessageKey, tip: MessageKey, touchTip?: MessageKey, note?: MessageKey): ToolEntry {
   const e: ToolEntry = [id, "", icon, key, ""];
   Object.defineProperty(e, 1, { get: () => t(label), enumerable: true });
-  Object.defineProperty(e, 4, { get: () => t(touchTip && mobileDevice() ? touchTip : tip), enumerable: true });
+  Object.defineProperty(e, 4, { get: () => t(touchTip && mobileDevice() ? touchTip : tip) + (note ? tipMuted(t(note)) : ""), enumerable: true });
   return e;
 }
 
@@ -23,7 +24,7 @@ function toolEntry(id: Tool, icon: () => JSX.Element, key: string, label: Messag
 export const TOOLS: ToolEntry[] = [
   toolEntry("track", Icon.track, "1", "toolKeys.track", "toolKeys.trackTip"),
   toolEntry("station", Icon.station, "2", "toolKeys.station", "toolKeys.stationTip"),
-  toolEntry("delete", Icon.bin, "3", "toolKeys.delete", "toolKeys.deleteTip"),
+  toolEntry("delete", Icon.bin, "3", "toolKeys.delete", "toolKeys.deleteTip", undefined, "common.shiftSkip"),
   toolEntry("blueprint", Icon.marquee, "4", "toolKeys.select", "toolKeys.selectTip", "toolKeys.selectTipTouch"),
 ];
 
@@ -64,10 +65,12 @@ export const levelKeyName = (l: Level) => `Shift+${LEVELS.indexOf(l) + 1}`; // i
 /** Pick a build tool; the one in use again, or Select, goes back to selecting. Starting a build tool
  * closes the line, station and other network views; Select keeps them. */
 export function pickTool(v: Tool) {
-  const cur = tool.peek();
-  live.tools?.exit();
-  if (cur !== v && v !== "select") {
-    tool.value = v;
-    if (isBuildTool(v)) closeNetworkView();
-  }
+  inClickOrder(() => {
+    const cur = tool.peek();
+    live.tools?.exit();
+    if (cur !== v && v !== "select") {
+      tool.value = v;
+      if (isBuildTool(v)) closeNetworkView();
+    }
+  });
 }

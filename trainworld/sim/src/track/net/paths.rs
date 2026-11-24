@@ -128,6 +128,13 @@ impl Network {
         self.path_reversals(&back).len() <= self.path_reversals(path).len() && passes(&back) <= passes(path)
     }
 
+    /// T-4000: whether line `l` runs over `stops` and `path`, by `check_line`'s rules (a way back
+    /// included). A removal reroutes a line only onto such a path, else leaves it broken: a reroute
+    /// `check_line` refuses would refuse the removal.
+    pub fn route_runs(&self, l: u32, stops: &[u32], path: &[u32]) -> bool {
+        self.check_route(l, stops, path, self.runs_once(l, stops, path)).is_ok()
+    }
+
     /// A loop set to run one way (T-2981), over `stops` and `path`, whatever its track allows.
     pub(super) fn set_once(&self, l: u32, stops: &[u32], path: &[u32]) -> bool {
         self.line_one_way.get(l as usize).copied().unwrap_or(false) && self.loop_kind(stops, path) != LoopKind::None
@@ -196,7 +203,7 @@ impl Network {
     /// arrives so the train carries on round). `tram`: the hop is a tram line's, which may run on
     /// any track; else it keeps off tram track (T-3889).
     pub fn find_path_side(&self, from: u32, to: u32, arrived: Option<u8>, want: Option<u8>, tram: bool) -> Option<(Vec<u32>, u8)> {
-        let barred = |e: u32| !tram && self.edge_tram(e);
+        let barred = |e: u32| self.edge_barred(e, tram);
         let ne = self.edge_count();
         let mut dist = vec![f64::INFINITY; 2 * ne];
         let mut prev = vec![u32::MAX; 2 * ne];
@@ -311,7 +318,7 @@ impl Network {
                 return true;
             }
             for &c in self.node_ports[n as usize].ends() {
-                if !tram && self.edge_tram(c >> 1) {
+                if self.edge_barred(c >> 1, tram) {
                     continue;
                 }
                 let m = self.path_nodes(c).1;
@@ -346,7 +353,7 @@ impl Network {
     /// fit); else carrying on along `path[k]` (a balloon's first pass, k <= `limit`, the earliest).
     /// Over tram track only for a tram line (`tram`, T-3889).
     pub fn loop_back(&self, path: &[u32], back: bool, limit: usize, budget: f64, tram: bool) -> Option<(Vec<u32>, usize)> {
-        let barred = |c: u32| !tram && self.edge_tram(c >> 1);
+        let barred = |c: u32| self.edge_barred(c >> 1, tram);
         let &last = path.last()?;
         let mut nodes = vec![self.path_nodes(path[0]).0];
         nodes.extend(path.iter().map(|&p| self.path_nodes(p).1));
@@ -571,6 +578,19 @@ impl Network {
                 }
                 for j in bad {
                     part[j].radius = (part[j].radius * 0.9995 / QUANT).floor() * QUANT;
+                }
+            }
+        }
+        // T-4112: a ramp is centred between its two vertices, and a cut moves any vertex it changes: cut inside an arc,
+        // each part's PI sits at the middle of its own part of the arc, so a ramp that PI held slides along (225 m, onto
+        // water, for a station 5 km away). A ramp the cut moved is held where it was, as a bridge holds its ramps.
+        let scaled = self.frame.scaled();
+        for (part, s0, s1) in [(&mut p1, 0.0, s), (&mut p2, s, f.len)] {
+            let want = geom::profile_between(&f.vert, s0, s1);
+            if !geom::same_profile(&self.fit(part).vert, &want, 1.0) {
+                let held = crate::track::bridge::with_min_radius(self.edge_kind[e as usize].spec().min_radius, || crate::track::bridge::hold_ramps(part, scaled, &want));
+                if let Some(v) = held {
+                    *part = v;
                 }
             }
         }

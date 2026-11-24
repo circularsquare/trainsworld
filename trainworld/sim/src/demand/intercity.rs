@@ -15,7 +15,7 @@
 //! A pack in the old single-pack form (`sites` with a market column: the tests' fixtures) opens as
 //! a closed world over its own zones with the ground curve alone.
 use super::{
-    api::{check_fare_curve, demand_back, demand_catches, demand_groups, demand_passages, demand_ups, fare_x_usd, pier_lines, merge_stations, put_fares, check_fare_mul, same_bits, span_for, scale_triples, DemandApi, Service, FARE_MIN_PER_USD, PEAK_HOUR_FACTOR, TO_HOME, TO_WORK},
+    api::{check_fare_curve, fare_x_usd, put_fares, check_fare_mul, same_bits, scale_triples, DemandApi, Service, FARE_MIN_PER_USD, PEAK_HOUR_FACTOR, TO_HOME, TO_WORK},
     clock::now_ms,
     days::{everyday as everyday_purpose, lean_sign, load_factor, share_out, share_ret, LONGER, WEEKDAY, WORK},
     everyday::{car_mul, KIND_COUNT, OUTWARD, RETURN},
@@ -940,8 +940,19 @@ struct Group {
     kz: Zones,
     kplace: Vec<(usize, f32, f32)>,
 }
+/// T-2216 stage 3: how much of each corridor's longer trips (and of each place's own row) is between
+/// zones on two lands with no car between them, though the two places have one (`Market::apart`).
+#[derive(Default)]
+struct Apart {
+    /// by corridor, the share of the longer trips
+    cross: HashMap<u32, f32>,
+    /// by place, the share of its own row's trips between zones, as the book keeps it
+    own: HashMap<u32, f32>,
+}
 /// The market's own data, shared (`Rc`) by every market `beside` it (T-409).
 struct Market {
+    /// T-2216 stage 3: `apart`, worked out when first asked
+    apart: std::cell::OnceCell<Apart>,
     /// T-1431: some place's riders come in income groups (their fares then need `pair_km`)
     grouped: bool,
     rule: Rule,

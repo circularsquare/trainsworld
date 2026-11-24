@@ -142,7 +142,8 @@ purpose filter the purpose drawn is ringed in the bar.
   purpose split hidden. The label stays
   until the riders that count the change land: its cluster's local result after the
   edit (T-1733, intercity lines too; their longer trips as last solved, or for an edit of 20 minutes'
-  run or more those in a window of zones around it re-solved, T-1735) or the whole final [T-1665,
+  run or more those in a window of zones around it re-solved, T-1735; its steps period by period before it,
+  T-2624, keep the label) or the whole final [T-1665,
   `game/lineFigures.ts`], and only a result solved for a network made after the change [T-2658]: each
   network demand is given carries the world version it was made at (`networkWorld`, and `finalWorld`
   for the whole final shown, in game/demand.ts), and the label stays while the result shown is older
@@ -323,7 +324,7 @@ purpose filter the purpose drawn is ringed in the bar.
   heading a muted icon button (26 px) [T-3543]: the **schedule panel** (hover "Detailed
   schedule", [ui-panels.md](ui-panels.md#schedule-panel), T-3346), which holds the timetable and its chart (below); each level's count or headway is set on its own, a new line's included (T-2123 took
   back T-2092's fill of every level; the tutorial asks for trains at each level instead); a Trains / Headway switch in the heading
-  chooses what the player sets [T-625]: with Trains a click on the count types it (Enter or leaving applies, Escape cancels, a loop's rounded up to even) [T-3152]. A count is raised to at most one train (a loop's two) more than the whole trains the line's track lets run at that level (the round trip over its shortest headway, `limits`; a loop's even, one at least; `trainCap`) and 1000, so one train is held and the held messages, the issue and the red headway show: a plus or a typed number at or past that is refused with the shake and the refusal knock, a typed number above it sets the cap and shakes, and the plus's hover says what limits the line. Lowering is free. When a game loads, a count past the cap is lowered to it (`game/capLoad.ts`); a cap that falls later, from a track edit, leaves the count, red with the held-out alert, until it is lowered [T-3165]; with Headway the headway column holds a stepper (steps to
+  chooses what the player sets [T-625]: with Trains a click on the count types it (Enter or leaving applies, Escape cancels, a loop's rounded up to even) [T-3152]. A count is raised to at most one train (a loop's two) more than the whole trains the line's track lets run at that level (the round trip over its shortest headway, `limits`; a loop's even, one at least; `trainCap`) and 1000, so one train is held and the held messages, the issue and the red headway show: a plus or a typed number at or past that is refused with the shake and the refusal knock, a typed number above it sets the cap and shakes, and the plus's hover says what limits the line. Lowering is free. When a game loads, a count past the cap is lowered to it (`game/capLoad.ts`), at no cost even where the save runs more trains than its fleet (a game-made edit pays only for trains it adds, T-3655); a cap that falls later, from a track edit, leaves the count, red with the held-out alert, until it is lowered [T-3165]; with Headway the headway column holds a stepper (steps to
   the whole minute above or below, so 5.37 min goes to 6 or 5 and 5 min to 6 or 4; none, or 1 to 240
   minutes; from 60 minutes up a click moves to the multiple of 15 above or below; minus from none gives 5 min, plus gives 15, minus at 1 min gives none [T-1872, T-2519,
   `nextHeadway`]; Shift-click steps to the multiple of 5 minutes (7 goes to 5 or 10, 5 to 10 or the
@@ -438,7 +439,13 @@ The stops (above Schedule while being edited [T-670]),
   leaves the selection alone (every line's list, T-3089); a click on a stop's dot (a 20 px target, ringed red on hover) takes it out keeping the path
   and Shift-click between the ends ends the line there, as in the group view (hover "Click to remove
   the stop at 225 St", "Shift-click to end the line here"; none on a stop the line needs: a line of
-  two, a loop's ends, where trains turn back), beside the remove button [T-1894]; **flat junctions and
+  two, a loop's ends, where trains turn back), beside the remove button [T-1894]; **boarding only and getting off
+  only** (T-4013, `ui/inspector/stopOnly.tsx`): while stops are edited every row has a small switch before the
+  remove button, its icon the stop's setting (the train's side with an arrow in and out, in, or out; dim while
+  both), a click going both -> boarding only -> disembarking only -> both (hovers "Set to boarding only", "Set to
+  disembarking only", "Allow boarding and disembarking"); otherwise a stop with a setting carries the icon after its
+  name and time, muted, hover "Boarding only" or "Disembarking only". The schedule panel's timetable marks the
+  station's row the same way, and the departures board names it beside the station picker; **flat junctions and
   flat crossings on the route** [T-629, `TrackApi.line_marks`] as small marks on the diagram's bar between the
   two stops they lie between, spread evenly in the gap (the diagram is not to scale): a white diamond for a
   junction with no flyover and no station, a cross for a flat crossing, each with a hover naming it and
@@ -678,14 +685,21 @@ schedule and counts block are the line panel's own parts (`LineTitle.tsx`, `sche
 buses: buses or a headway per demand level with the same hovers, the crowding dots, beside the heading the
 schedule panel button of a running line (its weekends and new bus lines' headways, no board or timetable chart,
 [ui-panels.md](ui-panels.md#schedule-panel), T-3703; no chart toggle), the waiting
-spinner on a level with buses while demand loads, a BRT box (T-3907; its hover the floor, the price a km in town with
-the route's km in town, and the upkeep a km there), and the average speed; no track limits (T-2919). Stops: the ends and the
-train stations met, the street stops between folded into one row each, in the line panel's order (north or
+spinner on a level with buses while demand loads, the BRT row (T-3907, T-3944): an upgrade button as a station's
+(outlined when off, dashed while its lanes are in the blueprint, filled once built; a click puts them in the blueprint,
+takes them out, or takes built ones away with nothing refunded) and "BRT", with "Construct for $X" beside it while a
+constructed line's lanes are in the blueprint; its hover the name, the floor, the price a km in town with the route's km
+in town and the upkeep a km there, the km another BRT line already has lanes on (T-3378), what the new lanes cost
+until built, and what a click does. On a constructed BRT line "Busiest lane" (its fullest stretch of lane now, "48/100 buses
+per hour", red at 100 with a hover), and the average speed. No track limits (T-2919), but a BRT line's lanes limit it as
+track does (T-3378): its headways red past its share, and under the rows a full lane's alert ("BRT lane near X is full")
+with the buses held out of service a row. Stops: the ends and the
+train stations met, the stops between folded into one row each ("8 street stops"), in the line panel's order (north or
 west end on top) with its stop times (the time from the stop on top after each name, "12m30s").
 The counts block, headingless as the line panel's: riders by purpose, Changing to trains (riders a day changing between this bus and any rail
 line at the stations it meets; hidden while the riders are worked out again, as the purposes), the one-figure profit,
 average load (against 53 a bus, its rated load) and Buses leaving full; no riders left at
-platform, since a street stop keeps no crowd. Under the stops the line panel's round trip block: running,
+platform, since a stop that is no station keeps no crowd. Under the stops the line panel's round trip block: running,
 dwell at stops (the line's dwell at each train station between the ends and 20 s at each other stop, both ways)
 and turning at the ends. No train kind, length, stop editor or related lines. The Money tab shows buses owned, needed and spare once there are any;
 the Build tab's quote has rows for bus routes and new buses.
@@ -703,7 +717,7 @@ With three ports or more, a click on a port's dot takes it out of the line (hove
 the stop at X"; the port stays) and dragging a port's row moves it, a line between rows marking where;
 the route is searched again through the ports and saved as one undoable edit, refused with "No water
 path found between A and B." where a leg finds no water. Not while the ferry tool has the line. A
-bus line's stops follow its route (its stations met and street stops), so its list has no editing:
+bus line's stops follow its route (its stations met and the stops between), so its list has no editing:
 the route is edited on the map. Its counts block is the bus line's
 (T-2195): riders, Changing to trains (between this boat and any rail line at its ports' complexes),
 profit, average load (against 320 a boat at the rated load, so up to 150% at crush's 480), Boats leaving full
@@ -718,7 +732,7 @@ back to the default once set, saved with the game; a change solves demand again,
 has rows for ports, new boats and the ferry route (free).
 
 **A bus stop's panel** (T-2949, T-3890; `ui/inspector/BusStopInspector.tsx`) opens on a click on any stop
-demand sees (an end, a station's, a crossing's or one between; a street stop selects its line), made of the
+(an end, a station's, a crossing's or one between: every stop is one demand sees, T-3924), made of the
 station panel's parts. A train station's stop opens the station's panel instead. Its scope is the stop's
 place: the stops of other bus lines and the train stations within demand's 100 m merge, chained
 (`busPlaces` in `game/busLinks.ts`, as the kernel's `merge_stations`; never two stops of one line). Its title
@@ -726,8 +740,8 @@ is the stop's name (the nearest station within 1 km, "Bus stop near X", else "Bu
 here" when more than one line stops at the place, and "At X", a button opening the train station there, when
 one is. Blueprint while its line is planned. Lines: every bus and train line stopping at the place, each with
 its boardings there today, a click selecting the line; then the station panel's boardings today with the
-purpose split and its riders waiting now. Change on foot: the places and train stations within demand's 300 m
-change walk (`xfer_walk_m`) with a line this place has not, nearest first, at most 8, each its name, its
+purpose split and its riders waiting now. Change on foot: the places and train stations within demand's change
+walk (150 m from a place with no train station, else 300 m, T-4079; `walk_reach_m`) with a line this place has not, nearest first, at most 8, each its name, its
 lines' badges and the straight distance ("150 m"); a click opens it. Last, "Build a station here" picks the
 Station tool, opens the Build tab and moves the map to the stop; a station still goes only on track. The
 stop's place is lit on the map while selected (below), and the selection follows the stop when an edit
@@ -750,7 +764,7 @@ station's panel once it is a station's stop).
   it arrives ("<1 min" under one; hover "Arrives in 2m40s", from the train's own running profile)
   and the riders getting off there: its load arriving (the boarding account's) times the line's
   alighting share at that stop in the period it arrives in, as the account lets them off; everyone
-  at the end of the line. The row's hover: "61 of the 1,440 riders aboard get off at Grand St, and
+  at the end of the line. The row's hover: "61 of the 1,440 riders aboard disembark at Grand St, and
   40 get on". The list moves on at each stop and the minutes each game minute.
 - **Random rider** (heading) [T-1436, `ui/inspector/OneRider.tsx`, `game/riderSample.ts`]: under Next stops, while
   riders are aboard, one rider drawn from them, with two icon buttons in its heading (Pick another
@@ -964,7 +978,7 @@ order, kept and dropped as the Lines tab's is [T-1813]. Riders follows the rider
 passage. After a click on it the next station clicked is joined to the selected one (the pointer a
 crosshair, a hand over a station); a click on anything else, Esc, the icon again, another
 selection or a tool stops it. Refused with a notice, still picking: the same station, one already
-in this complex, or one more than 1 km away centre to centre. Between two constructed stations it
+in this complex, one more than 1 km away centre to centre, or a bus stop ("Bus stops can't have passages.", T-4079). At a BRT station the icon's hover has "Saves 1 minute on transfers" under what it does. Between two constructed stations it
 is paid at once (US$10M plus US$90M a km, a notice), else it is built with the second of them.
 "Passages", after the closest stations, lists each passage touching the complex with its two stations,
 their chips, its length and Remove (nothing refunded once built). Only the player's passages can be

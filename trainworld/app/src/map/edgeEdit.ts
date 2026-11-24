@@ -15,6 +15,7 @@ import { lngLatToPack, packToLngLat } from "../game/coords";
 import { describeIssues } from "../game/issues";
 import { designSpeed, selection, tool } from "../game/ui";
 import { edit, world } from "../game/world";
+import { dragAhead } from "../game/pieceAhead";
 import type { ClockClient, PreviewAnswer } from "../workers/clockClient";
 import { queryClock } from "../workers/clockClient";
 import type { PiInput } from "../workers/protocol";
@@ -27,6 +28,7 @@ import type { Overlay } from "./overlay";
 import { trackAt } from "./pick";
 import { marksLayer, placeAt } from "./screenPlace";
 import { touchInput } from "./touch";
+import { hidden, onBlueprintsHidden } from "./visibility";
 import { curveLabelled, curveLabels, CurveLabelPool, rampLabels, type CurveLabel } from "./trackTagRows";
 
 /** A PI of a stretch, pack metres. */
@@ -75,6 +77,7 @@ export class EdgeEditor {
 
   constructor(private map: MlMap, private overlay: Overlay, private client: ClockClient) {
     this.box = marksLayer(map);
+    onBlueprintsHidden(() => this.place());
     this.labels = new CurveLabelPool(this.box);
     this.tag =document.createElement("div");
     this.tag.className = "tool-tag";
@@ -175,7 +178,11 @@ export class EdgeEditor {
     if (!d) return;
     this.drag = null;
     const edge = this.edge;
-    if (d.moved && edge >= 0) await edit({ op: "edgePis", edge, pis: this.shape.pis.map(toInput), design: designSpeed.peek() });
+    if (d.moved && edge >= 0) {
+      const pv = this.preview, e = world.peek()?.edges.find((x) => x.id === edge);
+      const strokes = pv?.ok && pv.pts.length >= 6 ? strokesFromPreview(pv.pts, false, undefined, false, pv.marks, pv.lanes ?? (e?.tracks === 1 ? 0 : 255), !!e?.hsr, !!e?.kind) : null;
+      await dragAhead(strokes, [edge], () => edit({ op: "edgePis", edge, pis: this.shape.pis.map(toInput), design: designSpeed.peek() }));
+    }
     this.endPreview();
   }
 
@@ -202,7 +209,7 @@ export class EdgeEditor {
   /** Squares and curve labels to the camera. */
   place() {
     // hidden while a node of the stretch is being dragged (map/nodeDrag.ts): they would be stale
-    const on = !this.loading && this.edge >= 0 && this.target() === this.edge && !live.nodeDrag?.dragging;
+    const on = !this.loading && this.edge >= 0 && this.target() === this.edge && !live.nodeDrag?.dragging && !(hidden.blueprints && world.peek()?.edges.find((x) => x.id === this.edge)?.built === false);
     const pis = on ? this.shape.pis : [];
     for (let i = 0; i < pis.length; i++) {
       const [x, y] = this.overlay.toScreen(...this.local(pis[i]));

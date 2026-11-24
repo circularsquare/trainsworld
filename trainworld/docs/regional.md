@@ -82,7 +82,7 @@ Generate **total** all-mode trips, then let the player's network earn rail's sha
 - **Pairs**: places whose centres are under **250 km** apart pair 6 km zone to 6 km zone at their
   own distance; farther places pair at the distance between the places' centres, so their 6 km
   pairs add up to the places' trips exactly, each end's share by its zones' departures over the
-  normalisers and its attraction (DECISIONS-to-2026-10-19 2026-10-15, T-377). Opposite totals are averaged;
+  normalisers and its attraction (T-377). Opposite totals are averaged;
   pairs under 0.01 trips a day each way are pruned. Distances are great circles [T-128]. Local
   outings taper over 40-80 km, so the two layers meet without a gap or double count.
 - **Market rows**: each place's row (`app/src/game/market-rows.json` by zone id, T-776: its zones' sums, centre, country, income,
@@ -119,7 +119,15 @@ Generate **total** all-mode trips, then let the player's network earn rail's sha
   part, else an island of its own), so the pair loses the car, keeps its places' plane, and with
   none takes the bound. A zone's sites walk and ride only to stations on its land, a station's land
   being its nearest site's own part's (the local layer's rule, demand-mode.md 4.3).
-  The trip explorer gives code 8 where that cut-off leaves rail at 0. The market's day and its
+  The trip explorer gives code 8 where that cut-off leaves rail at 0 (`marketTrip.cutOff`). The city
+  inspector's inter-city bar shows these trips as "No route", not car [T-2216 stage 3]: per corridor
+  `corridor_mode`'s car share is 0 between landmasses and the share of its trips between zones on two
+  lands (`Market::apart`, island zones counted by their share of the place's departures and attraction,
+  an unopened place's too) is taken out of the car, becoming the plane's where the places have one;
+  what rail takes leaves the rest (`corridorAt`), the commute legs of a corridor with no car at all
+  included; a place's own row likewise by `Market::apart().own` (the book's `apart`); outings between
+  two lands come from `everyday_place_legs`. The far-zoomed bubbles take the place's own row's share
+  (through the zone's Trips within) but not the shares of its trips with other places. The market's day and its
   corridors (place pairs) come from the rows, the same in every part of it.
 - **Zone pairs in chunks** [T-780]: a zone's trips with the zones of each place that come after it
   in the market's zone order are dealt in chunks of about 1 trip a day each way (`MARKET_CHUNK`),
@@ -222,8 +230,12 @@ air by hours on the train: notes/T-712.md.
   plus a sixth of the headway, and 30 minutes, with no tolerance penalty (T-1430; the same as the
   local wait up to a train every 15 minutes, 15 at an hourly train, 25 at one every 2 hours). A
   change of trains on the way waits half the headway as in the local layers, and commutes and
-  everyday outings between zones wait as they do. The search costs each station as a trip's start
-  both ways (`Skims::entry_r`); the riders' loads follow the station's ordinary strategy.
+  everyday outings between zones wait as they do. With several lines, each line's planned wait is
+  uniform over twice its planned wait and lines are taken as in a local trip (T-4041: three quarters
+  the first to arrive, a quarter the first train that can still get there in time). The search costs
+  each station as a trip's start both ways (`Skims::entry_r`), and the longer trips' riders board
+  their first train by those planned shares (`EntryDeps`, `DestAssign::take_entry`); the commutes
+  and outings between zones board by the ordinary ones.
 
 The car's and the plane's costs are by place (the car's at the places' centres and their mean
 parking), so a pair's split of its trips not by rail between car and plane is the same whoever
@@ -239,7 +251,7 @@ T-918; no walking between zones), the drive weighted 1.33 plus the work end's pa
 shares are 20/35/25/15/5%; their weekend factor 1.58.
 
 Not modelled yet: coach, a car carried by ferry between landmasses (car ferries count as no road,
-T-1396), flights within a place (Naha - Ishigaki is Okinawa's own: boat only), induced travel, traffic
+T-2216), flights within a place (Naha - Ishigaki is Okinawa's own: boat only), induced travel, traffic
 on routed drives.
 
 ## 5.2 Where a long-distance trip starts and ends
@@ -256,7 +268,7 @@ affiliation bypasses the player's local network.
 **Seeing them** [T-118, T-3503]: the bubbles count them at the end in the zone in view (a
 Philadelphia bubble's trips to New York at its homes; one between two parts of one zone at both
 its ends, and in its Trips within, T-3509), and a selected bubble set and a selected
-station list them by place and draw them by far zone ([ui-demand-views.md](ui-demand-views.md) "Inter-city trips"). A selection of
+station list them by place and draw them by far zone, a selection's own zone's from 50 km out ([ui-demand-views.md](ui-demand-views.md) "Inter-city trips", T-4140). A selection of
 local cells is mapped to the market through its 600 m squares: the sites were built from the same
 cells, so each selected cell falls in one site's square; a square counts the selected share of its
 people (homes) or attraction (destinations), and a site's share of its zone's departures is its

@@ -10,12 +10,12 @@ import { assignBays, BAY_LOOKBACK_S, profileTimes } from "../map/terminalBays";
 import { buildComplexes, type Complexes } from "../game/complexes";
 import { ComplexBuilder } from "../game/complexBuilder";
 import { buildingMembers, buildingsFrom, withBuildingLinks } from "../game/buildings";
-import { IN_BUILDING } from "../game/upgrades";
+import { BRT_STATION, IN_BUILDING } from "../game/upgrades";
 import { type NewHeadways } from "./saveFile";
 import { upgradesOf } from "./stateRows";
 import type { ClockBus, ClockNode, EditOp, FerryPortIn, FerryRow, NetworkSnapshot } from "./protocol";
 import { demandFares, tidyLineFares } from "./clockFares";
-import { followUp, REST_MS, runFollowUp } from "./clockFollowUp";
+import { followUp, putServiceEditMs, REST_MS, runFollowUp } from "./clockFollowUp";
 import { platformLineOf, stateRows, termEnds, version } from "./clockMain";
 import { dayEntry, gameNow, hourEntry, moneyNow, putTodayGen, regionEntries, shapeHour, todayGen } from "./clockMoney";
 import { patchMode } from "./clockPost";
@@ -32,7 +32,10 @@ export const BOARDING_STEP_LINES = 3;
 export let xferSet: Float32Array | null = null;
 export const sameFloats = (a: Float32Array, b: Float32Array | null) => b !== null && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 let boardingTimer = 0;
-/** time spent stepping since the last hour sent, and its longest step (`?debug=1`) */
+/** T-3655: steps a task until this many ms of work: a timer between tasks waits at least 4 ms once nested (the
+ * browsers' clamp), as long as a 3-line step's work on London's real save */
+const STEP_SLICE_MS = 8;
+/** time spent stepping since the last hour sent, and its longest task of steps (`?debug=1`) */
 let prep = { ms: 0, max: 0 };
 /** T-2404: when the last track preview was asked; while they come, the boarding account's steps
  * wait (one step of a few lines took 0.25-0.75 s on all of Japan, and a ghost asked meanwhile waits
@@ -55,14 +58,46 @@ export function stepBoarding() {
   }
   putTodayGen(todayGen + 1);
   const t0 = performance.now();
-  const more = api.boarding_step(BOARDING_STEP_LINES);
+  let more: boolean;
+  do more = api.boarding_step(BOARDING_STEP_LINES);
+  while (more && performance.now() - t0 < STEP_SLICE_MS);
   const ms = performance.now() - t0;
   prep = { ms: prep.ms + ms, max: Math.max(prep.max, ms) };
   if (more) boardingTimer = setTimeout(stepBoarding, 0) as unknown as number;
   else {
     boardHeldAt = 0;
     sendTrips(true);
+    // the lead covers the loads too, so the staged count's trains are drawn with them (T-1071)
+    if (boardSince !== null) putServiceEditMs(performance.now() - boardSince);
+    boardSince = null;
   }
+}
+
+/** T-3655: a service edit's boarding steps before its state. Past them the state and answer go first with the trips
+ * without loads, and the steps go on after (`loadsLater`): an edit that moves many lines' service (a count on London's
+ * full track, about 25 lines a kind of day) waited 0.7-2.2 s behind them. One step finishes most edits elsewhere (a
+ * count on New York's real save), which keep their loads with their state. */
+const BOARD_STEPS_BEFORE_STATE = 1;
+/** when the service edit whose loads the steps now finish began, for its lead (`serviceEditMs`) */
+let boardSince: number | null = null;
+/** T-3655: whether the state of a service edit begun at `boardAt` goes before its trips' loads: the boarding account
+ * is still not up to date after the edit's steps (`editSteps`). Its steps then go on, and the last sends both hours
+ * with their loads; the page draws the staged state once they are here (`ClockState.loadsFollow`). */
+/** a service edit's loads are still being worked out (its lead is timed when they go) */
+export const loadsOwed = () => boardSince !== null;
+export function loadsLater(boardAt: number | undefined): boolean {
+  if (boardAt === undefined || !accountStale()) return false;
+  boardSince = boardAt;
+  return true;
+}
+/** an edit's boarding steps before its state (`later`'s `step`); `budget`: at most BOARD_STEPS_BEFORE_STATE */
+export function editSteps(budget: boolean): () => boolean {
+  let n = 0;
+  return () => {
+    if (budget && n++ >= BOARD_STEPS_BEFORE_STATE) return false;
+    putTodayGen(todayGen + 1);
+    return api!.boarding_step(BOARDING_STEP_LINES);
+  };
 }
 
 let nextHourTimer = 0;
@@ -135,6 +170,7 @@ function tripsPrelude(): boolean {
   syncHolidays();
   timing.trips = 0;
   timing.board = 0;
+  timing.bays = 0;
   return true;
 }
 /** `TrackApi.trips` by hour, each asked once (T-2980: the hour before each one's too, for where trains stand at the
@@ -148,7 +184,18 @@ function rawTrips(): (e: number) => Float32Array {
   };
 }
 function bayTimes() {
-  return termEnds.size ? profileTimes(api!.profile_meta(), termEnds.keys(), (l) => api!.line_phases(l)) : null;
+  if (!termEnds.size) return null;
+  const a = api!, t0 = performance.now();
+  // T-4149: the phase tables the rows keep, brought up to date (reading every line's anew was 150-400 ms per edit and
+  // per hour on a 2,647-station game); `?patch=walk` reads them from the model, as before, for timing against
+  const tables = patchMode === "walk" ? (l: number) => a.line_phases(l) : stateRows.phaseTablesNow(a);
+  if (patchMode === "check") {
+    const bad = [...termEnds.keys()].filter((l) => !sameFloats(a.line_phases(l), tables(l)));
+    if (bad.length) console.error(`T-4149 check: the kept phase tables of lines ${bad.slice(0, 8).join(", ")} differ from the model's`);
+  }
+  const out = profileTimes(a.profile_meta(), termEnds.keys(), tables);
+  timing.bays = (timing.bays ?? 0) + performance.now() - t0;
+  return out;
 }
 /** an hour's drawn trips: per trip, profile, departure, end and the departure its train takes next, relative to the
  * epoch (the end, T-206, and the next, T-245, go apart), and their places at the ends (T-2980) */
@@ -246,11 +293,13 @@ export function renameComplex(a: TrackApi, node: number, name: string): number {
   return a.type_station_name(stateRows.headOf(node) ?? node, name);
 }
 /** T-3793: an edit that changes only what a station or line is called (asked before it is applied): no train's run
- * changes, and the network drawn has no names in it */
+ * changes, and the network drawn has no names in it. T-4147: and a new line with no stops. */
 export function nameOnly(op: EditOp): boolean {
   switch (op.op) {
     case "renameStation": case "renameComplex": case "bindStation": case "bindAll": return true;
     case "stationProps": return op.platform === stateRows.nodeRow(op.node)?.platform;
+    // T-4147: a line with no stops draws nothing and carries no train, so its list entry needs only the rows
+    case "addLine": return op.stops.length === 0;
     case "lineLook": return op.colour === undefined && op.letter === undefined;
     default: return false;
   }
@@ -281,7 +330,9 @@ export function buildSnapshot(): NetworkSnapshot {
   for (let i = 0; i < ni.length; i += 10) {
     if (ni[i + 7] > 0 && ni[i + 8] === 1) {
       const u = ups.get(ni[i]), z = fz.get(ni[i]);
-      stations.push({ id: ni[i], name: stateRows.nameOf(a, ni[i], frame), x: ni[i + 1], y: ni[i + 2], level: ni[i + 3] as any, platform: ni[i + 7], ...(u ? { upgrades: u } : {}), ...(z ? { fare: z } : {}) });
+      // T-4041: a tram stop on street track (`TrackKind::StreetTram`) at ground
+      const street = ni[i + 3] === 0 && a.node_kind(ni[i]) === 2;
+      stations.push({ id: ni[i], name: stateRows.nameOf(a, ni[i], frame), x: ni[i + 1], y: ni[i + 2], level: ni[i + 3] as any, platform: ni[i + 7], ...(u ? { upgrades: u } : {}), ...(z ? { fare: z } : {}), ...(street ? { street: true as const } : {}) });
       geo.push(stationGeo(a, ni, i));
     }
   }
@@ -296,6 +347,12 @@ export function buildSnapshot(): NetworkSnapshot {
   if (blds.length) {
     const inside = new Set(buildingMembers(blds, geo, groundK).flat());
     for (const s of stations) if (inside.has(String(s.id))) s.upgrades = (s.upgrades ?? 0) | IN_BUILDING;
+  }
+  // T-3378: a wait at a BRT station counts as in a waiting room; this bit too is the snapshot's alone
+  const brt = a.brt_stations();
+  if (brt.length) {
+    const on = new Set(brt);
+    for (const s of stations) if (on.has(Number(s.id))) s.upgrades = (s.upgrades ?? 0) | BRT_STATION;
   }
   // T-1281: the links are passages, walked faster; between constructed stations only
   const built = new Set(geo.map((g) => g.id));
@@ -327,6 +384,8 @@ export function buildSnapshot(): NetworkSnapshot {
       ...(!bus && !ferry && a.line_fast(id) ? { fast: true } : {}),
       ...(ferry ? { ferry: true } : {}),
       ...(boat !== MEDIUM ? { boat: boat as 0 | 2 } : {}),
+      // T-3915: and a BRT line's the BRT multiple
+      ...(bus && a.bus_brt(id) ? { brt: true } : {}),
       ...(!bus && !ferry && a.line_tram(id) ? { tram: true } : {}),
       // T-3758: what fare zones read, only while the fares have areas
       ...(fares.zones && a.line_fare_dist(id) ? { fareDist: true } : {}),
@@ -424,7 +483,11 @@ export function busRow(a: TrackApi, id: number, nodes: ClockNode[]): ClockBus {
       reach.push({ node: rs[k], x: rs[k + 1], y: rs[k + 2], lng, lat });
     }
   }
-  return { built: r[0] === 1, route, kinds, roadM: a.bus_road_m(id), stops, street, spacing: a.bus_spacing(id), hand, brt: a.bus_brt(id), townM: a.bus_town_m(id), reach, routeLL, streetLL: ll(street) };
+  const [townM, newM, laneM] = a.bus_lanes(id);
+  // T-3944: the lanes' runs with their points as longitude, latitude
+  const marks = a.bus_lane_marks(id), lanes: number[] = [];
+  for (let k = 0; k + 1 < marks.length; k += 2 + 2 * marks[k + 1]) lanes.push(marks[k], marks[k + 1], ...ll(Array.from(marks.subarray(k + 2, k + 2 + 2 * marks[k + 1]))));
+  return { built: r[0] === 1, route, kinds, roadM: a.bus_road_m(id), stops, street, spacing: a.bus_spacing(id), hand, brt: a.bus_brt(id), brtBp: a.bus_brt_bp(id), lanes, townM: townM ?? 0, newM: newM ?? 0, laneM: laneM ?? 0, laneLoad: [...a.bus_lane_load(id)], reach, routeLL, streetLL: ll(street) };
 }
 /** a bus route's longitude, latitude pairs by line, until the route changes */
 const busRouteLL = new Map<number, { route: number[]; ll: number[] }>();
@@ -461,7 +524,7 @@ function ferryRow(a: TrackApi, id: number): ClockBus {
     const berth: [number, number] = [routeLL[2 * i], routeLL[2 * i + 1]];
     ports.push({ node, landing: s && s.id === node ? [s.lng, s.lat] : berth, berth });
   });
-  return { built: r[0] === 1, route, kinds, roadM: a.ferry_m(id), stops, street: [], spacing: 0, hand: false, brt: false, townM: 0, reach: [], routeLL, streetLL: [], ferry: { speeds, ports, boat: a.ferry_boat(id) as Boat } };
+  return { built: r[0] === 1, route, kinds, roadM: a.ferry_m(id), stops, street: [], spacing: 0, hand: false, brt: false, brtBp: false, lanes: [], townM: 0, newM: 0, laneM: 0, laneLoad: [], reach: [], routeLL, streetLL: [], ferry: { speeds, ports, boat: a.ferry_boat(id) as Boat } };
 }
 
 /** T-2194: a ferry line's ports as the network's nodes, new ones added first as blueprint ports; null

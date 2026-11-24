@@ -26,7 +26,7 @@ import { trainKind } from "./format";
 import { boatOf, boatRunKm } from "./boats";
 import { baseTrips, busUpkeepDay, lineGeo, moneyState, moneyTerms, moneyWorld, scalesOf, type MoneyTerms } from "./money";
 import { trainsADay } from "./periods";
-import { edgeUpkeep, lineRunFactor, stationUpkeepOf } from "./regionMoney";
+import { edgeUpkeep, lineRunFactor, nodeUpkeepOf } from "./regionMoney";
 import { stopsById, world } from "./world";
 import type { LineInput, WorldView } from "./types";
 
@@ -166,7 +166,7 @@ export function stretchMoneyOf(w: WorldView, t: MoneyTerms, dv: DemandView, shap
     for (const v of pk) pkAll += v;
     if (!(pkAll > 0)) continue;
     const fx = dm.fareX?.reduce((a, b) => a + b, 0) ?? 0;
-    const mul = lineFareMul({ id: l.id, fast: st.fast, ferry: !!st.bus?.ferry, boat: boatOf(st.bus), bus: !!st.bus && !st.bus.ferry }, lf);
+    const mul = lineFareMul({ id: l.id, fast: st.fast, ferry: !!st.bus?.ferry, boat: boatOf(st.bus), bus: !!st.bus && !st.bus.ferry, brt: !!st.bus?.brt }, lf);
     const base = E * f.base * (based.get(l.id) ?? 0);
     for (let s = 0; s < n - 1; s++) {
       const fareOf = (riders: number) => E * (mul * f.perKm * riders + fx * riders / pkAll) + base * riders / pkAll;
@@ -222,7 +222,7 @@ export function stretchMoneyOf(w: WorldView, t: MoneyTerms, dv: DemandView, shap
     if (!s.built) continue;
     const on = stopping.get(s.id);
     if (!on) continue;
-    const u = s.port ? (t.upkeepPort ?? 0) * E : stationUpkeepOf(t, s);
+    const u = nodeUpkeepOf(t, s);
     let total = 0;
     for (const { l } of on) total += weight.get(l.id)!;
     for (const { l, k } of on) {

@@ -62,6 +62,8 @@ export interface StationInput {
   line?: ArrayLike<number>;
   /** T-2194: a port, for ferries (no track or platform), and its berth, longitude and latitude */
   port?: [number, number];
+  /** T-3378: a BRT station beside a road (no track), where only BRT lines stop */
+  brt?: true;
   /** a tram stop: tram track's own 20-80 m platform (T-2926) */
   tram?: true;
   /** T-3332: a one-track station: 1 on double track (`oneHeading` its trains' way, rad, counter-clockwise from east), 2 on single track, where trains cannot pass */
@@ -69,6 +71,8 @@ export interface StationInput {
   oneHeading?: number;
   /** one platform track: pays a share of the station upkeep (`MoneyState.upkeepOnePlatform`) */
   onePlatform?: true;
+  /** T-3922: the upkeep a game day of its upgrades and its share of its passages and building, US$ */
+  upgradeUpkeep?: number;
 }
 
 /** T-3423: a group around a line's own group: its number, name ("" for its oldest line's) and bullet
@@ -164,6 +168,8 @@ export interface TrackNode {
   bus?: true;
   /** T-2194: a port: a station with no track, so no place to snap track to */
   port?: true;
+  /** T-3378: a BRT station: a station beside a road on no track, so no place to snap track to */
+  brtStation?: true;
   /** `TrackApi.node_kind` where it is a tram's (2 or 3, T-2926); absent for rail */
   kind?: number;
 }
@@ -196,6 +202,10 @@ export type LineStatus =
   | "planned"
   /** its path lost track, or a stop went */
   | "broken";
+
+/** T-4013: what riders may do at a stop, beside both: board only, or get off only (sim `BOARD_ONLY`, `ALIGHT_ONLY`) */
+export const BOARD_ONLY = 1, ALIGHT_ONLY = 2;
+export type StopOnly = typeof BOARD_ONLY | typeof ALIGHT_ONLY;
 
 export interface LineStats {
   status: LineStatus;
@@ -250,6 +260,9 @@ export interface LineStats {
   backStops?: string[];
   /** T-3711: the stops the player made one way with a shift-click; absent for none */
   oneStops?: string[];
+  /** T-4013: the stops where riders only board (1) or only get off (2), by station id (`TrackApi::line_stop_only`);
+   * absent for none */
+  stopOnly?: Record<string, StopOnly>;
   /** T-2895: the player set its stop order by hand (`TrackApi::line_hand`) */
   hand: boolean;
   /** a loop (T-798): its last stop is its first; a circle carries on round there, a balloon turns
@@ -361,6 +374,9 @@ export interface WorldView {
   /** T-819: per demand period, the edges whose track is at capacity, with the fuller direction's
    * utilisation and trains an hour */
   fullTrack: Map<EdgeId, { rho: number; tph: number }>[];
+  /** T-4178: per line, the nodes where its trains reverse partway and that turn limits it (`TrackApi.turn_limits`),
+   * with the most trains an hour it lets the line run */
+  turnLimits: Map<LineId, Map<number, number>>;
   /** T-3542: the rows (3, 4 or 5) lines following the game's set their trains in */
   periods: number;
   /** T-3542: the hours lines following the game's split their day at (five, `Cuts`) */

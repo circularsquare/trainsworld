@@ -11,7 +11,8 @@ done / close: moves the task block to the top of ARCHIVE.md, sets the line's don
 line's last open task, drops the agent from board-live.json when it has no other taken task, and marks the task's
 agent reports read (tools/reports.py).
 check: badly formed task lines, tags naming a line not in LINES.md, taking marks with no agent on the board, duplicate
-ids, board agents whose task is not marked, a long handoff.md. Exit 1 when it finds anything.
+ids, board agents whose task is not marked, a long handoff.md, a DECISIONS.md entry over 50 words. Exit 1 when it finds
+anything.
 --root <dir> runs on another copy of trainworld/ (for testing)."""
 import argparse
 import json
@@ -22,10 +23,16 @@ import time
 from datetime import date, datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from filelock import FileLock
+
 HEAD = re.compile(r"^- (T-\d+) \[(P\d)\] (.*)$")
 TAKING = re.compile(r" \(taking, [^,)]*, agent ([^)]+)\)")
 LTAG = re.compile(r"\{L:([^}]*)\}")
 ARCHIVE_ANCHOR = "New entries go at the top, under this line."
+DECISION_WORDS = 50  # a DECISIONS.md entry, counted after its "- " (T-4120)
+FIELD_WORDS = {"Need from Anita": 30, "Context": 60, "Goal": 30}   # CLAUDE.md Tasks rules
 
 
 def read(path):
@@ -71,6 +78,11 @@ class Root:
         self.lines = os.path.join(root, "LINES.md")
         self.live = os.path.join(root, "notes", "board-live.json")
         self.handoff = os.path.join(root, "notes", "handoff.md")
+        self.decisions = os.path.join(root, "DECISIONS.md")
+        self.lock = os.path.join(root, "notes", "tasks.lock")
+
+    def locked(self):
+        return FileLock(self.lock, err=SystemExit, message=f"{self.lock} is held; if no tasks.py is running, delete it")
 
     def board(self):
         with open(self.live, encoding="utf-8") as f:
@@ -347,6 +359,10 @@ def cmd_check(r, a):
             # Goal is optional when the title already says what done is (Anita, 2026-11-18)
             if "Context" not in names:
                 problems.append(f"{where}: missing Context field")
+            for x in lines[n:j]:
+                fm = re.match(r"^  - (Need from Anita|Context|Goal):(.*)$", x)
+                if fm and len(fm.group(2).split()) > FIELD_WORDS[fm.group(1)]:
+                    problems.append(f"{where}: {fm.group(1)} is {len(fm.group(2).split())} words (at most {FIELD_WORDS[fm.group(1)]})")
             bad = [x for x in names if x not in order]
             if bad:
                 problems.append(f"{where}: unknown field {bad[0]}")
@@ -367,6 +383,11 @@ def cmd_check(r, a):
         n = len(read(r.handoff)[0].split("\n"))
         if n > 60:
             problems.append(f"notes/handoff.md is {n} lines (keep it under 60)")
+    if os.path.exists(r.decisions):
+        for n, l in enumerate(read(r.decisions)[0].split("\n"), 1):
+            words = len(l[2:].split())
+            if l.startswith("- ") and words > DECISION_WORDS:
+                problems.append(f"DECISIONS.md:{n}: {words} words (an entry is one or two sentences, at most {DECISION_WORDS})")
     for p in problems:
         print(p)
     print(f"{len(problems)} problem(s), {len(seen)} open tasks")
@@ -402,9 +423,15 @@ def main():
     sub.add_parser("check")
     a = ap.parse_args()
     r = Root(a.root)
-    code = {"start": lambda: cmd_start(r, a), "done": lambda: finish(r, a, "done"),
+    cmds = {"start": lambda: cmd_start(r, a), "done": lambda: finish(r, a, "done"),
             "close": lambda: finish(r, a, "close"), "check": lambda: cmd_check(r, a), "upnext": lambda: cmd_upnext(r, a),
-            "set": lambda: cmd_set(r, a)}[a.cmd]()
+            "set": lambda: cmd_set(r, a)}
+    writes = a.cmd in ("start", "done", "close", "set") or (a.cmd == "upnext" and a.action != "list")
+    if writes:
+        with r.locked():
+            code = cmds[a.cmd]()
+    else:
+        code = cmds[a.cmd]()
     sys.exit(code)
 
 

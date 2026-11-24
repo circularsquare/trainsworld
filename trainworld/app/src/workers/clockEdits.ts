@@ -6,7 +6,7 @@ import { headwaysFor, NEW_LINE } from "../game/newLine";
 import { zonesOf } from "../game/fareZones";
 import { letterOf } from "../game/lineLetter";
 import { cloneName, cloneSymbol } from "../game/cloneNames";
-import { capTransfer, faresOf, FERRY_FARE_KEYS, MEDIUM, tidyHsr, tidyTransfer } from "../game/fareCurve";
+import { capTransfer, faresOf, FERRY_FARE_KEYS, kindFares, MEDIUM, tidyHsr, tidyTransfer } from "../game/fareCurve";
 import { FARE_BASELINE, FARE_E, keepOwn } from "../game/income";
 import { type SaveHeader } from "./saveFile";
 import type { EditOp, PaidFor, PiInput, RouteAsk, RouteEnd, StationAt } from "./protocol";
@@ -49,7 +49,7 @@ function hsrShare(a: TrackApi, line: number): number {
   return all > 0 ? fast / all : 0;
 }
 
-type Applied = { r: number; fault?: number[]; line?: number; node?: number; skipped?: number; charge?: number; trainCharge?: number; why?: string[] };
+export type Applied = { r: number; fault?: number[]; line?: number; node?: number; skipped?: number; charge?: number; trainCharge?: number; why?: string[] };
 
 /** T-1899: a new line's stop edit (`edit`), its trains then high-speed when more than half its
  * route's km is high-speed track and ordinary otherwise. The type is set before the stops in the undo
@@ -64,7 +64,9 @@ function withAutoFast(a: TrackApi, line: number, edit: () => number): Applied {
   back();
   if (a.set_line_fast(line, fast) !== 0) return { r: edit() };
   const charge = a.last_charge(), trainCharge = a.last_train_charge();
+  a.join_edit(true); // T-4185: the stops edit takes back with the type, one undo
   if (edit() !== 0) {
+    a.join_edit(false);
     back();
     return { r: edit() };
   }
@@ -101,11 +103,49 @@ export function newLineShape(op: EditOp, line: number) {
   send({ kind: "lineShapes", shapes: Object.fromEntries(lineShapes) });
 }
 
+type RailKind = "rail" | "fast" | "tram";
+function railKind(a: TrackApi, id: number): RailKind | null {
+  if (a.line_period_count(id) === 0 || a.is_bus(id) || a.is_ferry(id)) return null;
+  return a.line_tram(id) ? "tram" : a.line_fast(id) ? "fast" : "rail";
+}
+
+/** T-4104: an edit that changes a rail line's kind (high-speed, tram) moves its headways to the new kind's
+ * default when they are still the old kind's default; ones the player set stay. It is part of the edit for
+ * undo and redo (`set_line_row_headways_with_edit`). */
+function withKindHeadways(op: EditOp, run: () => Applied): Applied {
+  const a = api!;
+  const line = "line" in op && typeof op.line === "number" ? op.line : null;
+  const was = line === null ? null : railKind(a, line);
+  if (line === null || !was) return run();
+  const rowsWas = a.line_period_count(line), had = [...a.line_row_headways(line)];
+  const out = run();
+  if (out.r !== 0) return out;
+  const now = railKind(a, line), rows = a.line_period_count(line);  if (!now || now === was || rows !== rowsWas || !had.length) return out;
+  const old = headwaysFor(was, newLineHeadway, rows), wanted = headwaysFor(now, newLineHeadway, rows);
+  if (!old || !wanted || old.length !== had.length || old.some((s, i) => s !== had[i])) return out;
+  const charge = out.charge ?? a.last_charge(), trainCharge = out.trainCharge ?? a.last_train_charge();
+  if (a.set_line_row_headways_with_edit(line, Uint32Array.from(wanted)) !== 0) return out;
+  return { ...out, charge: charge + a.last_charge(), trainCharge: trainCharge + a.last_train_charge() };
+}
+
+/** T-4185: the edits after a player action's first one (a new line's headways, a copy's badge) join it, so one undo takes
+ * back the action. Called with the first edit's answer; on only when that edit was made. */
+function joinAfter(a: TrackApi, r: number): number {
+  if (r === 0) a.join_edit(true);
+  return r;
+}
+
 export function apply(op: EditOp): Applied {
   freezeCheckpoint("apply-start", { op: op.op });
   const start = performance.now();
-  try { return applyInner(op); }
-  finally { freezeCheckpoint("apply-end", { op: op.op, ms: performance.now() - start }); }
+  const rounds0 = api?.settle_rounds() ?? 0;
+  try { return withKindHeadways(op, () => applyInner(op)); }
+  finally {
+    api?.join_edit(false);
+    const rounds = (api?.settle_rounds() ?? 0) - rounds0;
+    if (rounds > 0) freezeCheckpoint("settle", { op: op.op, rounds, ms: performance.now() - start }); // T-4194: ms is the whole edit's
+    freezeCheckpoint("apply-end", { op: op.op, ms: performance.now() - start });
+  }
 }
 function applyInner(op: EditOp): Applied {
   const a = api!;
@@ -161,6 +201,10 @@ function applyInner(op: EditOp): Applied {
         : op.at.kind === "edge"
           ? { r: a.add_station(2, op.at.edge, op.at.x, op.at.y, op.platform, op.name) }
           : (a.set_route_kind(op.at.tram ? 3 : 0), a.set_route_hsr(!!op.at.hsr), { r: a.add_free_station(freeEnds(op.at), op.at.quad ? 4 : 2, op.platform, op.name) });
+    case "addPort":
+      return { r: a.add_port(op.x, op.y, op.bx, op.by, op.name) };
+    case "addBrtStation":
+      return { r: a.add_brt_station(op.x, op.y, op.heading, op.name) };
     case "crossover":
       return { r: a.add_crossover(op.edge, op.x, op.y) };
     case "doubleUp":
@@ -209,7 +253,7 @@ function applyInner(op: EditOp): Applied {
       const id = a.new_line_id();
       const { dwellS, turnaroundS } = NEW_LINE.bus;
       const [h, m, l] = headwaysFor("bus", newLineHeadway)!;
-      return newLineWeekends(a, newLineRows(a, a.set_bus_line(id, Float64Array.from(op.route), h, m, l, dwellS, turnaroundS, colourInt(op.colour), op.name || nextBusName(a)), id, "bus"));
+      return newLineWeekends(a, newLineRows(a, joinAfter(a, a.set_bus_line(id, Float64Array.from(op.route), h, m, l, dwellS, turnaroundS, colourInt(op.colour), op.name || nextBusName(a))), id, "bus"));
     }
     case "busRoute":
       return { r: a.set_bus_route(op.line, Float64Array.from(op.route)) };
@@ -220,7 +264,7 @@ function applyInner(op: EditOp): Applied {
     case "busHand":
       return { r: a.set_bus_hand(op.line) };
     case "busHandStop":
-      return { r: a.set_bus_stop(op.line, op.x, op.y, op.on) };
+      return { r: op.exact && op.on ? a.set_bus_stop_exact(op.line, op.x, op.y) : a.set_bus_stop(op.line, op.x, op.y, op.on) };
     case "addFerryLine": {
       const ports = addPorts(a, op.ports);
       if (!ports) return { r: 1 };
@@ -229,7 +273,7 @@ function applyInner(op: EditOp): Applied {
       // T-3892: a long crossing starts at the long ferry's headways (its route's km, as the tool's quote has them)
       const route = Float64Array.from(op.route), km = a.ferry_quote(0xffffffff, ports, route, 0)[0] / 1000;
       const [h, m, l] = headwaysFor("ferry", newLineHeadway, 3, km)!;
-      return newLineWeekends(a, newLineRows(a, a.set_ferry_line(id, ports, route, h, m, l, dwellS, turnaroundS, colourInt(op.colour), op.name || nextBusName(a, "Ferry ")), id, "ferry", km)); // i18n-ignore: a line's saved name
+      return newLineWeekends(a, newLineRows(a, joinAfter(a, a.set_ferry_line(id, ports, route, h, m, l, dwellS, turnaroundS, colourInt(op.colour), op.name || nextBusName(a, "Ferry "))), id, "ferry", km)); // i18n-ignore: a line's saved name
     }
     case "ferryRoute": {
       const ports = addPorts(a, op.ports);
@@ -243,7 +287,7 @@ function applyInner(op: EditOp): Applied {
       // T-2926: a line on tram track starts with the tram's dwell and turnaround and 2 cars
       const tram = a.stops_tram(new Uint32Array(op.stops)); // T-3889: any tram stop
       const [tramDwell, tramTurn] = tram ? TrackApi.kind_defaults(3) : [dwellS, turnaroundS];
-      const r = a.set_line_with_trains(id, new Uint32Array(op.stops), h, m, l, tramDwell, tramTurn, tram ? TRAM_NEW_CARS : newLineCars, colourInt(op.colour), op.name || a.next_line_name());
+      const r = joinAfter(a, a.set_line_with_trains(id, new Uint32Array(op.stops), h, m, l, tramDwell, tramTurn, tram ? TRAM_NEW_CARS : newLineCars, colourInt(op.colour), op.name || a.next_line_name()));
       if (r !== 0) return { r, line: id };
       // T-1899: a line started on high-speed track (a track's New line) runs high-speed trains
       let charge = a.last_charge(), trainCharge = a.last_train_charge();
@@ -285,7 +329,7 @@ function applyInner(op: EditOp): Applied {
         name = base;
         for (let n = 2; existing.has(name); n++) name = `${base} ${n}`;
       }
-      const r = a.copy_line(op.line, id, name);
+      const r = joinAfter(a, a.copy_line(op.line, id, name));
       // T-1872: the copy always has a symbol of its own (the source's, or the one it shows, stepped on)
       // T-2791: a lettered name ("Line 1d") gives the symbol too ("1d") when that is free, so bullet and name agree
       const tail = /\d+[A-Za-z]$/.exec(name)?.[0];
@@ -315,6 +359,17 @@ function applyInner(op: EditOp): Applied {
       const set = () => a.add_stop(op.line, op.station);
       const out = op.autoFast ? withAutoFast(a, op.line, set) : { r: set() };
       return out.r === 2 ? { ...out, r: INSERT_REFUSED } : out;
+    }
+    case "toggleStop": {
+      const before = [...a.line_stops(op.line)];
+      if (!before.includes(op.station)) {
+        const set = () => a.add_stop(op.line, op.station);
+        const out = op.autoFast ? withAutoFast(a, op.line, set) : { r: set() };
+        return out.r === 2 ? { ...out, r: INSERT_REFUSED } : out;
+      }
+      // (every visit out, a loop closed again on its new first stop: `TrackApi.take_stop`, whose path `take_path` reads ahead)
+      const set = () => a.take_stop(op.line, op.station);
+      return op.autoFast ? withAutoFast(a, op.line, set) : { r: set() };
     }
     case "oneWayStop": {
       const set = () => a.one_way_stop(op.line, op.station);
@@ -394,6 +449,8 @@ function applyInner(op: EditOp): Applied {
       return { r: a.set_line_limit(op.line, op.kmh) };
     case "lineFareDist":
       return { r: a.set_line_fare_dist(op.line, op.dist) };
+    case "stopOnly":
+      return { r: a.set_stop_only(op.line, op.station, op.kind) };
     case "lineGroup":
       return { r: a.set_line_group(new Uint32Array(op.lines), op.group === "new" ? a.new_line_group() : op.group) };
     case "groupMembers":
@@ -403,7 +460,7 @@ function applyInner(op: EditOp): Applied {
     case "groupLook":
       return { r: a.set_line_group_look(op.group, op.symbol.trim(), op.colour === null ? -1 : colourInt(op.colour)) };
     case "fares":
-      putFares(capTransfer({ ...(op.nodes ? faresOf({ nodes: op.nodes }, fares) : faresOf({ base: op.base, perKm: op.perKm }, fares)), scales: fares.scales, baseline: FARE_BASELINE, basis: "usd", income: FARE_E, ...(fares.hsr !== undefined ? { hsr: fares.hsr } : {}), ...(fares.ferry !== undefined ? { ferry: fares.ferry } : {}), ...(fares.ferrySmall !== undefined ? { ferrySmall: fares.ferrySmall } : {}), ...(fares.ferryLarge !== undefined ? { ferryLarge: fares.ferryLarge } : {}), ...(fares.bus !== undefined ? { bus: fares.bus } : {}), ...(fares.transfer !== undefined ? { transfer: fares.transfer } : {}), ...(fares.ref ? { ref: fares.ref } : {}), ...(fares.lines ? { lines: fares.lines } : {}), ...zonesOf(fares), ...cityFares(fares) }));
+      putFares(capTransfer({ ...(op.nodes ? faresOf({ nodes: op.nodes }, fares) : faresOf({ base: op.base, perKm: op.perKm }, fares)), scales: fares.scales, baseline: FARE_BASELINE, basis: "usd", income: FARE_E, ...kindFares(fares), ...(fares.transfer !== undefined ? { transfer: fares.transfer } : {}), ...(fares.ref ? { ref: fares.ref } : {}), ...(fares.lines ? { lines: fares.lines } : {}), ...zonesOf(fares), ...cityFares(fares) }));
       return { r: 0 };
     case "fareZones": {
       // T-3740: the fare areas as a whole; an id is never used twice
@@ -425,7 +482,7 @@ function applyInner(op: EditOp): Applied {
       return { r: 0 };
     case "fareBus":
       if (!Number.isFinite(op.mul)) return { r: 1 };
-      putFares({ ...fares, bus: tidyHsr(op.mul) });
+      putFares({ ...fares, [op.brt ? "brt" : "bus"]: tidyHsr(op.mul) });
       return { r: 0 };
     case "fareTransfer": {
       if (!Number.isFinite(op.usd)) return { r: 1 };
@@ -545,12 +602,12 @@ export function routeArgs(a: TrackApi, r: RouteAsk): [Float64Array, Float64Array
   a.set_route_tangent(!!r.through);
   a.set_design_speed(designOf(r));
   a.set_flyover_speed(r.flyover ?? 80);
-  a.set_route_kind(r.tram ? (r.street ? 2 : 3) : 0);
+  a.set_route_kind(r.busway ? 4 : r.tram ? (r.street ? 2 : 3) : 0);
   a.set_route_street(new Float64Array(r.tram && r.street ? r.streetLine ?? [] : []));
   a.set_route_hsr(!!r.hsr);
   a.set_route_ramp(!!r.ramp);
   a.set_route_beside(...besideOf(r));
   a.set_route_join(new Float64Array((r.join ?? [null, null, null, null]).map((v) => v ?? NaN)));
   // T-3092: with ramps on, new junctions on double track are laid as flyovers
-  return [new Float64Array([...endArr(r.from), ...endArr(r.to)]), pisArr(r.pis), r.single ? 1 : r.quad ? 4 : 2, !!r.ramp];
+  return [new Float64Array([...endArr(r.from), ...endArr(r.to)]), pisArr(r.pis), r.busway ? 2 : r.single ? 1 : r.quad ? 4 : 2, !!r.ramp]; // (T-3378: a busway is always double)
 }

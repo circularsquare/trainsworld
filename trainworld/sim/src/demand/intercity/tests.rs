@@ -50,6 +50,42 @@ fn network(api: &mut IntercityApi, freq: f32, slow: f32) {
     api.set_network(&xy, &n, &stops, &times, &[12., 12., 12., freq, freq, freq, 12., 12., 12.], &[4., 4., 4.]).unwrap();
     api.set_fares(0., 0., &[1., 0., 0., 1., 59., 59., 0., 0., 59., 59., 1., 0., 0., 1.]).unwrap();
 }
+/// T-3928: no trip of the market is skipped on the small fixture, in any period. (Every intercity test also fails on a
+/// skip: `kernel::note_dropped` panics in a test build unless the test sets `KNOWN_DROPS`.)
+#[test]
+fn no_intercity_trips_are_skipped() {
+    let mut a = api();
+    network(&mut a, 6., 1.);
+    for q in 0..PERIODS {
+        assert!(a.solve(q));
+        assert_eq!(a.dropped(q), 0.0, "period {q}");
+        assert!(a.entries(q).iter().sum::<f32>() > 0.0, "period {q} has no trips to lose");
+    }
+}
+/// T-3928: trips whose route costs are known but whose destination has no strategy are counted in `dropped`, and
+/// the log names the stations and adds up to it. (A search that reached no station gives the trips no route, so the
+/// pass never takes them: the case is made by lending the unsearched table the full table's route costs.)
+#[test]
+fn intercity_trips_towards_an_unsearched_station_are_counted() {
+    let mut a = api();
+    network(&mut a, 6., 1.);
+    assert!(a.solve(1));
+    let per = a.per(1).unwrap();
+    let (g, p, ix) = (&per.g, &per.p, &per.xi);
+    let full = skims_for(g, p, &a.want);
+    let all = a.want.len();
+    assert!(all > 1);
+    let mut part = skims_for(g, p, &(0..all).map(|i| i == 0).collect::<Vec<_>>());
+    part.r = full.r.clone();
+    KNOWN_DROPS.with(|k| k.set(true));
+    DROP_LOG.with(|l| l.borrow_mut().clear());
+    let pass = a.pass_on(g, p, 1, &part, ix);
+    let logged: f64 = DROP_LOG.with(|l| l.borrow().iter().map(|e| e.1).sum());
+    assert!(pass.loads.dropped > 0.0, "nothing counted");
+    assert!((pass.loads.dropped - logged).abs() <= 1e-3 * logged, "counted {}, logged {logged}", pass.loads.dropped);
+    assert!(DROP_LOG.with(|l| l.borrow().iter().all(|e| e.0 != 0)), "station 0 was searched");
+    assert_eq!(a.pass_on(g, p, 1, &full, ix).loads.dropped, 0.0);
+}
 #[test]
 fn intercity_market_is_symmetric_and_conserved() {
     let a = api();
@@ -136,10 +172,6 @@ fn summary_is_the_table(a: &IntercityApi) -> f64 {
             want[3 * p] += rt[j];
             want[3 * p + 1] += c;
             want[3 * p + 2] += rt[j] * step(rm[2 * j]);
-            // T-2216: no car: the commutes, and with no plane the longer trips, have no way but rail
-            if rm[2 * j + 1] == 0. {
-                want[5 * np + p] += if rm[2 * j] > 0. { c } else { rt[j] + c };
-            }
         }
     }
     assert_eq!(s[2..].iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
@@ -552,7 +584,7 @@ fn rides_nest_with_walks() {
 #[test]
 fn another_station_never_makes_rail_dearer() {
     let inf = f32::INFINITY;
-    let sk = Skims { s: 3, n: 3, r: vec![0., inf, 30., inf, 0., 45., inf, inf, 0.], walk: vec![], walk_max: vec![], slot: vec![], next: vec![], board: vec![], order: vec![], change: vec![], entry: vec![], start: vec![] };
+    let sk = Skims { s: 3, n: 3, r: vec![0., inf, 30., inf, 0., 45., inf, inf, 0.], walk: vec![], walk_max: vec![], slot: vec![], next: vec![], board: vec![], order: vec![], change: vec![], entry: vec![], start: vec![], share: vec![], entry_dep: vec![], entries: true };
     let p = Params::default();
     let theta = p.band_unsoftened(p.n_bands() - 1);
     let list = |walks: &[(usize, f32)]| {
@@ -1130,11 +1162,11 @@ fn zone_legs_add_up_to_a_whole_place_selection() {
     // only the outings: place 0's homes and place 1's activities each count them once
     let q = 1;
     let v = a.everyday_place_legs(q);
-    let by: HashMap<usize, Vec<f64>> = v.chunks_exact(5).map(|c| (c[0] as usize, c[1..].to_vec())).collect();
+    let by: HashMap<usize, Vec<f64>> = v.chunks_exact(7).map(|c| (c[0] as usize, c[1..].to_vec())).collect();
     let s = a.part_summary(q);
     let total: f64 = by.values().map(|c| c[0]).sum();
     assert!((total - 2. * s[4]).abs() <= 1e-6 * s[4], "{total} {}", s[4]);
-    assert!(by.values().all(|c| c[1] <= c[0] && c[2] <= c[3] + 1e-9));
+    assert!(by.values().all(|c| c[1] <= c[0] && c[2] <= c[3] + 1e-9 && c[4] <= c[0] + 1e-9 && c[5] <= c[4] + 1e-9));
 }
 #[test]
 fn places_not_open_answer_by_place() {
@@ -1928,7 +1960,7 @@ pub(crate) fn real_world(root: &str, ids: Option<&[&str]>) -> String {
 fn regional_station_pairs_take_the_local_scale() {
     // stations 0 and 1 near the home, 2 at work: 0 -> 2 costs 30, 1 -> 2 costs 33
     let inf = f32::INFINITY;
-    let sk = Skims { s: 3, n: 3, r: vec![0., inf, 30., inf, 0., 33., inf, inf, 0.], walk: vec![], walk_max: vec![], slot: vec![], next: vec![], board: vec![], order: vec![], change: vec![], entry: vec![], start: vec![] };
+    let sk = Skims { s: 3, n: 3, r: vec![0., inf, 30., inf, 0., 33., inf, inf, 0.], walk: vec![], walk_max: vec![], slot: vec![], next: vec![], board: vec![], order: vec![], change: vec![], entry: vec![], start: vec![], share: vec![], entry_dep: vec![], entries: true };
     let p = Params::default();
     // a pair whose car takes 60 perceived minutes, past 12 km: the band's scale, not softened
     let th = p.soften(p.band_unsoftened(p.band_of_d2(20e3 * 20e3)), 60.);
@@ -2984,4 +3016,56 @@ fn long_trip_pull_by_destination_excess() {
     assert!(on.m.cw.daily > none.m.cw.daily);
     // a bad rule does not open
     assert!(IntercityApi::new(&with(&pull.replace("[50,150]", "[150,50]"), None)).is_err());
+}
+/// T-3919: the market, given the tram flags as the worker gives every population, holds a tram as the commutes do
+/// (`DemandApi::set_network`): three quarters of a car a section, and its stops tram stops, so a cell walks to at
+/// most `TRAM_SLOTS` of them. Without the flags it would hold the tram as a train, and its riders differ.
+#[test]
+fn longer_trips_see_the_tram_lines_as_commutes_do() {
+    use crate::demand::kernel::TRAM_SLOTS;
+    // a tram from place 0, with stops every 250 m on its way out, to place 1 120 km off, one an hour; a train
+    // from place 1 to place 2 between them
+    let mut xy = vec![];
+    for k in 0..6 {
+        xy.extend([250. * k as f32, 0.]);
+    }
+    xy.extend([120000., 0., 60000., 0.]);
+    let (n, stops) = ([7, 2], [0, 1, 2, 3, 4, 5, 6, 6, 7]);
+    let mut times = vec![];
+    for (len, sec) in [(7, 600.), (2, 1800.)] {
+        let mut t = vec![0f32; 6 * len];
+        for lev in 0..3 {
+            for k in 0..len - 1 {
+                t[lev * len + k] = sec;
+                t[(3 + lev) * len + k + 1] = sec;
+            }
+        }
+        times.extend(t);
+    }
+    let open = |tram: bool| {
+        let mut a = api();
+        if tram {
+            a.set_tram_lines(&[1, 0]);
+        }
+        a.set_network(&xy, &n, &stops, &times, &[1., 1., 1., 6., 6., 6.], &[4., 4.]).unwrap();
+        a.set_fares(0., 0., &[0.; 18]).unwrap();
+        a
+    };
+    let (mut a, mut plain) = (open(true), open(false));
+    let svc = a.svc.as_ref().unwrap();
+    assert_eq!(svc.cars, vec![3., 4.], "the market's tram: three quarters of a car a section");
+    assert_eq!(svc.st_tram, vec![true, true, true, true, true, true, false, false], "the stations only the tram serves");
+    // the cell at place 0 walks to the three nearest of its six tram stops, as a commute's would
+    let near = |a: &IntercityApi| {
+        let z = a.m.cell_zone[0];
+        let mut v: Vec<usize> = a.access[z].iter().map(|&(s, _)| s).filter(|&s| s < 6).collect();
+        v.sort_unstable();
+        v
+    };
+    assert!(near(&a).len() <= TRAM_SLOTS && near(&plain).len() > TRAM_SLOTS, "tram stops reached: {:?} with the flags, {:?} without", near(&a), near(&plain));
+    assert!(a.solve(0) && plain.solve(0));
+    // the tram's route nodes are the first 14 of 18, two a stop
+    let on = |b: Vec<f32>| { assert_eq!(b.len(), 18); b[..14].iter().sum::<f32>() };
+    let (with, without) = (on(a.board(0)), on(plain.board(0)));
+    assert!(with > 0. && (with - without).abs() > 1e-3 * without, "tram riders {with} with the flags, {without} without");
 }

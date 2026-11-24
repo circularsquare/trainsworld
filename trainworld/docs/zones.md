@@ -121,7 +121,8 @@ first wave (Germany, the UK, Ireland and the Benelux at 0.1-1.2M); rows built be
 (every country zoned by 2026-10-24) keep their groups until Anita asks for their replan (T-1189):
 `zones --countries CN --replan` regroups a country's built zone rows too (never a `held` one, T-774), their
 packs then counted as free land; a new zone with an old row's exact units keeps its id, order, status and gate
-relaxations. Any other new zone (in any zones rerun, not only `--replan`) inherits each relaxation of a
+relaxations. Any other new row takes an id no save can name: not in the plan, the registry, data/packs, the committed
+registry or zone-successors.json's keys (`world_plan.retired_ids`, T-3764), else old saves would open in it. Any other new zone (in any zones rerun, not only `--replan`) inherits each relaxation of a
 check about the ground or the country's data (`world_plan.CARRY_RELAX`: drive_factor_median,
 water_points_in_water, university_rate, and mean_commute_km when the new zone has at least as many units
 as the old row) that an old row sharing at least one of its units held, with the reason of the old row
@@ -465,11 +466,13 @@ from both sides, so the everyday draw does not stop at the line.
 - **Airports** (T-2896) keep their pack share in the pack (`airport_trips`, unchanged by this step).
   The rest, each airport's outings of the people outside its pack (the header's `airport.sites`:
   `outside_outings`, and `outside_weight`, those people x exp(-d / 20 km) by GHSL), is drawn over
-  every other loaded pack's cells within 80 km, none within 1.5 km of the airport, each weighed as
+  every other loaded pack's cells within the airport's reach (80 km; a big airport's the site's
+  `reach_m`, up to 150 km, T-3502), none within 1.5 km of the airport, each weighed as
   the everyday layer weighs an airport's ends (half residents, a quarter jobs, a quarter leisure
-  jobs, scaled to the pack's people) x exp(-d / 20 km) x the border factor. A cell gets
-  `outside_outings` x its weight / the larger of `outside_weight` and the cells' sum, so where the
-  neighbours are unbuilt or sea their share is dropped; then the 40-80 km taper. The airport is the
+  jobs, scaled to the pack's people) x exp(-d / decay) (20 km, or the site's `decay_m`) x the border
+  factor. A cell gets `outside_outings` x its weight / the larger of `outside_weight` and the cells'
+  sum, so where the neighbours are unbuilt or sea their share is dropped; then the fade over the
+  reach's last 40 km. The airport is the
   draw's end (kind 4 joins school and university in the file's `site_kinds`). A pack built before
   T-2896 has no `sites` and sends none.
 - **Kept share.** The share of each zone's draw that stays in its own pack, by purpose, goes into
@@ -632,7 +635,9 @@ is known without its files (T-302, T-400):
   (only the zone under the centre when the view is over 400 km wide), and for every zone whose box,
   widened by 2 km, a loaded network's track meets; the network then opens over those masks (read from
   the save's nodes and curve points before the load, so it is derived once; a zone only the drawn
-  curves reach still costs a second opening; T-737). A
+  curves reach still costs a second opening; T-737). A load waits at most 20 s for its masks, and never twice for
+  one (T-4072): a mask later than that is installed when it lands, reworking only the track in its box, and until
+  then that track is priced as on land; a failed one under loaded track is fetched again (2 s, doubling to 30 s). A
   preview or an edit that makes track (a route, new PIs, a node moved) is first worked out, and if
   its geometry comes within 2 km of a zone whose mask is not in, it waits for the mask and is worked
   out again, so ground over water is never accepted because a mask was late. A mask that cannot be
@@ -652,7 +657,8 @@ is known without its files (T-302, T-400):
 - **Street speeds** (clock worker, T-1577): for a bus's speed, a zone's own pack is asked for ranges of its `.bin`
   (people and jobs per cell, the cell's zone, the zones' squares and land) whenever its mask is for the view or an
   edit, and where a bus route is drawn or loaded (a game's load: its bus routes' zones only, T-3686); nothing but a
-  load waits for it, and bus lines are timed again when it lands. A pack without those arrays
+  load waits for it. When it lands only the bus lines whose route meets its squares are timed again (all of them for the
+  first speeds of a game), and the clock worker sends a state only if one was [T-4155]. A pack without those arrays
   leaves its buses at the top speed (track-and-service.md 6.7).
 - **Outlines**: one source and line layer hold the outlines of the zones whose boxes meet the view,
   fetched as the view comes near them at zoom 5 to 10.5 (they fade out at 10.5); a zone's footprint
@@ -686,7 +692,7 @@ centre's (its own pack's; T-3621), else the registry centre; each pack the circl
 own trips, and trips between packs are left out. The well-known starts (every metro built as a city,
 the suggested starts and zones with over 1.5M people in the circle, 465) are cut 26.7% easy, 60% medium and
 13.3% hard (thirds with medium widened by 80% of its count, a fifth of that taken from easy and three fifths
-from hard: Anita, 2026-11-07, T-2748): easy from 12,175, medium from 3,998 (2026-11-18). The new game sheet's search names each result's tier, and the
+from hard: Anita, 2026-11-07, T-2748): easy from 12,178, medium from 4,140 (2026-11-23). The new game sheet's search names each result's tier, and the
 zoomed-out map colours unopened zones' dots by it until the first line is set up
 (ui-panels.md "The new game sheet", ui-demand-views.md "Zoomed far out"). Rerun the script after
 packs change; `--tiers` re-cuts in seconds.

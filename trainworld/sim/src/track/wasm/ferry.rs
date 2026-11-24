@@ -21,7 +21,7 @@ impl TrackApi {
     pub fn add_port(&mut self, x: f64, y: f64, bx: f64, by: f64, name: String) -> u32 {
         let node = self.w.net.alloc_node();
         let fare = self.neighbour_fare(x, y);
-        let st = StationData { platform: ferry::PORT_PLATFORM, name, named: false, built: false, off: false, upgrades: 0, berth: Some([quant(bx), quant(by)]), day: 0, one: 0, fare, own: String::new() };
+        let st = StationData { platform: ferry::PORT_PLATFORM, name, named: false, built: false, off: false, upgrades: 0, berth: Some([quant(bx), quant(by)]), day: 0, one: 0, fare, own: String::new(), road: None };
         let op = Op::Batch(vec![Op::Node { id: node, data: Some(NodeData { x: quant(x), y: quant(y), level: 0, flying: false }) }, Op::Station { node, data: Some(st) }]);
         let r = self.run(op);
         if r == 0 {
@@ -64,7 +64,7 @@ impl TrackApi {
         }
         let mut data = LineData {
             name, symbol: String::new(), colour, stops: ports.to_vec(), path: vec![], tph: [0.0; 3], trains: Some([0; 3]), auto: Some([high, medium, low]),
-            dwell_s, turnaround_s, cars: 1, fast: false, bus: None, ferry: Some(r), group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: true, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], rows: 0, x: Default::default(), fare_dist: false,
+            dwell_s, turnaround_s, cars: 1, fast: false, bus: None, ferry: Some(r), group: 0, group_name: String::new(), group_look: Default::default(), outer: vec![], day: 0, hand: false, one_way: true, limit: 0, twin: Default::default(), weekend: Default::default(), ones: vec![], only: vec![], rows: 0, x: Default::default(), fare_dist: false,
         };
         // T-3767: as a bus line's (`set_bus_line`)
         data.x = crate::track::net::Extra::of_high(&data);

@@ -18,18 +18,20 @@ import { setHiddenLinesSink, takeHiddenLines } from "../game/lineVisibility";
 import { takeDiagramCities } from "../game/diagramCities";
 import { hiddenZones, setGameStart } from "../game/realms";
 import { home } from "../game/home";
-import { fitView, holdForGameLoad, loadCannotFinish, markAlive } from "../game/loading";
+import { clockStepNow, fitView, holdForGameLoad, loadCannotFinish, markAlive, networkInWithoutTrips, noteClockStep, noteLoad, noteLoadSlot, tripsOff } from "../game/loading";
 import { incomeByDay, lastSaved, liveMoney, moneyState, moneyTerms, moneyWorld, setMoneyState } from "../game/money";
 import { zonesLoaded } from "../game/zones";
 import { chargeShares, lineShares, upkeepShares } from "../game/regionMoney";
-import { GOAL_SHARES, linePoints, STAR_SHARE } from "../game/points";
+import { linePoints } from "../game/points";
+import { goalsDue } from "../game/goalRules";
 import { AVERAGE_DAY, AWAY_DAY, awaySoon, BACK_DAY, DAY_KINDS, OUT_DAY, rushSoon } from "../game/days";
-import { demandByDay, demandView, marketIn, platformTransfers, roughZones, zoneViews } from "../game/demand";
+import { demandByDay, demandView, marketIn, platformTransfers, zoneViews } from "../game/demand";
 import { linesPending } from "../game/lineFigures";
 import { accountVersion, packArrivals, packRiders } from "../game/boarding";
 import { ask, designSpeed, guideFinished, lineDraft, marketOff, selection, tool } from "../game/ui";
+import { modelStopped } from "../game/modelStopped";
 import { afterStopEdits, flipSites, rightHand, say, setEditSink, stopsQueued, world, worldIsRows } from "../game/world";
-import type { LineInput, LineStats, RowFigs, StationInput, TrackEdge, TrackNode, WorldView } from "../game/types";
+import type { LineInput, LineStats, RowFigs, StationInput, StopOnly, TrackEdge, TrackNode, WorldView } from "../game/types";
 import type { ClockLine, ClockState, EditOp, FromClock, MoneyPatch, MoneyState, NetworkSnapshot, PaidFor, PiInput, RouteAsk, StationAt, ToClock } from "./protocol";
 import { applyPatch } from "./valuePatch";
 import { anchorVersion } from "../map/anchorVersion";
@@ -38,7 +40,7 @@ import { bandTry } from "../perfFlags";
 import { anchor, anchorWanted, EARTH_C, HOME_ANCHOR, makeAnchor, setAnchor, type Anchor } from "../map/geo";
 import { loadFailText } from "../game/loadText";
 import { noteOpenFailure, openedFine } from "../game/openFailures";
-import { decodeSave, isDamagedError, isUncheckedError, readStored, writePending, type GuideSave, type NewGameSpec, type PendingLoad, type SaveSlot } from "./saveFile";
+import { decodeSave, isDamagedError, isNewerError, isUncheckedError, readStored, writePending, type GuideSave, type NewGameSpec, type PendingLoad, type SaveSlot } from "./saveFile";
 import type { CloudContext } from "./cloud";
 import type { FrameSpec } from "../game/frame";
 import { dataUrl, TERRAIN_BASE } from "../game/dataBase";
@@ -49,7 +51,9 @@ import { saveRefusal } from "../game/memoryCheck";
 import { askBeforeLeaving, keepStorage } from "../game/saveSafety";
 import { afterPaint, BUSY_MS, expectedMs, hideBusy, learnBusy, showBusy } from "../game/busy";
 import { addTerrainGrid, dropTerrainGrids, groundNet, setTerrainIndex } from "../game/terrain";
+import { addTownOutline, clearTownOutlines } from "../map/townArea";
 import { letterOf } from "../game/lineLetter";
+import { pendingAnswer, pendingClear, pendingSent, pendingTaken, pendingWord } from "../game/pending";
 
 /** Text from the clock worker: it sends message keys (docs/localization.md "Workers"), worded here; anything else as it is. */
 /** T-3542: a line of four or five rows' figures (`ClockLine.rows`) as the panels read them. */
@@ -72,7 +76,7 @@ export const savedByHand = signal<number | null>(null);
 const PANEL_READS = new Set(["today", "linesPeriods", "linePeriods", "lineAccount"]);
 const PANEL_HOLD_MS = 250;
 /** T-2766: the line tool's reads of the track model's lines, which a stop click has changed already */
-const STOP_READS = new Set(["stopTiers", "stopGap", "insertStop", "passedStations"]);
+const STOP_READS = new Set(["stopTiers", "stopGap", "insertStop", "clickPath", "passedStations"]);
 /** T-2766: every other read waits until no stop click has been answered for this long, ms (the worker holds a stop
  * click's network as long): the panels ask a dozen after each world, 0.2 to 0.7 s of the worker's on New York's real
  * save, and the next click waited behind them */
@@ -285,14 +289,26 @@ function edgesOf(s: ClockState): TrackEdge[] {
   return out;
 }
 /** The UI's world view from the worker's state. */
+/** T-4178: `ClockState.turnLimits` by line id, then node. */
+function turnLimitsOf(v: Float64Array | undefined): Map<string, Map<number, number>> {
+  const out = new Map<string, Map<number, number>>();
+  for (let k = 0; v && k + 2 < v.length; k += 3) {
+    const id = String(v[k]);
+    const m = out.get(id) ?? new Map<number, number>();
+    out.set(id, m.set(v[k + 1], v[k + 2]));
+  }
+  return out;
+}
+
 function toWorld(s: ClockState): WorldView {
   let stations: StationInput[] = s.nodes
     .filter((n) => n.platform > 0)
     .map((n) => {
       let v = stationViews.get(n);
       if (!v) stationViews.set(n, v = {
-        id: String(n.id), num: n.id, name: n.name, lng: n.lng, lat: n.lat, x: n.x, y: n.y, level: n.level as any, length: n.platform, built: n.stationBuilt, off: n.stationOff, upgrades: n.upgrades, heading: n.heading, ...(n.fare ? { fare: n.fare } : {}), ...(n.named ? { named: true as const } : {}), ...(n.own ? { unbound: true as const } : {}), ...(n.hub !== undefined ? { hub: n.hub } : {}), ...(n.line ? { line: n.line } : {}), ...(n.port ? { port: n.port } : {}), ...(n.kind && n.kind >= 2 ? { tram: true as const } : {}),
+        id: String(n.id), num: n.id, name: n.name, lng: n.lng, lat: n.lat, x: n.x, y: n.y, level: n.level as any, length: n.platform, built: n.stationBuilt, off: n.stationOff, upgrades: n.upgrades, heading: n.heading, ...(n.fare ? { fare: n.fare } : {}), ...(n.named ? { named: true as const } : {}), ...(n.own ? { unbound: true as const } : {}), ...(n.hub !== undefined ? { hub: n.hub } : {}), ...(n.line ? { line: n.line } : {}), ...(n.port ? { port: n.port } : {}), ...(n.brtStation ? { brt: true as const } : {}), ...(n.kind === 2 || n.kind === 3 ? { tram: true as const } : {}),
         ...(n.one ? { one: n.one } : {}), ...(n.oneHeading !== undefined ? { oneHeading: n.oneHeading } : {}), ...(n.onePlatform ? { onePlatform: true as const } : {}),
+        ...(n.upgradeUpkeep ? { upgradeUpkeep: n.upgradeUpkeep } : {}),
       });
       return v;
     });
@@ -354,6 +370,7 @@ function toWorld(s: ClockState): WorldView {
       oneWayAt: Object.fromEntries(Array.from({ length: l.ways.length >> 1 }, (_, k) => [String(l.ways[2 * k]), l.ways[2 * k + 1]])),
       ...(l.backStops?.length ? { backStops: l.backStops.map(String) } : {}),
       ...(l.oneStops?.length ? { oneStops: l.oneStops.map(String) } : {}),
+      ...(l.stopOnly?.length ? { stopOnly: Object.fromEntries(Array.from({ length: l.stopOnly.length >> 1 }, (_, k) => [String(l.stopOnly![2 * k]), l.stopOnly![2 * k + 1] as StopOnly])) } : {}),
       hand: l.hand,
       loop: l.loopKind === 1 ? "circle" : l.loopKind === 2 ? "balloon" : null, // i18n-ignore
       oneWay: l.oneWay,
@@ -377,7 +394,7 @@ function toWorld(s: ClockState): WorldView {
   let nodes = lastNodeMap;
   if (!sameObjects(s.nodes, lastNodeRows)) {
     nodes = new Map<number, TrackNode>(
-      s.nodes.map((n) => [n.id, { id: n.id, x: n.x, y: n.y, lng: n.lng, lat: n.lat, level: n.level as any, ports: n.ports, builtPorts: n.builtPorts, flying: n.flying, platform: n.platform, ...(n.bus ? { bus: true as const } : {}), ...(n.port ? { port: true as const } : {}), ...(n.kind ? { kind: n.kind } : {}) }]),
+      s.nodes.map((n) => [n.id, { id: n.id, x: n.x, y: n.y, lng: n.lng, lat: n.lat, level: n.level as any, ports: n.ports, builtPorts: n.builtPorts, flying: n.flying, platform: n.platform, ...(n.bus ? { bus: true as const } : {}), ...(n.port ? { port: true as const } : {}), ...(n.brtStation ? { brtStation: true as const } : {}), ...(n.kind ? { kind: n.kind } : {}) }]),
     );
     lastNodeRows = s.nodes;
     lastNodeMap = nodes;
@@ -392,6 +409,7 @@ function toWorld(s: ClockState): WorldView {
       for (let k = 0; k + 2 < v.length; k += 3) m.set(v[k], { rho: v[k + 1], tph: v[k + 2] });
       return m;
     }),
+    turnLimits: turnLimitsOf(s.turnLimits),
     save: { cash: s.cash * 1e6, stations, lines, links: pairsOf(s.links ?? []), ...(s.buildings?.length ? { buildings: s.buildings } : {}) },
     lineStats,
     twins,
@@ -424,29 +442,53 @@ export function exportForShare(): Promise<Uint8Array | null> {
 /** T-3257: view a shared network (bytes `game/sharedSave.ts` checked): the game in hand is saved and the page reloads
  * into the network, held in no slot until the player saves it as `name` (T-3115 opened it as a copy in a new slot);
  * from the start menu, with no game in hand, it waits in storage for the reloaded page. A reason to show when it
- * cannot go, "" once it goes, null when the player chose to stay on a viewed game. */
-export async function openView(bytes: Uint8Array, name: string): Promise<string | null> {
-  const why = await saveRefusal({ bytes });
-  if (why && !why.soft) return why.text;
-  if (!await leaveViewed()) return null;
+ * cannot go, "" once it goes, null when the player chose to stay on a viewed game.
+ * T-3851: `trips` false opens it without calculating trips (`?trips=off`), so no memory check: the demand workers
+ * are what a big game's memory goes to. `ask` false skips the question before leaving a viewed game (the same
+ * network calculated). */
+export async function openView(bytes: Uint8Array, name: string, trips = true, ask = true): Promise<string | null> {
+  if (trips) {
+    const why = await saveRefusal({ bytes });
+    if (why && !why.soft) return why.text;
+  }
+  if (ask && !await leaveViewed()) return null;
   const pending: PendingLoad = { kind: "import", bytes, name, from: saveSlotsState.peek().active, view: true };
-  if (current?.running) { switchNow({ load: "file" }, pending); return ""; }
+  // T-4002: a viewed network opens paused
+  const params: Record<string, string> = trips ? { load: "file", paused: "1" } : { load: "file", trips: "off", paused: "1" };
+  if (current?.running) { switchNow(params, pending); return ""; }
   if (!await writePending(pending)) return t("clockClient.noStorage");
-  location.replace(pageWith({ load: "file" }));
+  location.replace(pageWith(params));
   return "";
+}
+/** T-3851: the game in hand, opened without calculating trips, opened again with them: a viewed network goes with its
+ * edits, a saved game is saved and reopened. A reason to show when it cannot go, "" once it goes. */
+export async function calculateTrips(): Promise<string> {
+  const v = saveSlotsState.peek().viewing;
+  if (!v) {
+    const key = saveSlotsState.peek().active;
+    if (!key) return t("clockClient.noStorage");
+    const why = await saveRefusal({ key });
+    if (why && !why.soft) return why.text;
+    switchNow({ slot: key });
+    return "";
+  }
+  const bytes = await exportForShare();
+  if (!bytes) return t("clockClient.reopenFailed");
+  return await openView(bytes, v.name, true, false) ?? "";
 }
 /** T-3257: before a viewed network (never saved) gives way to another game or the start menu, the player is asked;
  * true to go on. True at once for any other game. */
 export function leaveViewed(): Promise<boolean> {
   const v = saveSlotsState.peek().viewing;
-  if (!v || !current?.running) return Promise.resolve(true);
+  // a network not edited since it opened loses nothing
+  if (!v || !current?.running || !world.peek()?.canUndo) return Promise.resolve(true);
   return new Promise((done) => {
     ask.value = { text: t("clockClient.leaveView", { name: v.name }), yes: t("clockClient.leaveViewYes"), no: t("clockClient.leaveViewNo"), run: () => done(true), stay: () => done(false) };
   });
 }
 /** A save's bytes, in parts (T-3869: put in the file one by one, never joined here), downloaded as
  * "trainsworld-<name>-day-<day>.save". */
-function downloadSave(parts: Uint8Array[], name: string, day: number, slot?: string) {
+export function downloadSave(parts: Uint8Array[], name: string, day: number, slot?: string) {
   markDownloaded(slot); // T-1832: the "saved in this browser only" card has nothing more to say
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob(parts as BlobPart[], { type: "application/octet-stream" }));
@@ -475,7 +517,7 @@ export async function importGame(file: File, version?: { origin: string; edit: n
  * when the file cannot open. */
 export async function fileChoice(file: File, version?: { origin: string; edit: number }, warn?: boolean): Promise<GameChoice | string | { warn: string }> {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  try { await decodeSave(bytes); } catch (err) { return isDamagedError(err) ? t("clockWorker.saveDamaged") : isUncheckedError(err) ? loadFailText(String(err)) : t("clockClient.notSave"); }
+  try { await decodeSave(bytes); } catch (err) { return isDamagedError(err) ? t("clockWorker.saveDamaged") : isNewerError(err) ? t("clockWorker.newer") : isUncheckedError(err) ? loadFailText(String(err)) : t("clockClient.notSave"); }
   const why = await saveRefusal({ bytes }, warn);
   if (why) return why.soft ? { warn: why.text } : why.text;
   if (!await writePending({ kind: "import", bytes, name: file.name.replace(/\.save$/i, ""), from: "", ...version })) return t("clockClient.noStorage");
@@ -501,7 +543,7 @@ export function retryGround() {
 }
 
 /** T-1196: the URL switches that say which game a page opens (ui/StartMenu.tsx `choiceFromUrl`) */
-export const CHOICE_PARAMS = ["new", "city", "mode", "synth", "demandTest", "continue", "slot", "load", "real", "next", "at"];
+export const CHOICE_PARAMS = ["new", "city", "mode", "synth", "demandTest", "continue", "slot", "load", "real", "next", "at", "trips"];
 /** This page's URL with `params` in place of its game switches; none: the start menu (`?paused=1`, a
  * check's paused clock, stays with a game and goes with the menu). */
 export function pageWith(params: Record<string, string>): string {
@@ -588,6 +630,8 @@ export interface GameChoice {
   game?: NewGameSpec;
   /** T-1196: the game is the one the saves panel left in storage before the page reloaded */
   pending?: boolean;
+  /** T-3851: `?trips=off`: the game opens without calculating trips (no demand pool) */
+  noTrips?: boolean;
 }
 
 /** One request in flight to the worker; a newer one replaces a waiting one. */
@@ -621,6 +665,9 @@ class Newest<Q, A extends unknown[]> {
 
 /** T-2710: the waits before each new start of a clock worker whose script did not download (as wasmInit.ts's) */
 const BOOT_WAITS_MS = [1_000, 4_000];
+/** T-4072: how long a clock worker's script may take to come (twice), and its WASM to run once it has, while the
+ * page is visible: the script is a few hundred KB and the WASM 2.5 MB, so these allow a very slow connection */
+const BOOT_LIMIT_MS = 60_000, READY_LIMIT_MS = 180_000, START_WATCH_MS = 5_000;
 
 export class ClockClient {
   private worker: Worker | null = null;
@@ -638,10 +685,15 @@ export class ClockClient {
    * behind it, the last trips' age, the last error (seconds) */
   diagnosis(): string {
     const now = performance.now(), first = this.sent.values().next().value;
+    const ground = groundNet.peek();
     return [
       first ? `oldest unanswered ${first.what} ${Math.round((now - first.at) / 1000)}s, ${this.sent.size} waiting` : "nothing unanswered", // i18n-ignore
       `trips ${Number.isNaN(this.tripsAt) ? "none yet" : Math.round((now - this.tripsAt) / 1000) + "s ago"}`, // i18n-ignore
       `status ${clockWorkerStatus.peek()}`,
+      // T-4072: whether the worker started and its script came, and its game load's last step until the game is in
+      !this.worker ? "worker not started" : !this.booted ? `worker script not in after ${Math.round((now - this.spawnAt) / 1000)}s${this.respawned ? " (started again)" : ""}` : "", // i18n-ignore
+      !world.peek() && clockStepNow() ? `load step ${clockStepNow()}` : "", // i18n-ignore
+      ground.pending ? `ground pending ${ground.pending}` : "", // i18n-ignore
       this.groundWhy.length ? `ground failed ${this.groundWhy.join(", ")}` : "", // i18n-ignore
       this.lastTrouble ? `last error ${this.lastTrouble.slice(0, 200)}` : "", // i18n-ignore
     ].filter(Boolean).join("; ");
@@ -659,6 +711,8 @@ export class ClockClient {
   /** the last game load: where it came from and whether its save was converted to the world frame
    * (T-308; read by `?debug=1` checks, the player is told nothing) */
   lastLoad: { from: "autosave" | "file" | "new"; converted: boolean } | null = null;
+  /** T-3933: the slot the last "loaded" named ("" for none): noted for a retry once the saves list shows it written */
+  private loadedInto = "";
   /** the renderer's hooks, set by main.ts */
   onState: (s: ClockState) => void = () => {};
   /** T-2159: the network diagram's graph, while the diagram is shown (diagram/view.ts) */
@@ -725,6 +779,8 @@ export class ClockClient {
   start(choice: GameChoice) {
     if (this.worker) return;
     this.spawnWorker();
+    this.watchStart();
+    noteLoad("clock worker started");
     const q = new URLSearchParams(location.search);
     const fresh = !!choice.fresh;
     // T-320: a check or stress page never writes over a saved game
@@ -733,12 +789,13 @@ export class ClockClient {
     if (!choice.slot) try { slot = localStorage.getItem("anitabuilder-save-slot") || slot; } catch { /* storage unavailable */ }
     const backupMs = Number(q.get("backupMs")) || undefined;
     const readFails = q.get("debug") === "1" ? Number(q.get("readFails")) || undefined : undefined;
+    const maskWaitMs = q.get("debug") === "1" && q.has("maskWaitMs") ? Number(q.get("maskWaitMs")) : undefined;
     const loadPanic = q.get("debug") !== "1" ? undefined : q.get("loadPanic") === "1" ? true : q.get("loadPanic") === "late" ? "late" as const : undefined;
     const room = q.get("debug") === "1" ? q.get("saveRoom") : null;
     const saveRoom = room === "big" || room === "all" ? room : undefined;
     this.patchMode = q.get("patch") ?? "1";
     // (first, before any message posted ahead of the start)
-    this.waiting.unshift([{ kind: "init", pack: dataUrl(this.cityId), terrain: TERRAIN_BASE, fresh, testPage: this.testPage, slot, newSlot: choice.newSlot, backupMs, game: choice.game, pending: choice.pending, patch: this.patchMode, guide: !guideFinished.peek(), bandMode: bandTry(), readFails, loadPanic, saveRoom, heapStep: heapStep() } satisfies ToClock, choice.game?.real ? [choice.game.real] : []]);
+    this.waiting.unshift([{ kind: "init", pack: dataUrl(this.cityId), terrain: TERRAIN_BASE, fresh, testPage: this.testPage, slot, newSlot: choice.newSlot, backupMs, game: choice.game, pending: choice.pending, patch: this.patchMode, guide: !guideFinished.peek(), bandMode: bandTry(), readFails, maskWaitMs, loadPanic, saveRoom, heapStep: heapStep() } satisfies ToClock, choice.game?.real ? [choice.game.real] : []]);
     // T-2802: the page's parse of the outlines, copied, in place of the worker's own fetch and parse
     void packedOutlines().then((packed) => this.post({ kind: "outlines", packed }));
   }
@@ -747,9 +804,49 @@ export class ClockClient {
    * transfers whole, so a worker whose script did not download is started again with all of them */
   private booted = false;
   private bootTries = 0;
+  /** T-4072: when the worker in hand was made, whether its start was tried again, its WASM running ("ready") */
+  private spawnAt = 0;
+  private respawned = false;
+  private wasmReady = false;
+  /** T-4072: the worker's start watched while the page is visible: a script not in after BOOT_LIMIT_MS starts it once
+   * more; not in again, or its WASM not running READY_LIMIT_MS after the script, the load fails saying the game's
+   * files did not finish downloading (Safari 17.6 players sat 13 minutes on silent workers). `?startMs=N` sets both
+   * (checks); `?debug=1&clockStall=boot` drops the worker's `booted` (dev). */
+  private watchStart() {
+    const q = new URLSearchParams(location.search), n = Number(q.get("startMs"));
+    const bootLimit = n > 0 ? n : BOOT_LIMIT_MS, readyLimit = n > 0 ? n : READY_LIMIT_MS;
+    let waited = 0, last = performance.now();
+    const firstSpawn = this.spawnAt;
+    const timer = setInterval(() => {
+      const now = performance.now(), step = now - last;
+      last = now;
+      if (this.wasmReady || world.peek() || clockWorkerStatus.peek().startsWith("failed")) return clearInterval(timer);
+      // a hidden or frozen page counts no wait (its downloads may be held)
+      if (document.visibilityState !== "visible" || step > 3 * START_WATCH_MS) return;
+      waited += step;
+      if (!this.booted && waited >= bootLimit) {
+        if (!this.respawned) {
+          console.warn(`clock worker: its script not in after ${Math.round(waited / 1000)} s; starting it again`); // i18n-ignore
+          this.respawned = true;
+          waited = 0;
+          this.worker?.terminate();
+          this.spawnWorker();
+          return;
+        }
+        clearInterval(timer);
+        this.failed(`its script did not arrive, started twice, ${Math.round((now - firstSpawn) / 1000)} s`, "timeout"); // i18n-ignore
+      } else if (this.booted && waited >= readyLimit) {
+        clearInterval(timer);
+        this.failed(`its WebAssembly did not start, ${Math.round(waited / 1000)} s after its script`, "timeout"); // i18n-ignore
+      }
+    }, n > 0 ? Math.min(START_WATCH_MS, Math.max(100, n / 4)) : START_WATCH_MS);
+    this.startWaitReset = () => { waited = 0; };
+  }
+  private startWaitReset = () => {};
   private spawnWorker() {
     const w = new Worker(new URL("./clock.worker.ts", import.meta.url), { type: "module" });
     this.worker = w;
+    this.spawnAt = performance.now();
     attachClockTrace(w);
     this.booted = false;
     w.onmessage = (e: MessageEvent<FromClock>) => this.arrive(e.data);
@@ -767,16 +864,24 @@ export class ClockClient {
     w.onmessageerror = () => this.failed("a message could not be read"); // i18n-ignore
   }
   private onBooted() {
+    // (dev, T-4072: `?debug=1&clockStall=boot` the script never comes; `=ready` it comes and its WASM never starts)
+    const stall = import.meta.env.DEV && new URLSearchParams(location.search).get("debug") === "1" ? new URLSearchParams(location.search).get("clockStall") : null;
+    if (stall === "boot") return;
     this.booted = true;
+    this.startWaitReset();
+    noteClockStep("script in"); // i18n-ignore
+    if (stall === "ready") return;
     for (const [msg, transfer] of this.waiting) this.worker!.postMessage(msg, transfer);
     this.waiting = [];
   }
 
   /** T-950: the worker failed; before its first game no game will come, so the card gives way to the
-   * failure screen */
-  private failed(why: string, storage = false) {
+   * failure screen. `storage`: the saved game could not be read; `timeout` (T-4072): its start never finished. */
+  private failed(why: string, kind: "error" | "storage" | "timeout" = "error") {
     clockWorkerStatus.value = "failed to load: " + why; // i18n-ignore
-    if (!world.peek()) loadCannotFinish(t(storage ? "clockClient.storageUnreadable" : "clockClient.cannotStart", { why }), true);
+    if (world.peek()) return;
+    if (kind === "timeout") loadCannotFinish(`${t("clockClient.startTimeout")} (${why})`, true); // i18n-ignore: the reason is for the report
+    else loadCannotFinish(t(kind === "storage" ? "clockClient.storageUnreadable" : "clockClient.cannotStart", { why }), true);
   }
 
   constructor(cityId = HOME_CITY) {
@@ -793,6 +898,7 @@ export class ClockClient {
     effect(() => this.post({ kind: "bindNew", on: bindNewStations.value }));
     current = this;
     if (moddedWhy.length) this.post({ kind: "modded", why: moddedWhy });
+    if (tripsOff.peek()) this.post({ kind: "moneyFrozen" }); // T-3851
     // The worker settles money from the clock (T-028, T-284): tell it each time the
     // clock is set, paused, resumed or sped up.
     const sendClock = () => this.post({ kind: "clock", t: clock.now(), rate: clock.ticking ? clock.rate() : 0, at: performance.timeOrigin + performance.now(), game: gameStamp.peek() });
@@ -887,13 +993,7 @@ export class ClockClient {
       // from figures before the market's result while the game has one)
       const d = demandByDay.value[AVERAGE_DAY];
       if (!marketIn(d) && !marketOff()) return;
-      for (const [id, v] of zoneViews(d)) {
-        // (T-1223: never from rough figures, whose noise could cross a mark)
-        if (!v.final || roughZones.value.has(id)) continue;
-        if (v.split.train >= STAR_SHARE && m.stars?.[id] === undefined) this.post({ kind: "star", zone: id });
-        // T-1437: the higher goals the same way
-        for (const g of GOAL_SHARES) if (g !== STAR_SHARE && v.split.train >= g && m.goals?.[id]?.[g] === undefined) this.post({ kind: "star", zone: id, share: g });
-      }
+      for (const g of goalsDue(zoneViews(d), m)) this.post({ kind: "star", ...g });
     });
     // Demand's riders for the boarding account (T-164): each new result, every kind of day's
     // (T-260); the trains and platforms of each hour read their own day's.
@@ -1094,7 +1194,17 @@ export class ClockClient {
 
   /** A state expected to freeze the page past BUSY_MS here (a big network, or one redrawn at a new
    * draw anchor) waits a frame with the busy tag up; every message after it waits behind it. */
+  /** T-4145: messages in the order they arrived (game/pending.ts): a state held or deferred keeps its place */
+  private arrived = 0;
+  private orders = new WeakMap<object, number>();
+  /** the place in arrival order of a message, or of a state's `state` (main.ts, when its network is set) */
+  orderOf(m: object): number {
+    return this.orders.get(m) ?? this.arrived;
+  }
   private arrive(msg: FromClock) {
+    const order = ++this.arrived;
+    this.orders.set(msg, order);
+    if (msg.kind === "state") this.orders.set(msg.state, order);
     if (msg.kind === "edited") trace("clock-answer", { seq: msg.seq, ok: msg.ok, ms: msg.ms });
     if (msg.kind === "error") trace("clock-error", msg.message);
     if (this.deferred) { this.deferred.push(msg); return; }
@@ -1160,11 +1270,15 @@ export class ClockClient {
     worldIsRows.value = !!msg.state.rows;
     if (msg.state.rightHand !== undefined) rightHand.value = msg.state.rightHand;
     world.value = toWorld(msg.state);
+    // T-4145: the panels and money of every edit whose word came before this state are in it
+    pendingTaken(this.orderOf(msg), { rows: true, money: true });
+    if (world.value && !msg.state.rows) noteLoad("network in the page", { stations: world.value.save.stations.length, lines: world.value.save.lines.length });
     const es = this.earlyShares;
     this.earlyShares = null;
     if (es && world.value) this.post({ kind: "chargeShares", seq: es.seq, ...chargeShares(this.worldBefore, world.value, es.line, es.paid) });
     // T-2766: rows alone leave the renderer's network as it is until the full state
     if (!msg.state.rows) this.onState(msg.state);
+    if (!msg.state.rows && this.lastLoad) networkInWithoutTrips(); // T-3851: with trips off, the loaded network is the whole load
     if (moved) {
       anchorVersion.value = a.version; // the demand views rebuild at it (T-317)
       this.onAnchor(a);
@@ -1189,16 +1303,22 @@ export class ClockClient {
     // on the new run profiles (trains jumped, or stayed a frame on a line that had lost its service),
     // and the demand views build once. Not when the draw anchor moves (its listeners need the network
     // at once), and never past HOLD_MS.
-    if (this.held && !(msg.kind === "trips" && msg.version < this.held.state.version) && msg.kind !== "cash") this.release();
+    if (this.held && !(msg.kind === "trips" && msg.version < this.held.state.version) && msg.kind !== "cash" && msg.kind !== "loadStep") this.release();
     // T-950: the steps toward a loading card's game (not the money ticks, which come regardless)
-    if (msg.kind === "ready" || msg.kind === "loaded" || msg.kind === "state" || msg.kind === "snapshot" || msg.kind === "stationsAhead") markAlive();
+    if (msg.kind === "ready" || msg.kind === "loaded" || msg.kind === "state" || msg.kind === "snapshot" || msg.kind === "stationsAhead" || msg.kind === "loadStep") markAlive();
     switch (msg.kind) {
       case "booted":
         this.onBooted();
         break;
       case "ready":
+        pendingClear(); // a worker started again answers nothing it had
         clockWorkerStatus.value = `ready in ${msg.initMs.toFixed(0)} ms`; // i18n-ignore
+        this.wasmReady = true;
+        noteClockStep("track model ready"); // i18n-ignore
         setWorldFrame(msg.frame);
+        break;
+      case "loadStep":
+        noteClockStep(msg.step);
         break;
       case "error":
         console.warn("clock worker:", msg.message);
@@ -1207,12 +1327,19 @@ export class ClockClient {
       case "recovered":
         console.error("clock worker:", msg.detail);
         this.lastTrouble = msg.detail;
-        if (msg.down) clockWorkerStatus.value = "track model down after a panic"; // i18n-ignore
-        say(workerText(msg.notice), true);
+        if (msg.down) {
+          clockWorkerStatus.value = "track model down after a panic"; // i18n-ignore
+          modelStopped.value = true; // T-4109: its notice says it
+        } else say(workerText(msg.notice), true);
+        break;
+      case "refused":
+        // T-4109: the first refusal puts the stopped notice up; a later one (a save the player asked for) answers with its text
+        if (!modelStopped.value) modelStopped.value = true;
+        else say(workerText(msg.notice), true);
         break;
       case "failed":
         console.error("clock worker:", msg.error);
-        this.failed(msg.error, msg.storage);
+        this.failed(msg.error, msg.storage ? "storage" : "error");
         break;
       case "state": {
         const st = msg.state;
@@ -1237,12 +1364,14 @@ export class ClockClient {
           break;
         }
         setMoneyState(msg.money!);
+        pendingTaken(this.orderOf(msg), { money: true });
         break;
       case "diagramGraph":
         this.onDiagram(msg.graphs, !!msg.cut, msg.whole);
         break;
       case "cash": // T-284: fares landing, running costs draining
         liveMoney.value = { cash: msg.cash, today: msg.today, hour: msg.hour, regions: msg.regions };
+        pendingTaken(this.orderOf(msg), { money: true });
         break;
       case "opened":
         // T-975: a save older than its start zone shows the realm it opens in
@@ -1282,6 +1411,12 @@ export class ClockClient {
       case "terrainIndex":
         setTerrainIndex(msg.bytes);
         break;
+      case "town":
+        addTownOutline(msg.id, msg.outline);
+        break;
+      case "townClear":
+        clearTownOutlines();
+        break;
       case "ground":
         groundNet.value = { pending: msg.pending, failed: msg.failed };
         this.groundWhy = msg.why;
@@ -1294,6 +1429,8 @@ export class ClockClient {
         setWorldFrame(msg.frame);
         this.post({ kind: "bindNew", on: bindNewStations.peek() });
         this.lastLoad = { from: msg.from, converted: !!msg.converted };
+        noteLoad(msg.error ? "clock worker: game did not open" : `game open in clock worker (${msg.from})`);
+        this.loadedInto = msg.error ? "" : msg.slot ?? "";
         this.fitState = this.fitNext && msg.from !== "new" && !msg.error;
         this.fitNext = false;
         if (msg.error) {
@@ -1314,6 +1451,7 @@ export class ClockClient {
         if (msg.reason === "rebuilt") this.resendFigures(); // T-2848: only here; a real load would send the last game's
         // T-715: the clock the hold above sent is the old game's, which the worker ignores
         gameStamp.value = msg.game;
+        pendingClear();
         clock.set(msg.clock);
         if (msg.from === "file") say(t("clockClient.loaded", { day: Math.floor(msg.clock / 86400) }));
         if (msg.from === "new" && !msg.error) say(t("clockClient.newGame"));
@@ -1348,8 +1486,10 @@ export class ClockClient {
         break;
       case "saveSlots": {
         const before = saveSlotsState.value;
-        saveSlotsState.value = { slots: msg.slots, active: msg.active, game: msg.game, writable: msg.writable, at: msg.at, reason: workerText(msg.reason), error: workerText(msg.error), backups: msg.backups, newer: msg.newer, viewing: msg.viewing };
+        saveSlotsState.value = { slots: msg.slots, active: msg.active, game: msg.game, writable: msg.writable, at: msg.at, reason: workerText(msg.reason), error: workerText(msg.error), backups: msg.backups, viewing: msg.viewing };
         lastSaved.value = msg.at;
+        // T-3933: the slot a load that dies is opened again from: the one the game went into, once it is written
+        if (this.loadedInto && msg.active === this.loadedInto && msg.slots.some((s) => s.key === msg.active && !s.unreadable)) noteLoadSlot(msg.active);
         if (msg.at > 0 && !this.testPage) void keepStorage(); // T-1214: a slot is written
         // a test page does not make its slot the one the next page opens, until it changes (T-320)
         if (msg.active && ((!this.sawSlots && !this.testPage) || before.active !== msg.active)) {
@@ -1390,7 +1530,12 @@ export class ClockClient {
         this.tripsAt = performance.now();
         this.onTrips(msg.epoch, msg.version, msg.trips, msg.board, msg.ends, msg.nexts, msg.bays);
         break;
+      case "applied":
+        pendingWord(msg.seq, msg.word, this.orderOf(msg), !!msg.noNet);
+        break;
       case "edited": {
+        // T-4145: what it showed ahead goes in the frame a refusal lands (before the notice, which waits for the promise)
+        pendingAnswer(msg.seq, msg.ok, this.orderOf(msg));
         const f = this.pending.get(msg.seq);
         this.pending.delete(msg.seq);
         this.sent.delete(msg.seq);
@@ -1559,9 +1704,12 @@ export class ClockClient {
 
   /** Send an edit; the promise resolves with the worker's answer. `early` "rows": a stop click's (T-2766), answered
    * once the world holds it, its network a moment after the clicks stop. `game`: the `gameStamp` it was made under,
-   * for an edit sent later than made (T-3734). */
+   * for an edit sent later than made (T-3734); else the one now (T-4214: every edit is refused in a game it was not made in). */
   edit(op: EditOp, early: boolean | "rows" = false, game?: number): Promise<EditAnswer> {
-    const seq = ++this.seq, stamp = game === undefined ? {} : { game };
+    const seq = ++this.seq, stamp = { game: game ?? gameStamp.peek() };
+    // T-4145: an undo names the newest edit still out, so it takes back nothing when that one is refused
+    if ((op.op === "undo" || op.op === "redo") && op.after === undefined && this.pending.size) op = { ...op, after: Math.max(...this.pending.keys()) };
+    pendingSent(seq, op, this.pending.size === 0, early === "rows");
     if (early === "rows") {
       this.stopsOut++;
       this.lastStopSent = performance.now();

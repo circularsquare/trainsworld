@@ -11,7 +11,8 @@ import { splitOf } from "../game/types";
 import { BACK_DAY, DEMAND_DAYS, OUT_DAY, type DemandDay } from "../game/days";
 import type { Corridors, DemandView, FarEnd, Flows, IntercityDemand, IntercitySelection, IntercityStation, LineDemand, PlaceFlows, PlaceTrips, PurposeDemand, StationDemand, ZoneTrips } from "../game/demand";
 import type { DealtCells } from "../game/farChunks";
-import { arriveOf, comeMax, type FromDemand } from "./demandProtocol";
+import { arriveOf, comeMax, type ExactParts, type FromDemand } from "./demandProtocol";
+import { addInto, toF32 } from "./exactSum";
 import { marketPartsOn } from "./marketParts";
 import { mergeEveryday } from "./selectionMerge";
 
@@ -292,10 +293,48 @@ type PeriodResult = Extract<FromDemand, { kind: "result" }>;
  * the local fare sensitivity's reach worked out again from the added sums (`fareRaw`). The round,
  * the cluster and the version are the first part's; the times the longest part's.
  */
-export function addParts(list: readonly PeriodResult[]): PeriodResult {
+/**
+ * T-3373 B: parts from workers holding different populations can carry different purpose blocks (each worker's
+ * own everyday kinds; the longer trips only from the market's holder). Each part laid out on the keys of them all,
+ * as one worker holding every population gives them: the purposes a prefix of the commutes and `EVERYDAY_KEYS`,
+ * then the longer trips; each city's `cityParts` padded to as many purposes. Parts that agree are returned as they came.
+ */
+function alignParts(list: readonly PeriodResult[]): readonly PeriodResult[] {
+  if (list.some((r) => !r.parts)) return list;
+  const keys = list.map((r) => r.parts!.keys);
+  if (keys.every((k) => k.join() === keys[0].join())) return list;
+  let local: string[] = [];
+  for (const k of keys) { const l = k.filter((x) => x !== "longer"); if (l.length > local.length) local = l; }
+  const all = keys.some((k) => k.includes("longer")) ? [...local, "longer"] : local;
+  const lay = <T extends Float32Array | Float64Array>(v: T, from: string[]): T => {
+    const nr = v.length / from.length, out = new (v.constructor as new (n: number) => T)(all.length * nr);
+    from.forEach((k, i) => out.set(v.subarray(i * nr, (i + 1) * nr), all.indexOf(k) * nr));
+    return out;
+  };
+  return list.map((r) => {
+    const from = r.parts!.keys;
+    if (from.join() === all.join()) return r;
+    const p = r.parts!, e = r.exact;
+    const cityParts = r.cityParts && Object.fromEntries(Object.entries(r.cityParts).map(([id, v]) => [id, [...v, ...new Array(Math.max(0, 3 * local.length - v.length)).fill(0)]])) as Record<CityId, number[]>;
+    return { ...r, cityParts, parts: { ...p, keys: all, seg: lay(p.seg, from), board: lay(p.board, from), alight: lay(p.alight, from) },
+      ...(e ? { exact: { ...e, parts: { ...e.parts, seg: lay(e.parts.seg, from), board: lay(e.parts.board, from), alight: lay(e.parts.alight, from) } } } : {}) };
+  });
+}
+
+export function addParts(parts: readonly PeriodResult[]): PeriodResult {
+  const list = alignParts(parts);
   const [first] = list;
   const market = list.find((r) => r.intercitySummary.length) ?? first;
-  const sum = <T extends Float32Array>(get: (r: PeriodResult) => T | undefined): T | undefined => {
+  // T-3373 B stage 2: parts summed in whole steps (`exactSum`) carry their sums unrounded, which add exactly
+  // here and are rounded to f32 once, so the parts' figures are those of one worker adding every population
+  const exact = list.every((r) => r.exact) ? list.map((r) => r.exact!) : null;
+  const sum64 = (get: (e: ExactParts) => Float64Array | undefined): Float32Array | undefined => {
+    let out: Float64Array | undefined;
+    for (const e of exact!) { const v = get(e); if (v) out = out ? addInto(out, v) : v.slice(); }
+    return out && toF32(out);
+  };
+  const sum = <T extends Float32Array>(get: (r: PeriodResult) => T | undefined, ex?: (e: ExactParts) => Float64Array | undefined): T | undefined => {
+    if (exact && ex) return sum64(ex) as T | undefined;
     let out: T | undefined;
     for (const r of list) {
       const v = get(r);
@@ -326,10 +365,10 @@ export function addParts(list: readonly PeriodResult[]): PeriodResult {
     const reach = d < 0 && km > 0 && rail > 0 ? dKm / d / (km / rail) : 1;
     fareSense = [d, market.fareSense[1], reach, market.fareSense[3]];
   }
-  const { part: _p, fareRaw: _f, come: _c, ...base } = first;
-  const board = sum((r) => r.board)!;
+  const { part: _p, fareRaw: _f, come: _c, exact: _e, ...base } = first;
+  const board = sum((r) => r.board, (e) => e.board)!;
   // T-1607: `arrive` is not a sum: worked out again from the parts' boardings added up
-  const arrive = list.every((r) => r.come) ? arriveOf(comeMax(sum((r) => r.come![0])!, sum((r) => r.come![1])!), sum((r) => r.come![1])!, board) : sum((r) => r.arrive);
+  const arrive = list.every((r) => r.come) ? arriveOf(comeMax(sum((r) => r.come![0], (e) => e.come?.[0])!, sum((r) => r.come![1], (e) => e.come?.[1])!), sum((r) => r.come![1], (e) => e.come?.[1])!, board) : sum((r) => r.arrive);
   return {
     ...base,
     summary,
@@ -344,15 +383,15 @@ export function addParts(list: readonly PeriodResult[]): PeriodResult {
     corridorRail: market.corridorRail,
     elsewhere: market.elsewhere,
     everydayPlaces: market.everydayPlaces,
-    seg: sum((r) => r.seg)!,
+    seg: sum((r) => r.seg, (e) => e.seg)!,
     board,
-    alight: sum((r) => r.alight)!,
+    alight: sum((r) => r.alight, (e) => e.alight)!,
     arrive,
-    loadOfCrush: sum((r) => r.loadOfCrush)!,
-    fareX: sum((r) => r.fareX),
-    baseX: sum((r) => r.baseX),
-    xferIn: sum((r) => r.xferIn),
-    parts: first.parts && { keys: first.parts.keys, seg: sum((r) => r.parts?.seg)!, board: sum((r) => r.parts?.board)!, alight: sum((r) => r.parts?.alight)!, ...(list.some((r) => r.parts?.lean) ? { lean: sum((r) => r.parts?.lean) } : {}) },
+    loadOfCrush: sum((r) => r.loadOfCrush, (e) => e.loadOfCrush)!,
+    fareX: sum((r) => r.fareX, (e) => e.fareX),
+    baseX: sum((r) => r.baseX, (e) => e.baseX),
+    xferIn: sum((r) => r.xferIn, (e) => e.xferIn),
+    parts: first.parts && { keys: first.parts.keys, seg: sum((r) => r.parts?.seg, (e) => e.parts.seg)!, board: sum((r) => r.parts?.board, (e) => e.parts.board)!, alight: sum((r) => r.parts?.alight, (e) => e.parts.alight)!, ...(list.some((r) => r.parts?.lean) ? { lean: sum((r) => r.parts?.lean, (e) => e.parts.lean) } : {}) },
     ms: most((r) => r.ms),
     setupMs: most((r) => r.setupMs),
     memBytes: most((r) => r.memBytes),
@@ -523,7 +562,8 @@ function dayResult(dayTable: ArrayLike<number>, r: DayResult, q: number, day: De
   // place's mix of purposes taken as the market's)
   const ratio = (k: number) => (ip && intercityParts && ip[k] > 0 ? intercityParts[k] / ip[k] : 1);
   const [el, er, ew] = [ratio(4), ratio(5), ratio(6)];
-  const everydayPlaces = r.everydayPlaces?.map((v, i) => (i % 4 === 1 ? v * el : i % 4 === 2 ? v * er : i % 4 === 3 ? v * ew : v));
+  // (T-2216: the legs between two lands, the 5th, go by the outings' factor as the legs do)
+  const everydayPlaces = r.everydayPlaces?.map((v, i) => (i % 5 === 1 || i % 5 === 4 ? v * el : i % 5 === 2 ? v * er : i % 5 === 3 ? v * ew : v));
   const summary = r.summary.slice();
   summary[1] = summary[2] = summary[3] = 0;
   for (const v of [...Object.values(citySummary), intercitySummary]) for (const k of [1, 2, 3]) summary[k] += v[k] ?? 0;
@@ -660,16 +700,16 @@ function dayViewsOf(input: DayInput, day: DemandDay, res: DayResult[]): DayViews
   // the regional layer between places: longer trips and (T-276) commutes between zones together
   let interTrips = 0, interRail = 0, commuteTrips = 0, commuteRail = 0;
   const elsewhere = Array.from({ length: input.places }, () => 0);
-  // T-3503: each place's everyday outings across a zone line: legs, rail legs, walking legs
-  const everydayAt = new Map<number, [number, number, number]>();
+  // T-3503: each place's everyday outings across a zone line: legs, rail legs, walking legs, (T-2216) legs with no way
+  const everydayAt = new Map<number, [number, number, number, number]>();
   for (const r of res) {
     interTrips += r.intercitySummary[1] ?? 0; interRail += r.intercitySummary[2] ?? 0;
     if (r.intercityParts && r.intercityParts.length >= 4) { commuteTrips += r.intercityParts[2]; commuteRail += r.intercityParts[3]; }
     r.elsewhere?.forEach((v, p) => { if (p < elsewhere.length) elsewhere[p] += v; });
     const e = r.everydayPlaces ?? [];
-    for (let i = 0; i + 3 < e.length; i += 4) {
-      const t = everydayAt.get(e[i]) ?? everydayAt.set(e[i], [0, 0, 0]).get(e[i])!;
-      t[0] += e[i + 1]; t[1] += e[i + 2]; t[2] += e[i + 3];
+    for (let i = 0; i + 4 < e.length; i += 5) {
+      const t = everydayAt.get(e[i]) ?? everydayAt.set(e[i], [0, 0, 0, 0]).get(e[i])!;
+      t[0] += e[i + 1]; t[1] += e[i + 2]; t[2] += e[i + 3]; t[3] += e[i + 4];
     }
   }
   const everyday = [...everydayAt].sort((x, y) => x[0] - y[0]).flatMap(([p, t]) => [p, ...t]);

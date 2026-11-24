@@ -107,7 +107,10 @@ uniform int u_sel_n;         // T-1812: more lines drawn selected, a selected gr
 uniform int u_sel_set[${SEL_SET_MAX}];
 uniform int u_sel_edge;
 uniform ivec2 u_hot;         // the hovered line and bare track edge, -1 none (T-730)
-uniform ivec2 u_hide;        // T-2763: two edges just removed, not drawn before the state without them lands, -2 none
+uniform highp sampler2D u_ahead_lines; // T-4145: per line id (LINES_W wide), 1: drawn ahead of the network (map/lineAhead.ts), its network strokes not
+uniform highp sampler2D u_ahead_edges; // per edge id (TEX_W wide), 1: neither track nor lines on it drawn from the network
+uniform ivec2 u_ahead_n;     // how many line and edge ids those cover, 0 none
+uniform int u_ahead;         // T-4114: 1 for the passes drawing the strokes ahead
 uniform int u_only_sel;
 uniform int u_bp_part;       // T-695: 0 every stroke, 1 all but blueprint, 2 blueprint only
 uniform vec4 u_lanes;        // T-658: 4 m in px, how far the tracks have parted (0-1), how far the
@@ -168,6 +171,8 @@ flat out vec4 v_stripe;     // T-817: high-speed track's centre line, its colour
 flat out float v_stripe_only; // 1: only that line is drawn (bare track between its parted tracks)
 flat out vec4 v_wire;       // T-2927: a tram's wires, their colour and how far each one's middle is from the centre (px)
 flat out float v_wire_hw;   // and each one's half width (px), 0 none
+flat out float v_wire_dash; // T-3378: a busway's centre line dashed at this period (px), 0 solid
+flat out float v_road;      // T-3378: 1 on a built busway, drawn as a road the bus lines under it show through
 flat out float v_dash;      // T-1284: the red band's dash period (px), 0 for every other stroke
 out float v_along;          // T-2184: px along the stroke's run, so dashes keep one length round curves
 flat out vec4 v_inner;      // T-2184: a band's red edges over its neighbours: its colour's half width, the red's and the rim's px, strength; 0 none
@@ -180,15 +185,20 @@ void main() {
   int flags = int(a_flags + 0.5);
   bool hsr = (flags & 256) != 0;
   bool tram = (flags & 4096) != 0;
+  // T-3378: a busway, drawn as tram track (its flag is set too) in a road's grey with a dashed white centre line
+  bool busway = (flags & 16384) != 0;
   bool striped = hsr;
   v_stripe = vec4(0.0);
   v_stripe_only = 0.0;
   v_wire = vec4(0.0);
   v_wire_hw = 0.0;
+  v_wire_dash = 0.0;
+  v_road = 0.0;
   v_dash = u_full_pass == 1 ? u_full_dash : 0.0;
-  if (int(a_edge) == u_hide.x || int(a_edge) == u_hide.y) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   // T-3420: a line the player hid, and track and lines on a hidden level, a ramp fading toward it
   if (u_kind == 1 && texelFetch(u_line_colours, ivec2(int(a_colour) % ${LINES_W}, int(a_colour) / ${LINES_W}), 0).a < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if (u_ahead == 0 && u_kind != 2 && int(a_edge) < u_ahead_n.y && texelFetch(u_ahead_edges, ivec2(int(a_edge) % ${TEX_W}, int(a_edge) / ${TEX_W}), 0).r > 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if (u_kind == 1 && u_ahead == 0 && int(a_colour) < u_ahead_n.x && texelFetch(u_ahead_lines, ivec2(int(a_colour) % ${LINES_W}, int(a_colour) / ${LINES_W}), 0).r > 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   float shown0 = 1.0, shown1 = 1.0;
   if (u_level_hide != 0 && u_kind != 2) {
     float hq = floor(a_level / 256.0);
@@ -206,7 +216,8 @@ void main() {
   // the middle is a line wide, so a line planned along it fills it and the rails show either side
   bool bpTrack = blueprint && !placement && u_kind == 0;
   bool swOff = (flags & 64) != 0;
-  if ((u_only_sel == 1 && !sel) || (u_casing > 0.0 && blueprint && !placement && !bpTrack) || (u_bp_part == 1 && blueprint) || (u_bp_part == 2 && !blueprint)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // (T-3378: a built busway has no casing: the bus lines are drawn under the track, and show through its road)
+  if ((u_only_sel == 1 && !sel) || (u_casing > 0.0 && blueprint && !placement && !bpTrack) || (busway && u_kind == 0 && u_casing > 0.0 && !blueprint && !placement) || (u_bp_part == 1 && blueprint) || (u_bp_part == 2 && !blueprint)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   // a line planned along blueprint fills the track's middle (T-331: narrower than a line now)
   bool bpLine = blueprint && !placement && u_kind == 1;
   // double track as its two tracks close in (T-658): first the stroke grows to the pair's width
@@ -290,6 +301,8 @@ void main() {
       : wl;
     if (u_cap > 0.0 && u_lane_mode > 1) w = min(w, 0.5 * u_cap);
   }
+  // T-3378: a built busway is one road as wide as double track's two tracks (G + lt) once they would part
+  if (busway && u_kind == 0 && (u_lane_mode == 0 || u_lane_mode == 2) && !bpShape && !ghost) w = max(w, G + lt + extra + cas);
   if (u_cap > 0.0) w = min(w, u_cap);
   if (ghost) {
     w = max(w, u_ghost_min.x);
@@ -374,7 +387,7 @@ void main() {
   }
   else if (placement) v_color = ghost ? u_bp_mid : vec3(1.0);
   else if (u_kind == 0 && bpTrack && !sel) { v_color = swOff ? u_bp_off_mid : u_bp_mid; bpMid = true; }
-  else if (u_kind == 0) v_color = sel ? u_sel : u_track;
+  else if (u_kind == 0) v_color = sel ? u_sel : busway ? mix(u_track, u_casing_rgb, 0.3) : u_track;
   else v_color = texelFetch(u_line_colours, ivec2(int(a_colour) % ${LINES_W}, int(a_colour) / ${LINES_W}), 0).rgb;
   // other blueprint colours (a planned line, a selected blueprint, by height or speed) lighter
   if (bp && !bpMid && u_casing <= 0.0) v_color = swOff ? mix(v_color, u_bp_off_fade, 0.8) : mix(v_color, vec3(1.0), 0.45);
@@ -399,6 +412,11 @@ void main() {
       v_wire = vec4(bpShape || placement ? rail : u_wire, u_lane_mode == 0 ? ${WIRE_OFF.toFixed(3)} * w : 0.0);
       v_wire_hw = hw;
     }
+    if (busway) {
+      v_road = bpShape || placement ? 0.0 : 1.0;
+      v_wire.w = 0.0;
+      v_wire_dash = max(6.0, 12.0 * u_band_m);
+    }
   }
   // T-1125: a line at capacity a little darker under its red edge, as strong as the edge (T-1152)
   if (u_kind == 1 && a_full.x != 0.0 && u_casing <= 0.0 && !full) v_color = mix(v_color, vec3(0.0), ${FULL_DARKEN} * fs);
@@ -417,6 +435,8 @@ flat in vec4 v_stripe;
 flat in float v_stripe_only;
 flat in vec4 v_wire;
 flat in float v_wire_hw;
+flat in float v_wire_dash;
+flat in float v_road;
 flat in float v_dash;
 in float v_along;
 flat in vec4 v_inner;
@@ -453,7 +473,14 @@ void main() {
     c = mix(c, v_stripe.rgb, s);
     if (v_stripe_only > 0.5) { c = v_stripe.rgb; a *= s; }
   }
-  if (v_wire_hw > 0.0) c = mix(c, v_wire.rgb, clamp(v_wire_hw + 0.5 - abs(abs(v_cap.z) - v_wire.w), 0.0, 1.0));
+  float wire = v_wire_hw > 0.0 && (v_wire_dash <= 0.0 || mod(v_along, v_wire_dash) < 0.5 * v_wire_dash) ? clamp(v_wire_hw + 0.5 - abs(abs(v_cap.z) - v_wire.w), 0.0, 1.0) : 0.0;
+  c = mix(c, v_wire.rgb, wire);
+  // T-3378: a built busway's road: its kerbs solid, between them see-through, so a bus line under it shows; its dashes solid
+  if (v_road > 0.5) {
+    float kerb = max(1.0, 0.15 * v_cap.w);
+    float k = clamp(abs(v_cap.z) - (v_cap.w - kerb) + 0.5, 0.0, 1.0);
+    a *= max(max(0.3, k), wire);
+  }
   o = vec4(c * a, a);
 }`;
 
@@ -473,7 +500,8 @@ uniform vec2 u_radius;   // dot radius, ordinary and transfer (px)
 uniform float u_line;    // a line's width (px): a station covers the lines through it
 uniform float u_ring;    // its dark rim (px)
 uniform float u_boxes;   // 1: platforms along the track; 0: dots (zoomed out)
-uniform vec2 u_fixed;    // a box's half width (T-204, T-239): px at BOX_WIDTH_ZOOM, and local
+uniform highp int u_no_bp; // 1: blueprint stations are not drawn (Settings' Show blueprints)
+uniform vec2 u_fixed;   // a box's half width (T-204, T-239): px at BOX_WIDTH_ZOOM, and local
                          // units per px there; the width on the ground, and the least on screen (T-553)
 uniform float u_pass_half; // a box with passing tracks is at least this wide either side, px (T-2233)
 uniform highp int u_pass; // stations: 0 every one but the selected, 1 the selected only
@@ -540,7 +568,7 @@ void main() {
   bool noCrowd = !boxes || (flags & 2) != 0 || max(a_crowd.x, a_crowd.y) <= 0.0 || lvFade < 1.0;
   bool noAnnex = u_room > 0 && (!boxes || (flags & ${ST_ROOM}) == 0);
   bool inBld = (flags & ${ST_BUILDING}) != 0;
-  if ((u_pass == 1) != sel || (u_layer == 2 && noCrowd) || noAnnex || (u_bld == 1 && inBld) || (u_bld == 2 && !inBld)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if ((u_no_bp == 1 && (flags & 2) != 0) || (u_pass == 1) != sel || (u_layer == 2 && noCrowd) || noAnnex || (u_bld == 1 && inBld) || (u_bld == 2 && !inBld)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   // zoomed out a dot's pie is its platforms' crowd (T-228, T-553): the fullest side's share, and
   // whether it is full
   if (!boxes) v_crowd = vec4(a_dcrowd, 0.0, 0.0);
@@ -670,6 +698,7 @@ uniform vec2 u_viewport;
 uniform float u_ring;
 uniform float u_bridge;  // the white's half width, local units
 uniform highp int u_pass;
+uniform highp int u_no_bp; // 1: links to a blueprint station are not drawn
 in vec4 a_ends;          // its two ends, local units
 in vec2 a_bflag;         // drawn selected (both stations are), faded (either is a blueprint)
 out vec2 v_p;
@@ -698,7 +727,7 @@ void main() {
   vec4 cx = project(a_ends.xy + vec2(u_bridge, 0.0));
   vec2 s0 = c0.xy / c0.w * half_vp, s1 = c1.xy / c1.w * half_vp;
   float len = length(s1 - s0);
-  if ((u_pass == 1) != (a_bflag.x > 0.5) || len < 1e-3) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if ((u_pass == 1) != (a_bflag.x > 0.5) || len < 1e-3 || (u_no_bp == 1 && a_bflag.y > 0.5)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   vec2 u = (s1 - s0) / len, n = vec2(-u.y, u.x);
   float hw = length(cx.xy / cx.w * half_vp - s0) + u_ring, hl = 0.5 * len;
   v_size = vec3(hl, hw, 0.0);
@@ -880,6 +909,8 @@ uniform highp sampler2D u_phases;  // RGBA32F: t, s, v, a
 uniform highp sampler2D u_meta;    // RGBA32F per profile: first phase, count, trip s, length m
 uniform highp sampler2D u_samples; // RG32F: run 0 of each line, x/y local units
 uniform highp sampler2D u_lines;   // RGBA32F per line: first sample, count, length m, step m
+uniform highp sampler2D u_bend_at; // R32F per sample: its bend points' first times 32 plus their count (T-4075, network.ts bendAt)
+uniform highp sampler2D u_bends;   // RG32F per bend point: its offset from the straight between its samples
 uniform int u_back_base;           // T-3250: lines in the table (0 none); row base + line is that line's return run on its own way back, where it has one
 in vec2 a_trip;              // profile, departure - epoch (s)
 in float a_end;              // drawn until - epoch (s): standing at the terminal for its next departure (T-206)
@@ -902,7 +933,18 @@ vec2 lineAt(vec4 L, float d) {
   int si = int(first + i0);
   vec2 p0 = texelFetch(u_samples, tc(si, ${TEX_W}), 0).xy;
   vec2 p1 = texelFetch(u_samples, tc(si + 1, ${TEX_W}), 0).xy;
-  return mix(p0, p1, f);
+  vec2 p = mix(p0, p1, f);
+  // T-4075: where the track bends between the two, through its bend points
+  int code = int(texelFetch(u_bend_at, tc(si, ${TEX_W}), 0).x + 0.5);
+  if (code > 0) {
+    int m = code & 31, start = code >> 5;
+    float u = f * float(m + 1);
+    int j = min(int(floor(u)), m);
+    vec2 a = j > 0 ? texelFetch(u_bends, tc(start + j - 1, ${TEX_W}), 0).xy : vec2(0.0);
+    vec2 b = j < m ? texelFetch(u_bends, tc(start + j, ${TEX_W}), 0).xy : vec2(0.0);
+    p += mix(a, b, u - float(j));
+  }
+  return p;
 }
 
 /** The train's distance along run 0 of its line now; false if it is not on the track. */
@@ -1128,10 +1170,11 @@ void main() {
     fs -= nrm * shC0;
   }
   // A train as one pill bends with its track (T-189): along the circle through its two ends and
-  // its middle, as a station's platform does (SHAPE_GLSL); a car close up is short enough to stay
-  // straight. k: curvature, 1/px, towards +nrm; ends: where the ends lie across the frame.
+  // its middle, as a station's platform does (SHAPE_GLSL); a car close up bends along its own (a tram's
+  // street corner is tighter than a car is long, T-4075). k: curvature, 1/px, towards +nrm; ends: where
+  // the ends lie across the frame.
   float k = 0.0, ends = 0.0;
-  if (!u_detail && !bus && sl > 1e-3) {
+  if (!bus && sl > 1e-3) {
     float hc = 0.5 * sl, s = dot(c.xy / c.w * half_vp - 0.5 * (bs + fs), nrm);
     k = clamp(-2.0 * s / (hc * hc + s * s), -2.0 / px.x, 2.0 / px.x);
     ends = -s;

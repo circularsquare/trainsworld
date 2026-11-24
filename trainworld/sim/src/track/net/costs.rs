@@ -25,8 +25,8 @@ impl Network {
                 cost::track_cost_parts_t(self.edge_len[e], self.edge_vert(e as u32), self.edge_water(e as u32), self.edge_terrain(e as u32), tracks, kind, |level, wet, _ramp, class, m, c| {
                     // T-1839: the whole price, keyed by terrain class (0 where it does not count)
                     let class = if cost::terrain_surcharge(level, class) == 0.0 { 0 } else { class };
-                    let row = if kind.is_hsr() { HSR_ROW } else if kind == TrackKind::Tram { TRAM_ROW } else if kind == TrackKind::StreetTram { STREET_TRAM_ROW } else { tracks };
-                    add(0, level, if tracks == 1 && row > 2 { row + SINGLE_ROW_OFFSET } else { row }, wet, class, m, c);
+                    let row = if kind.is_hsr() { HSR_ROW } else if kind == TrackKind::Tram { TRAM_ROW } else if kind == TrackKind::StreetTram { STREET_TRAM_ROW } else if kind.is_busway() { BUSWAY_ROW } else { tracks };
+                    add(0, level, if tracks == 1 && row > 2 && row != BUSWAY_ROW { row + SINGLE_ROW_OFFSET } else { row }, wet, class, m, c);
                 });
                 // kind 7: roads crossed at ground level (T-1929), a count
                 let (n, c) = roads::charge(self.edge_vert(e as u32), self.edge_roads(e as u32));
@@ -45,6 +45,13 @@ impl Network {
                 add(12, 0, 0, false, 0, 1.0, PORT_COST);
                 if self.node_upgrades[n] != 0 {
                     add(8, level, 0, false, 0, 1.0, self.station_upgrades_price(n as u32, self.node_upgrades[n], false));
+                }
+            } else if self.node_platform[n] > 0 && !self.node_built[n] && !self.node_off[n] && self.node_road[n].is_some() {
+                // kind 17: BRT stations (T-3378), a flat price
+                add(17, 0, 0, false, 0, 1.0, BRT_STATION_COST);
+                let ups = self.node_upgrades[n];
+                if ups != 0 {
+                    add(8, level, 0, false, 0, ups.count_ones() as f64, self.station_upgrades_price(n as u32, ups, false));
                 }
             } else if self.node_platform[n] > 0 && !self.node_built[n] && !self.node_off[n] {
                 let (tracks, wet) = (self.station_tracks(n as u32), is_wet());
@@ -89,12 +96,15 @@ impl Network {
             if self.line_bus[l as usize].as_ref().is_some_and(|r| !r.built) {
                 let m = self.bus_road_m(l);
                 add(10, 0, 0, false, 0, m, m / 1000.0 * BUS_ROUTE_COST_PER_KM);
-                // kind 16: their BRT (T-3907), road metres in town
-                let town = self.brt_town_m(l);
-                if town > 0.0 {
-                    add(16, 0, 0, false, 0, town, town / 1000.0 * BRT_COST_PER_KM);
-                }
             }
+        }
+        // kind 16: their BRT lanes (T-3907), road metres in town not already constructed for another line (T-3378)
+        // Construct builds the blueprint's busways too, and a lane on a built busway is none: the lanes they free
+        // come off (a negative row when those outnumber the new ones)
+        let all = if self.busway_planned() { self.with_busways_planned(|| self.brt_lane_m(false)) } else { self.brt_lane_m(false) };
+        let town = all - self.brt_lane_m(true);
+        if town.abs() > 1e-6 {
+            add(16, 0, 0, false, 0, town, town / 1000.0 * BRT_COST_PER_KM);
         }
         // kind 14: ferry routes still to be constructed (T-2193): ground metres, free
         for l in self.ferry_lines() {
@@ -124,7 +134,7 @@ impl Network {
             let is_wet = || self.node_is_wet(n);
             let level = self.node_level[n];
             if self.node_platform[n] > 0 && !self.node_built[n] {
-                let price = if self.node_berth[n].is_some() { PORT_COST + self.upgrades_cost(n) } else {
+                let price = if self.trackless(n as u32) { self.station_price(n, || false) + self.upgrades_cost(n) } else {
                     let wet = is_wet();
                     let ups = self.node_upgrades[n];
                     cost::station_cost_k(self.node_kind(n as u32), level, self.node_platform[n], self.station_tracks(n as u32), wet) + if ups != 0 { self.station_upgrades_price(n as u32, ups, wet) } else { 0.0 }
@@ -301,6 +311,48 @@ impl Network {
             return 0.0;
         }
         self.station_upgrades_price(n as u32, ups, self.water_mask.is_water(self.node_x[n], self.node_y[n]))
+    }
+
+    /// T-3922: what is bought on stations and pays upkeep, US$M: `[the constructed stations' own upgrades, the
+    /// constructed ports', the constructed passages, the buildings]` (`upgrades::UPKEEP_SHARE`).
+    pub fn upkept_upgrades_value(&self) -> [f64; 4] {
+        let (mut st, mut ports) = (0.0, 0.0);
+        for n in 0..self.node_count() {
+            if self.node_alive[n] && self.node_platform[n] > 0 && self.node_built[n] && self.node_upgrades[n] != 0 {
+                if self.node_berth[n].is_some() { ports += self.upgrades_cost(n) } else { st += self.upgrades_cost(n) }
+            }
+        }
+        [st, ports, self.passages_cost(true), super::building::value(self)]
+    }
+
+    /// T-3922: each node's upgrade upkeep a game day, US$M: its own upgrades (a blueprint station's too, for the
+    /// Build tab's figure), half of each constructed passage at it and an even share of each building over its
+    /// constructed members; then what falls to no constructed station (a building left empty).
+    pub fn upgrade_upkeep_by_node(&self) -> (Vec<f64>, f64) {
+        let mut v = vec![0.0; self.node_count()];
+        for (n, x) in v.iter_mut().enumerate() {
+            if self.node_alive[n] && self.node_platform[n] > 0 {
+                *x = self.upgrades_cost(n);
+            }
+        }
+        for ([a, b], price) in self.passages() {
+            if self.node_built[a as usize] && self.node_built[b as usize] {
+                v[a as usize] += price / 2.0;
+                v[b as usize] += price / 2.0;
+            }
+        }
+        let mut rest = 0.0;
+        for b in self.buildings.iter().flatten() {
+            let price = super::upgrades::building_price(super::building::area_m2(self, &b.corners));
+            let on: Vec<u32> = super::building::members(self, &b.corners).into_iter().filter(|&m| self.node_built[m as usize]).collect();
+            if on.is_empty() {
+                rest += price;
+            }
+            for &m in &on {
+                v[m as usize] += price / on.len() as f64;
+            }
+        }
+        (v.into_iter().map(super::upgrades::upkeep).collect(), super::upgrades::upkeep(rest))
     }
 
     /// Edge ends at a node whose edge is constructed.

@@ -312,7 +312,7 @@ fn at_the_end_of_single_track() {
 /// T-3563 (Anita, 2026-11-17: "trams should be identical to trains in pathing"): the `run` layout on
 /// single rail track and on single tram track, Mid a passing station or a stop with no loop, run by a
 /// line through it and a line turning at it, alike in speed, dwell, turnaround and cars, gives the same
-/// capacity resources with the same users, and the same single-track holds.
+/// capacity resources with the same users, and the same single-track holds but for the tram's gentler braking.
 #[test]
 fn trams_pass_and_turn_at_a_stop_as_trains_do() {
     fn build(kind: u8, side_y: Option<f64>) -> (TrackApi, usize) {
@@ -361,7 +361,10 @@ fn trams_pass_and_turn_at_a_stop_as_trains_do() {
         assert_eq!(rs, ts, "single-track sections, Mid {side_y:?}");
         assert_eq!(shape(&rail), shape(&tram), "Mid {side_y:?}");
         let (hr, ht) = (holds(&rail), holds(&tram));
-        assert!(hr.len() == ht.len() && hr.iter().zip(&ht).all(|(p, q)| (p - q).abs() < 1e-6), "single-track holds, Mid {side_y:?}: {hr:?} against {ht:?}");
+        // T-3921: a tram brakes at the rate a train does (0.9 each), so every hold is the rail one; a tram rate
+        // below a train's would lengthen each by v/2 (1/TRAM_BRAKE - 1/BRAKE) for each stop braked for in it
+        assert!((TRAM_BRAKE - BRAKE).abs() < 1e-12, "this test assumes tram and train brake alike");
+        assert!(hr.len() == ht.len() && hr.iter().zip(&ht).all(|(&p, &q)| (p - q).abs() < 1e-6), "single-track holds, Mid {side_y:?}: {hr:?} against {ht:?}");
         counts.push(ts);
     }
     assert_eq!(counts, vec![2, 1], "a passing stop cuts the single track in two, one with no loop runs it on");

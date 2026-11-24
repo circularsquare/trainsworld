@@ -25,12 +25,14 @@ import { toggleEditStops } from "../../game/lineActions";
 import { repeatedEdge } from "../../game/repeatTrack";
 import { runsAgainstOneWay } from "../../game/oneWay";
 import { gameStamp } from "../../workers/clockClient";
-import { noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats, queueStopEdit, rowCount, fleetOf } from "../../game/world";
+import { shown as pendingShown } from "../../game/pending";
+import { noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats, queueStopEdit, rowCount, fleetOf, lineIndicesAt } from "../../game/world";
 import { CUTS_DEFAULT, periodAt, rowAt } from "../../game/periods";
 import { live } from "../../map/live";
 import { setListHot } from "../../map/hovered";
 import { Alert, Check, Chip, Icon, Row, Segmented, shakeEl, Stepper, SwapLabel } from "../widgets";
 import { PurposeSplit } from "./PurposeSplit";
+import { ONLY_NEXT, ONLY_TIP, OnlyArrow, OnlyIcon } from "./stopOnly";
 import { RelatedStops, useTightTimes } from "./RelatedStops";
 import { ROUND_MAX, TALL_MAX } from "../../game/relatedLayout";
 import { BusInspector } from "./BusInspector";
@@ -45,7 +47,7 @@ import { LineProfile } from "./LineProfile";
 import { LineTopSpeed } from "./LineTopSpeed";
 import { LineFare, LineMoney } from "./LineMoney";
 import type { EditOp } from "../../workers/protocol";
-import { hasUpgrade, UPGRADE } from "../../game/upgrades";
+import { hasUpgrade, UPGRADE, upgradeUpkeep } from "../../game/upgrades";
 import { AverageSpeed, carsBought, carsText, type Limit, rowLabel, NO_LIMITS, PastDay, Schedule, useLinePeriods, vehicleOf } from "./schedule";
 import { LineTitle, useLineTitle } from "./LineTitle";
 import { TRACK_SPECS } from "../../game/trackKinds";
@@ -209,7 +211,7 @@ export function RoundTrip({ num, st, lev, stops, spots: { spots: busy, behindSpo
             <span class="grow">{tr("lineInspector.direction")}</span>
             <Segmented<boolean>
               options={[[true, <span data-tip={tr("lineInspector.oneWayTip")}>{tr("lineInspector.oneWay")}</span>], [false, tr("lineInspector.bothWays")]]}
-              value={st.oneWay}
+              value={pendingShown(`line:${num}`, "oneWay", st.oneWay)}
               // T-3835: one-way track takes this loop round one way only
               disabled={(v) => !v && !!st.oneWayByTrack}
               tips={(v) => (!v && st.oneWayByTrack ? tr("lineInspector.oneWayTrack") : undefined)}
@@ -252,7 +254,14 @@ function transferLines(l: LineInput, i: number, drawn?: ReadonlySet<number>, noS
   const members = new Set(complexOf(l.stops[i]));
   const d = today.value;
   const riders = (o: LineInput) => o.stops.reduce((n, s, k) => n + (members.has(s) ? (d.get(o.id)?.stops[k] ?? 0) : 0), 0);
-  return (w?.save.lines ?? []).filter((o) => !drawn?.has(o.num) && (o.id === l.id ? !noSelf && selfTransfer(l, i) : o.stops.some((s) => members.has(s))))
+  if (!w) return [];
+  // T-4125: the lines stopping in the complex from the stations' index, in the save's order (as a scan of every line)
+  const at = lineIndicesAt(w), idx = new Set<number>();
+  for (const s of members) for (const k of at.get(s) ?? []) idx.add(k);
+  const self = w.save.lines.findIndex((o) => o.id === l.id);
+  if (self >= 0) idx.add(self);
+  return [...idx].sort((a, b) => a - b).map((k) => w.save.lines[k])
+    .filter((o) => !drawn?.has(o.num) && (o.id === l.id ? !noSelf && selfTransfer(l, i) : o.stops.some((s) => members.has(s))))
     .map((o) => ({ o, n: riders(o) })).sort((a, b) => b.n - a.n).map((x) => x.o);
 }
 
@@ -388,7 +397,7 @@ function LinePairs({ l, st }: { l: LineInput; st: LineStats }) {
     <>
       <ul class="rows">
         <li>
-          <Check checked={!!st.pairs} onChange={(on) => void edit({ op: "linePairs", line: l.num, on })}>{tr("lineInspector.pairs")}</Check>
+          <Check checked={!!pendingShown(`line:${l.num}`, "pairs", st.pairs)} onChange={(on) => void edit({ op: "linePairs", line: l.num, on })}>{tr("lineInspector.pairs")}</Check>
         </li>
       </ul>
       {notice && <ul class="alerts"><Alert>{notice}</Alert></ul>}
@@ -524,11 +533,17 @@ function PassingTracks({ l, version, vehicle }: { l: LineInput; version: number;
     }
   };
   return (
-    <button ref={btn} class="btn text improve" data-tip={tr("lineInspector.passingTip", { names })} onClick={() => void go()} onAnimationEnd={() => btn.current?.classList.remove("shake")}>
+    <button ref={btn} class="btn text improve" data-tip={withUpkeep(tr("lineInspector.passingTip", { names }), at.reduce((a, x) => a + x.price, 0))} onClick={() => void go()} onAnimationEnd={() => btn.current?.classList.remove("shake")}>
       {tr("lineInspector.passingButton")}
       {price > 1e-9 && <small class="improve-price">{money(price * 1e6)}</small>}
     </button>
   );
+}
+
+/** T-3922: a buy button's hover and the upkeep of what it buys, `priceM` US$M of upgrades, on a line under it. */
+function withUpkeep(tip: string, priceM: number): string {
+  const m = moneyState.value;
+  return m && priceM > 0 ? `${tip}\n${tr("common.upkeepDay", { amount: money(upgradeUpkeep(priceM, m)) })}` : tip;
 }
 
 /** T-2692: parking lots (the station upgrade `parkRide`) at the line's end stations, or at every
@@ -566,7 +581,7 @@ function ParkingButtons({ l, version }: { l: LineInput; version: number }) {
   const one = (list: StationInput[], btn: { current: HTMLButtonElement | null }, label: string, done: string) => {
     const price = priceOf(list);
     return (
-      <button ref={btn} class="btn text improve" disabled={!list.length} data-tip={list.length ? tr("lineInspector.parkingTip", { names: show(list) }) : done}
+      <button ref={btn} class="btn text improve" disabled={!list.length} data-tip={list.length ? withUpkeep(tr("lineInspector.parkingTip", { names: show(list) }), list.reduce((a, s) => a + (costs?.[nums.indexOf(s.num)] ?? 0), 0)) : done}
         onClick={() => void go(list, btn)} onAnimationEnd={() => btn.current?.classList.remove("shake")}>
         {label}
         {price > 1e-9 && <small class="improve-price">{money(price * 1e6)}</small>}
@@ -618,7 +633,7 @@ function TrainType({ l, st, lev }: { l: LineInput; st: LineStats; lev: number })
               [false, <span data-tip={tip(false)}>{tr("lineInspector.normal")}</span>],
               [true, <span data-tip={tip(true)}>{tr("lineInspector.highSpeed")}</span>],
             ]}
-            value={st.fast}
+            value={pendingShown(`line:${l.num}`, "fast", st.fast)}
             onChange={(fast) => { if (fast !== st.fast) void edit({ op: "lineFast", line: l.num, fast }); }}
           />
         </li>
@@ -776,6 +791,7 @@ function RailLineInspector({ id }: { id: string }) {
   const stopEdit = (op: EditOp) => sendStops(() => op);
   // T-2919: no question, since an undo brings the line back (track and stations stay)
   const remove = () => {
+    // T-4114: gone from the map at the click, back if refused (map/lineToolAhead.ts)
     void edit({ op: "removeLine", line: l.num }).then(a => {
       if (!a.ok) return;
       if (lineDraft.peek().line === l.num) live.tools?.exit();
@@ -908,6 +924,8 @@ function RailLineInspector({ id }: { id: string }) {
   // there, `bullets` those of them whose bullet shows here
   const stopRow = (i: number, drawn?: ReadonlySet<number>, bullets?: LineInput[], row?: TurnRow) => {
     const s = l.stops[i];
+    // T-4178: a turn partway is marked only where it limits the line, with the trains an hour it lets it run
+    const revTph = partwayReversals(st).includes(i) ? world.value?.turnLimits.get(l.id)?.get(Number(s)) : undefined;
     const xfer = complexOf(s).some((m) => linesAt(m).some((o) => o.id !== l.id)) || (!row && selfTransfer(l, i));
     const tall = !!drawn && transferLines(l, i, drawn).length > ROUND_MAX;
     // the stretches above and below the row, and the time from the stop on top
@@ -927,6 +945,7 @@ function RailLineInspector({ id }: { id: string }) {
       }
     }
     const dot = dotClick(i, row);
+    const only = st.stopOnly?.[s];
     return (
       <li class={(xfer ? "xfer" : "") + (tall ? " tall" : "") + (drag?.from === i ? " dragged" : "") + (!row && loopEnds && (i === 0 || i === nStops - 1) ? " pinned" : "") + (st.oneWayAt?.[s] !== undefined ? " oneway" : "") + dropClass(i)} data-r={drawn ? true : undefined}
         data-stop={i} data-station={s} onPointerDown={(e) => rowDown(e, i)} onMouseEnter={() => setListHot({ stations: complexOf(s) })} onMouseLeave={() => setListHot(null)}>
@@ -940,11 +959,12 @@ function RailLineInspector({ id }: { id: string }) {
             {name.get(s)}
           </span>
           {t !== undefined && <span class="t muted num" data-tip={stretchTip(st.stretches[above], st.tram)}>{duration(t)}</span>}
-          {partwayReversals(st).includes(i) && (
-            <span class="rev-stop" data-tip={tr("lineInspector.reverseTip", { time: duration(st.turnaroundS), vehicle: vehicleOf(st) })}>
+          {revTph !== undefined && (
+            <span class="rev-stop" data-tip={tr("lineInspector.reverseTip", { time: duration(st.turnaroundS), vehicle: vehicleOf(st), n: Math.floor(revTph * 10) / 10 })}>
               <Icon.uturn />
             </span>
           )}
+          {only && !editingStops && <span class="stop-only" data-tip={tr(ONLY_TIP[only])}><OnlyArrow kind={only} /></span>}
         </span>
         <StopTransfers l={l} i={i} drawn={drawn} extra={bullets} tall={tall} noSelf={!!row} />
         <StopToday line={l.id} i={row ? row.occ : i} />
@@ -952,6 +972,12 @@ function RailLineInspector({ id }: { id: string }) {
         {editingStops && !partly && row?.turn && (
           <button class="btn icon mini" data-tip={tr("lineInspector.openLoop")} aria-label={tr("lineInspector.openLoop")} onClick={() => void stopEdit({ op: "openLoop", line: l.num })}>
             <Icon.uturn />
+          </button>
+        )}
+        {editingStops && (
+          <button class={"btn icon mini stop-only" + (only ? " on" : "")} data-tip={tr(ONLY_NEXT[only ?? 0])} aria-label={tr(ONLY_NEXT[only ?? 0])}
+            onClick={() => void stopEdit({ op: "stopOnly", line: l.num, station: Number(s), kind: ((only ?? 0) + 1) % 3 as 0 | 1 | 2 })}>
+            <OnlyIcon kind={only ?? 0} />
           </button>
         )}
         {editingStops && !partly && (

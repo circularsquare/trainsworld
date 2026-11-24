@@ -12,10 +12,10 @@ import { ask, display, setDisplay, shade, SHADE_NAMES, theme, THEMES, UI_SCALES,
 import { moneyState } from "../game/money";
 import type { BubbleScheme } from "../game/palette";
 import { DETAIL_RANGE } from "../map/demandOverlay";
-import { makeSandbox, saveGuide } from "../workers/clockClient";
+import { makeSandbox, saveGuide, saveSlotsState } from "../workers/clockClient";
 import { mobileDevice } from "../workers/deviceMemory";
 import { Check, Icon, LevelToggles, Segmented, ShapePicker, Stepper } from "./widgets";
-import { hiddenLevels, hideBuses, showAllLevels, toggleLevel } from "../game/lineVisibility";
+import { hiddenLevels, hideBlueprints, hideBlueprintsView, hideBuses, showAllLevels, toggleLevel } from "../game/lineVisibility";
 import { SHAPE_MODES } from "../game/lineShape";
 import type { Vehicle } from "../game/vehicle";
 import { Credits } from "./Credits";
@@ -165,6 +165,10 @@ export function SettingsTab() {
         <Check checked={!hideBuses.value} onChange={(v) => (hideBuses.value = !v)}>
           {t("settingsTab.busesFerries")}
         </Check>
+        <Check checked={!(saveSlotsState.value.viewing ? hideBlueprintsView : hideBlueprints).value}
+          onChange={(v) => ((saveSlotsState.peek().viewing ? hideBlueprintsView : hideBlueprints).value = !v)}>
+          {t("settingsTab.blueprints")}
+        </Check>
       </div>
       <GameMode />
       <div class="h">{t("settingsTab.realNetwork")}</div>
@@ -229,6 +233,7 @@ export function SettingsTab() {
           {t("settingsTab.recalcWhilePaused")}
         </Check>
         <IntercityCheck />
+        <CoarseDemandCheck />
       </div>
       <MemoryRow />
       <div class="h">{t("settingsTab.lineShapes")}</div>
@@ -401,6 +406,15 @@ export function MoreCoresCheck() {
   return (
     <Check checked={display.value.moreCores} onChange={(v) => setDisplay("moreCores", v)}>
       <span data-tip={t("settingsTab.moreCoresTip")}>{t("settingsTab.moreCores")}</span>
+    </Check>
+  );
+}
+
+/** T-4117: every zone coarse, on every device; here and in the start menu's settings. */
+export function CoarseDemandCheck() {
+  return (
+    <Check checked={display.value.coarseDemand} onChange={(v) => setDisplay("coarseDemand", v)}>
+      <span data-tip={t("settingsTab.coarseDemandTip")}>{t("settingsTab.coarseDemand")}</span>
     </Check>
   );
 }

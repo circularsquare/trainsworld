@@ -223,7 +223,8 @@ wide so a longer date moves nothing [T-1868].
   the page's wait between the local and the whole solve and the last edit's stretch from its last unit
   to its figures, is the estimate; with a newer edit waiting for that solve's final (T-1734), as long again
   as the running solve's whole time (not for one made in the first 10 s of a local solve, which likely goes
-  at its local result, T-3616). It counts down and takes a new estimate as the loading card's time
+  at its local result, T-3616). A newer edit that stops the running whole solve (in its first 40%, T-3925)
+  starts the time left and the tag's bar again from the new solve. It counts down and takes a new estimate as the loading card's time
   left does (never climbing by degrees).
   **"Calculation 1 day behind"** ("Calculation 3 days behind") takes the tag's place when a whole game
   day or more has passed since the oldest edit no solve's final covers yet (`demandBehindFrom`) while
@@ -377,7 +378,7 @@ the window), and the button shows as on. Open or shut is remembered per browser
 the button is gone.
 
 - **Rows, worst first** (12 px type, one row each, the whole row's hover giving the figures):
-  lines whose track is gone (its chip, a red alert mark); places where lines reverse partway (an
+  lines whose track is gone (its chip, a red alert mark); places where a line's reversal partway limits it (T-4178, as the map's reversal icons; an
   amber U-turn disc, the station or "Track end", up to three of the lines' chips); orange and red
   capacity tags, the map's tags at 90% and up (`NEAR_RHO`) in the demand period in force (T-3542; the hover's wait names
   it, "Each train waits 1m20s here in the morning peak") that are over capacity or
@@ -539,7 +540,7 @@ click downloads the game, as the saved games panel's Download does.
 
 ## Search
 
-[T-148, T-177, T-183, T-211; `game/search.ts`, `ui/Search.tsx`]
+[T-148, T-177, T-183, T-211, T-4004; `game/search.ts`, `game/placeSearch.ts`, `ui/Search.tsx`]
 
 - A square button with a magnifying glass at the map's upper left, under the station ridership row
   (the last of the controls stacked there, in `.map-top-left`, its rows 4 px apart; the top right is the day and night
@@ -548,18 +549,28 @@ click downloads the game, as the saved games panel's Download does.
   browser only then. Up and down move through results, Enter or a click picks, Escape clears and
   closes it, as does leaving it empty; left with text, it stays open.
 - It finds the save's stations, its lines (by name, or the badge symbol exactly), the registry's
-  cities and zones, and the towns and neighbourhoods on each city's OSM place list (fetched the
-  first time the box is focused, `game/placeList.ts`; a place's other OSM names count). Matching
-  ignores case, accents and punctuation: exact names, then names starting with the text, a word
-  starting with it, containing it, then clipped nicknames ("south philly": each word starts like a
-  word of the name bar its last two letters, keeping at least four). Ties list cities, lines,
-  stations (busiest first), then places (bigger kinds first, then population). No addresses (no
+  cities and zones, and the towns and neighbourhoods of every zone's OSM place list (a place's other
+  OSM names count). Places are found by a worker (`workers/placeSearch.worker.ts`), so no query holds
+  up the game [T-4004]: it loads the place lists of the zones within 30 km of the view when the box
+  is first focused (while a search of three letters or more finds fewer than five, the next nearest
+  zones' lists one at a time, the 48 nearest within 200 km at most) [T-400, T-3997], and for each
+  query one shard of the world name index (`pipeline/place_index.py`: every word of every name, and a
+  name of several words joined, keyed by its first three letters, two for CJK, kana and Hangul; towns down to villages first, then
+  neighbourhoods and hamlets), so a town anywhere is found by a word of its name starting with the
+  text; substrings and nicknames only in the lists near the view. One fetch at a time, at most 56
+  lists and 24 shards kept, eight places posted back. Results show as they come; the row the player
+  moved to stays under the cursor. Matching ignores case, accents and punctuation: exact names, then
+  names starting with the text, a word starting with it, containing it, then clipped nicknames
+  ("south philly": each word starts like a word of the name bar its last two letters, keeping at
+  least four). Ties list cities, lines, stations (busiest first), then places: those within 200 km of
+  the view first, then bigger kinds, then population. A query of one or two letters (one CJK
+  character) finds a far place only by its whole name, after every near one. No addresses (no
   geocoder).
 - Up to eight rows: a line's badge and "Line", a city "City", a place a hollow ring and its kind,
   a station its line badges (one per badge look, four at most), blueprint stations muted. Results
   sharing a name get a muted second line telling them apart: the city; within one city the lines
   only this one serves (three at most, a shared first word once) or else its compass direction
-  from the others. Stations of one complex sharing a name are one result, picking the platform
+  from the others. A place more than 200 km from the view gets its city there too. Stations of one complex sharing a name are one result, picking the platform
   with the most lines [T-182].
 - A pick moves the camera at once: a station to zoom 14 or closer, a line to its stops' bounds, a
   city to its registry centre and zoom, a place by its kind (town 12.5, suburb 13, neighbourhood
@@ -654,8 +665,8 @@ choice (the map's purpose filter, the same list as the one on the map's demand r
 commuter and longer-trip bubbles, not station discs; ignored while bubbles are selected, T-936, but not while a whole zone is, T-1726) and Detail (4 steps from coarser to finer,
 the third by default; its hover reads "How many bubbles are aggregated together"; [T-795, T-1838]), the Colors
 choice (3-color by default [T-1724], the old Mode mix, 2-color [T-833], the old Train share, which shows two colour pickers labelled 0% train and
-100% train, Purpose [T-2886] or Color blind [T-3005]; no hovers on any of it [T-804, T-1838]; both in [ui-demand-views.md](ui-demand-views.md) "Local trip bubbles"), "Show transit by mode" (off by default, no hover; "The goal number" [T-3695]), Station circles with a Size slider (0.5-2x, 1x by default, the station ridership circles' radius; [T-1565], [ui-demand-views.md](ui-demand-views.md) "Station ridership circles"), Show (trains, station names [off by default, T-1729], "Track at capacity" [the capacity markers; hover "Marks where stations or track cannot smoothly handle scheduled train frequencies", T-1843], "Crowded trains" [T-1152, T-1843, T-2236: the Traffic view's red edges, on by default; hover "Stretches where trains carry more than their rated load at the busiest hour"; [ui-map.md](ui-map.md) "Track display"], flat junctions and crossings [no hover, T-1843], "Lines side by side" [T-1886: lines sharing track as bands beside each other, on by default, T-2346; [ui-map.md](ui-map.md) "Lines sharing track side by side"], map labels, Real network (None, Passenger or All, then "Show stations", off by default, [ui-map.md](ui-map.md) "Real network" [T-3570]), Terrain [hover "Construction is more expensive in steep terrain", T-1843], then "Show levels" over the level buttons +3 to -3 [T-3420], with a small "Show all" button beside the label while any level is hidden [T-3593; its space is kept, so the row does not move]: all lit, a click hides that level's track, the lines on it, its stations, junction and ramp marks and the cars of trains on it, and picks pass over them, so pieces laid exactly over each other at two levels can be reached; a ramp fades toward a hidden level; no hovers; kept while the page is open, not remembered, so a reload never opens on a map missing a level; under them "Buses and ferries", ticked by default, unticked hides every bus and ferry line's route, stops and vehicles on the map and from picks, kept while the page is open as the levels are, the Lines tab hides lines one by one, [ui-inspectors.md](ui-inspectors.md) "Hiding lines"), then Game (right after Show; below), Riders on trains
-and platforms: no setting, since each train's fullness and each platform's filling up are always drawn [T-164, T-3579], Stations up close (Faces and Sound, both on by default, no hovers [T-1843], and a Volume slider while Sound is on, the one volume for every sound, building and fare-change sounds included [T-1725]; [ui-map.md](ui-map.md) Life at stations) [T-686], Map (Flat or Globe, flat by default; hover "Zoomed in to a city, the globe becomes the flat map"; [ui-map.md](ui-map.md) "Globe") [T-033], then two sliders: Line width (50-200% of the drawn width of lines, track, casings and trains, 100% by default; station shapes and picking follow it; once double track parts into its two tracks up close, those keep their width on the ground) [T-1248] and Base map (contrast, 0-100%, 100% by default: below it every basemap colour but water and the land, so roads, parks, woods, buildings, boundaries and airfields, is mixed that much toward the land colour, in both themes, the basemap's labels fade toward transparent by it instead, text and halo alike, so a faded name never leaves a pale patch on water [T-1266]; the real network is left as it is, T-1291; `map/basemap.ts`) [T-1249], and "Rotate map with right drag" (off by default, Anita 2026-11-02: with no tilt it adds little; off turns the map back to north; [ui-map.md](ui-map.md) "Globe") [T-2031], "Use legacy time speed controls" (off by default, T-3765; the top bar's older pause, 1x, 4x and custom-speed buttons, `Speed` in `ui/TopBar.tsx`), and "Show zoom buttons" (on by default: a plus and a minus at the map's right edge, halfway down, one zoom step a click with the map's own easing, `ui/ZoomButtons.tsx`; no hover, just aria labels) [T-3268], Theme (Light or Dark, light by default, over Pink, Blue or Green) [T-039], Panel and text size, Units (US units, Currency), Performance (Use more cores, Run in background, Recalculate trips while paused, Memory), Default bullet shapes (below), then,
+100% train, Purpose [T-2886] or Color blind [T-3005]; no hovers on any of it [T-804, T-1838]; both in [ui-demand-views.md](ui-demand-views.md) "Local trip bubbles"), "Show transit by mode" (off by default, no hover; "The goal number" [T-3695]), Station circles with a Size slider (0.5-2x, 1x by default, the station ridership circles' radius; [T-1565], [ui-demand-views.md](ui-demand-views.md) "Station ridership circles"), Show (trains, station names [off by default, T-1729], "Track at capacity" [the capacity markers; hover "Marks where stations or track cannot smoothly handle scheduled train frequencies", T-1843], "Crowded trains" [T-1152, T-1843, T-2236: the Traffic view's red edges, on by default; hover "Stretches where trains carry more than their rated load at the busiest hour"; [ui-map.md](ui-map.md) "Track display"], flat junctions and crossings [no hover, T-1843], "Lines side by side" [T-1886: lines sharing track as bands beside each other, on by default, T-2346; [ui-map.md](ui-map.md) "Lines sharing track side by side"], map labels, Real network (None, Passenger or All, then "Show stations", off by default, [ui-map.md](ui-map.md) "Real network" [T-3570]), Terrain [hover "Construction is more expensive in steep terrain", T-1843], then "Show levels" over the level buttons +3 to -3 [T-3420], with a small "Show all" button beside the label while any level is hidden [T-3593; its space is kept, so the row does not move]: all lit, a click hides that level's track, the lines on it, its stations, junction and ramp marks and the cars of trains on it, and picks pass over them, so pieces laid exactly over each other at two levels can be reached; a ramp fades toward a hidden level; no hovers; kept while the page is open, not remembered, so a reload never opens on a map missing a level; under them "Buses and ferries", ticked by default, unticked hides every bus and ferry line's route, stops and vehicles on the map and from picks, kept while the page is open as the levels are, then "Blueprints" [T-4003, remembered in this browser (localStorage)]: unticked, no blueprint is drawn or picked (track, stations, lines, BRT lanes, their marks and drag squares), Construct and the blueprints themselves unchanged, a viewed community network opens with them hidden whatever the setting, with a switch of its own while viewing, the Lines tab hides lines one by one, [ui-inspectors.md](ui-inspectors.md) "Hiding lines"), then Game (right after Show; below), Riders on trains
+and platforms: no setting, since each train's fullness and each platform's filling up are always drawn [T-164, T-3579], Stations up close (Faces and Sound, both on by default, no hovers [T-1843], and a Volume slider while Sound is on, the one volume for every sound, building and fare-change sounds included [T-1725]; [ui-map.md](ui-map.md) Life at stations) [T-686], Map (Flat or Globe, flat by default; hover "Zoomed in to a city, the globe becomes the flat map"; [ui-map.md](ui-map.md) "Globe") [T-033], then two sliders: Line width (50-200% of the drawn width of lines, track, casings and trains, 100% by default; station shapes and picking follow it; once double track parts into its two tracks up close, those keep their width on the ground) [T-1248] and Base map (contrast, 0-100%, 100% by default: below it every basemap colour but water and the land, so roads, parks, woods, buildings, boundaries and airfields, is mixed that much toward the land colour, in both themes, the basemap's labels fade toward transparent by it instead, text and halo alike, so a faded name never leaves a pale patch on water [T-1266]; the real network is left as it is, T-1291; `map/basemap.ts`) [T-1249], and "Rotate map with right drag" (off by default, Anita 2026-11-02: with no tilt it adds little; off turns the map back to north; [ui-map.md](ui-map.md) "Globe") [T-2031], "Use legacy time speed controls" (off by default, T-3765; the top bar's older pause, 1x, 4x and custom-speed buttons, `Speed` in `ui/TopBar.tsx`), and "Show zoom buttons" (on by default: a plus and a minus at the map's right edge, halfway down, one zoom step a click with the map's own easing, `ui/ZoomButtons.tsx`; no hover, just aria labels) [T-3268], Theme (Light or Dark, light by default, over Pink, Blue or Green) [T-039], Panel and text size, Units (US units, Currency), Performance (Use more cores, Run in background, Recalculate trips while paused, Calculate intercity trips, Calculate trips in less detail, Memory), Default bullet shapes (below), then,
 when accounts are on, Account [T-1139]: who is logged in ("Logged in as alice", "Logged in with
 Google" or "Not logged in") and a button, Account settings or Sign in, that opens the same account
 panel as the icon at the top and the start menu's (sign in, recovery email, change password, sign
@@ -707,7 +718,10 @@ no market pack opens, so there are no trips between zones and no demand cache (a
 New York's real save). Ticked mid-game it applies from the next solve; unticked mid-game, the market packs already
 open stay and keep their trips until the next load. The start menu's settings show the same box, and a game opened there has
 intercity trips as it says; "Play without intercity trips" (a memory failure) and "Load without intercity trips"
-(the start menu's memory warning) untick it. "Run in background"
+(the start menu's memory warning) untick it. "Calculate trips in less detail" [T-4117], on every device, remembered in the browser, on by
+default on a phone or tablet and off on a computer: every zone held coarse ([demand-runtime.md](demand-runtime.md)
+"Levels of detail"); hover "Trips are calculated faster. Riders on each line can change by a few
+percent, at small stations by more." It applies at once, mid-game too (the figures stay until the new ones land). "Run in background"
 (off by default) keeps the clock running while the tab is hidden (the top bar's clock, above;
 [architecture.md](architecture.md) "A hidden page") [T-826]. "Recalculate trips while paused" (on by default): off, edits made while
 the game is paused start no demand solve; the first moment the game runs again, one solve covers them all
@@ -880,8 +894,11 @@ come right up to a neighbour (0.1 km) so a drag can make a step; the rows as the
 bin ("Remove point"; the base fare has none), their amount boxes one width (64 px, seven characters such as "+$55.50"
 or "+¥1,500") with the figure centred [T-3749, T-3751]; "Add point" (pressed while armed; off at 12 points, hover "At
 most 12 points") and, for a curve of other than three points, "Use simple curve", which asks "Go back to three points
-at 0, 20 and 100 km? The other points are dropped." and keeps the fares at those distances; the high-speed, bus, ferry (all three boat sizes once a ferry line exists,
-T-3892) and transfer rows as the Money tab shows them; the estimate rows while a change is unsolved; the countries: the
+at 0, 20 and 100 km? The other points are dropped." and keeps the fares at those distances; a thin rule under "Add point"; then the high-speed, Bus, BRT and boat size rows
+as the Money tab shows them (each only while one of its lines exists, but Medium's "Ferry" with any ferry line, T-3915)
+and the transfer fare: where the panel is
+480 px wide or more and a ferry line exists, in two columns, high speed, Bus, BRT and the transfer fare on the left and
+the boat sizes on the right, else one column, the transfer fare last; the estimate rows while a change is unsolved; the countries: the
 reference country, then every country with a built station by name, each row its multiple (the reference a plain
 1.00x), its base fare as charged and the anchor and undo buttons, under one row of column heads, "Fares by
 [country | city]" (bold, over the names; the two words a switch, T-3766), "Multiple" and "Base fare" [T-3749]. With
@@ -1115,7 +1132,7 @@ keeps what it had and earns no more.
     autosave writing it again, and reloads the page to the start menu as a page opened with no game
     chosen (`ClockClient.leave`, worker `deletePlaying`).
   - **Every other card in this browser**: download (its last save in this browser, read from
-    storage) and bin (hover "Delete", asked first), then Open (accent border; closes the panel and
+    storage as it is, so also one that is damaged or from a newer version [T-4126]) and bin (hover "Delete", asked first), then Open (accent border; closes the panel and
     loads it).
   - **A card's bin deletes the game**: every version, after `Delete "Tokyo" and its 3 other
     versions from this browser and your account?` (or "from this browser", "from your account" as
@@ -1134,7 +1151,13 @@ station count (1.64 GB plus 0.8 GB per 1,000 stations plus, per solving worker p
 stations, as many as the pool's memory rule lets run and, past the first, only while they fit in the budget, T-3373,
 T-3757; within about 20% on the real-network saves and players' 53-64 city games). Where the browser reports the device's memory (Chrome, Edge) or is 32-bit, a game over the budget
 shows it in red and its Open (saves panel and start menu, not the versions list) first asks "This game needs about 5 GB of
-memory and this device has about 4. It may not load." with Open anyway and Cancel. Elsewhere the line is plain and nothing asks.
+memory and this device has about 4. It may not load." with Open anyway and Cancel. On a phone or tablet whose browser reports no
+memory (every iPhone and iPad browser, iPadOS Safari told by its Mac user agent with touch; Firefox on Android) a game of 1,600
+stations or more is red and asks "This game is big for a phone or tablet and may run out of memory while loading." [T-3940;
+the shipped Tokyo start, 1,454 stations, loads; players' games of 1,646-2,090 died on iPhones, notes/T-3940.md]. Elsewhere (desktop
+Safari and Firefox) the line is plain and nothing asks. On the start menu the saved game whose load last died in this browser
+asks too, whatever its size: "This game ran out of memory the last time it loaded." (until it loads with its trips), and the
+start menu's question has Open anyway and Cancel.
 This is separate from the refusal [T-1197], which judges a save by its zones and still blocks a game no worker can hold.
 
 ### Card actions
@@ -1165,7 +1188,8 @@ This is separate from the refusal [T-1197], which judges a save by its zones and
   add it to your account.") that adds the game, which goes up at once [T-988 stage 3; the start
   menu's cloud is not a button]. A game whose versions are all on the account and none in this
   browser is a card of the server's picture and facts, a cloud after the name (hover "On your
-  account. Open downloads it here."), bin (hover "Delete", asked first: "Delete "Tokyo" from your
+  account. Open downloads it here."), download (hover "Download as a file": the account's copy as stored, also one
+  that does not open; "This game could not be downloaded." on a failure, T-4126), bin (hover "Delete", asked first: "Delete "Tokyo" from your
   account?") and Open (downloads it into a new slot and opens it as Open does). Deleting a tied
   slot asks "Delete "Tokyo" from this browser and your account?".
 - **Other versions** [T-2037, replacing T-1395's Earlier versions icon; `VersionsLine`]: a card
@@ -1195,11 +1219,10 @@ This is separate from the refusal [T-1197], which judges a save by its zones and
   start menu, whose grey line says "Cut short could not be opened." once (a file, a
   backup or a viewed network: the reason alone), and the card's red line gives the reason until the game opens:
   "This save is damaged.", "This save could not be opened (<panic>).", or the device's out-of-memory line.
-- **A game saved by a newer version** [T-1826; architecture.md "Saves from a newer build"]: the
-  top bar and the callout say "This game was saved by a newer version. Reload the page to
-  update."; Save refuses with the same words (its hover too). Download's hover is "Download as a
-  file, as the newer version saved it" (the file as loaded); Make a copy's is "Make a copy to play
-  on here. The copy leaves out what only the newer version can read."
+- **A game saved by a newer version** [T-3948, T-4014; architecture.md "Saves from a newer build"]: it does not
+  open; the card's red line (and the start menu's line) is "This game was saved on a newer game version. Reload the
+  page to update." The same line is the card's red line and the account mark's hover when the account holds the game
+  from a newer version, so this build does not upload over it.
 - **Leave page?** [T-1826]: closing or reloading the page asks first (the browser's own question)
   only while a change the player made could not be saved: autosave off in this tab for any reason
   above, or a failed write.
@@ -1356,7 +1379,7 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   `trainworldCommunityPreview` on a page opened with `?community`. Otherwise no button, and a share link opens nothing.
 - **Community** (people icon in the head of the saves panel and of the leaderboards, and in Settings between Help
   and the account button), headed "Community trains worlds", with the upload icon in its head to share the game
-  being played. [Random] [Newest] [Biggest] [Most liked] in [place]: Random is a shuffle (Shuffle for another); Newest (T-3652, shown only when the server config says `trainworldCommunityNewest`) is the newest network first, one per person, paged like Random; Biggest is
+  being played. [Random] [Newest] [Biggest] [Most liked] [Bookmarked] in [place] (T-4005: Bookmarked has no place or search; each card and opened network has a bookmark button, kept in the browser and, signed in, on the account, merged once per account; a hidden or deleted network drops out of the list): Random is a shuffle (Shuffle for another); Newest (T-3652, shown only when the server config says `trainworldCommunityNewest`) is the newest network first, one per person, paged like Random; Biggest is
   by points in the place, one per person, never a sandbox game (a note under the list says "Sandbox games aren't
   counted"), top 50 ranked as the leaderboards are; Most liked is
   by likes, equals in random order (the panel's seed, kept while it is open, T-3258), one per person, top 50. The place is the world, a city, a country (as
@@ -1366,8 +1389,8 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   when its game has points there, valued at their sum there. Twelve cards a page, each a shared schematic painted
   small with its title in bold and the player's name after it in grey, their flag after the name, smaller (12 x 9 px) to match it (a share from before titles shows the name alone, in bold, the flag after it at 16 x 12),
   its biggest city in the place, points, lines and stations (the game's own counts,
-  bus and ferry included, as the saves list shows them). A card opens the drawing to pan and zoom, with View
-  (when the sharer let others open a copy), Copy link, Report and the heart.
+  bus and ferry included, as the saves list shows them). A card opens the drawing to pan and zoom, with the
+  **Calculate trips** tick and View (both when the sharer let others open a copy), Copy link, Report and the heart.
 - **Search** (T-3224): a box at the right end of the tabs' row (on a phone, beside the place picker), placeholder
   "Search", shown only when `/noritetsu/config` says `trainworldCommunitySearch`. Sent as the list's `q` once typing
   pauses 350 ms; matches the title or the sharer's display name, any case, accents folded, in the chosen tab and
@@ -1404,6 +1427,20 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   save this build cannot open says "This copy doesn't open in this version of the game." (another world, a retired
   or newer format), a damaged one "This copy can't be opened."; a load that fails after that is reported as any
   loaded file's is, and the page falls back to the game it had.
+- **A light view** [T-3851]: with the Calculate trips tick off (the default; the tick is remembered in this
+  browser), View opens the network without its trips: the page reloads with `?trips=off`, no demand worker starts
+  and no city pack is opened (only the clock worker's water masks and terrain come, as in any load), and the load
+  ends once the network is in (notes/T-3851.md has the times).
+  There is no memory check, since the demand workers are what a big game's memory goes to. Track, stations, lines
+  and trains show and run (empty; money is frozen: no fares, running costs, upkeep or loan payments, so cash stays as
+  saved, and stays so in a game saved from there; edits cost as usual), the heart under the day and night picture
+  works, and the saved figures (the ledger, the Cities tab's profit) show as saved; riders, trips and points stay
+  empty, with no loading rings or "Calculating" (a train's riders say "Not available"), and the map's demand
+  bubble and station rows are hidden. The top bar says "Asia - kanocifer isn't saved.
+  Trips aren't calculated." with Calculate trips and Save; saved from there, "Trips aren't calculated for
+  this game." with Calculate trips. Calculate trips opens the same game again with its trips, the memory check
+  first: a viewed network goes along with any edits (still viewed, its heart kept), a saved game is saved and
+  reopened.
 - **The viewed game's card** (saves panel, above the others): its picture and facts as any card, "Not saved" where
   the others say when they were saved, the mark Viewing where the game being played says Playing, then only
   Download (hover "Download as a file") and Save (hover "Keep it in your saved games (Ctrl+S)"). The top bar says
@@ -1463,10 +1500,12 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   one, so each row is the line's timetable as it stands now; the hour now is tinted and scrolled to the top. Only a
   run's leaving times count (a run's last stop is no departure), and a line on both pairs of quad track shows its
   hidden twin's trains too. Times come from the sim, each trip's own (`station_departures`: its `draw` plus its
-  profile's `dep` at the stop), the trips the chart and map draw.
+  profile's `dep` at the stop), the trips the chart and map draw. A station the line keeps to boarding only or
+  disembarking only (T-4013) has that named after the picker, muted with its icon ("Boarding only"); its departures
+  stay, since trains still leave it.
 - **Timetable** (T-3469), as a printed one: one direction at a time ("to Gum" / "to Ash", the way the chart reads
   top to bottom first), with the other lines toggle right after that switch, as tall as it (T-3819); stations down
-  the side, one column per train under its line's bullet (a bullet too wide for a column becomes its letters down a
+  the side (a boarding-only or disembarking-only stop with the line panel's icon after its name, hover naming it, T-4013), one column per train under its line's bullet (a bullet too wide for a column becomes its letters down a
   strip of the line's colour), times in 10 px type as "742" / "1008" in the line's colour (`legibleOn`), the
   departure at each stop and the arrival at the last, "|" where a group's train runs through a station; a rule every
   5 rows, time marks along the top, a past train faded, the time now an accent line. It covers the hour before this
@@ -1540,7 +1579,7 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   the new game sheet alike, 12 px muted: "build 786", About this game, Submit feedback (opens the feedback form, as
   in Settings), the language picker (the Settings row's globe and select; here only, so a new player who lands on
   the sheet finds it in the same place, T-2753) and a gear (hover "Settings") that opens a small panel over the line
-  with the settings that matter before a game loads: Calculate intercity trips, Use more cores and Panel and text
+  with the settings that matter before a game loads: Calculate intercity trips, Calculate trips in less detail, Use more cores and Panel and text
   size, the same controls as in Settings; a press outside it or Esc closes it. The line wraps on a narrow screen;
   it and the update row stand in one column at the bottom, the row above, so neither covers the other.
 - **Update row** [T-2810; `ui/updates.ts` is the one list of updates, newest first]: at the screen's bottom right above the foot (and so above the map attribution), a compact row framed in the theme colour, with 12 px muted text throughout, the newest update's one line, a Changelog button (a Modal listing each update's version, date and changes; each change has its area's icon in the area's colour, the list sorted by area with an area's bug fixes after its other changes and a little lighter, and a group such as "track bug fixes" lists its changes indented under it [T-3466]; one page per x.y version, v0.3 holding v0.3 to v0.3.5, picked with buttons under the title, the newest open [T-3468]) and an x that hides it for good in this browser. It shows for 2 days from the update's `at` (bumped at publish), not on the new game sheet. On narrow screens it can cover the saves; its close button stays visible.
@@ -1549,8 +1588,9 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   game in a new slot, so no saved game is replaced. The slot is first written once the network has
   something in it (a real network at once): a new game left empty leaves no card.
 - **Delete and Load from file** [T-1612; the same code as the saves panel's: `deleteVersions`,
-  `deleteGroupQuestion`, `pickSaveFile`]. Every card has the panel's bin at its bottom right (hover
-  "Delete"); it asks under the card, `Delete "Tokyo" from this browser?` (from this browser and your
+  `deleteGroupQuestion`, `pickSaveFile`]. Every card has the panel's download and bin at its bottom right (hovers
+  "Download as a file" and "Delete"). Download saves the card's top version as stored, from this browser or the
+  account, also one that does not open (damaged, or from a newer version), for a player to send in [T-4126]. The bin asks under the card, `Delete "Tokyo" from this browser?` (from this browser and your
   account when the slot is tied to it; `Delete "Tokyo" from your account?` for an account-only card;
   `Delete "Tokyo" and its 3 other versions from ...` with more than one version, T-2037), with
   Delete (red) and Keep, and the card goes at once with every version, the account's copies with
@@ -1590,9 +1630,10 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   zone's own cluster, solved ahead of the rest (T-402: a Toronto view of a game with New York's
   network, about 6 s instead of 31 s); a new game until its viewed zone's figures, opened bare,
   arrive (T-351). **A game whose last final result is kept for its very network** (T-328: the
-  same network, packs and build) holds the clock only until that network is in, the result shown
-  and the zone in view with figures [T-2560]: its figures are that network's final, so the game
-  plays on them while the workers solve the same network again. The status tag then says "Trips in 81 cities being recomputed…"
+  same network and packs; after an update, the last version's result stands in [T-4202]) holds the clock only
+  until that network is in, the result shown and the zone in view with figures [T-2560]: its figures are that
+  network's final (a stand-in's the last version's, replaced at the fresh final), so the game plays on them while
+  the workers solve the same network again. The status tag then says "Trips in 81 cities being recomputed…"
   until the zone in view's cluster has its fresh final (the tag's own rule in "Status and busy
   tags"); the clock is not capped for it [T-2622]. Zones still solving then show their own loading bar and grey ("A zone still loading
   is grey" in [ui-demand-views.md](ui-demand-views.md)) until their final lands. The time is
@@ -1606,8 +1647,8 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   clock starts.
   Loading is the one place with motion [T-647, T-677, T-2693, Anita; `ui/Spinner.tsx`]: on top of the card a
   drawn bunny rides a toy train in the theme's accent (104 px wide; wheels turn, the track's ties run
-  by, the train chugs, the ears bob; paused under reduced motion; the card alone has it, T-2693
-  follow-up); a pill drawn as the map draws a train (a rim in a darker shade of the theme's accent
+  by, the train chugs, the ears bob; each moving part a box of its own moved by a CSS transform, so its motion never
+  repaints the page, T-3160; paused under reduced motion; the card alone has it, T-2693 follow-up); a pill drawn as the map draws a train (a rim in a darker shade of the theme's accent
   around a fill of it) runs around a 13 px ring leading the status tag's text and the diagram tag (a CSS
   turn of 1.1 s, nothing per frame; paused under reduced motion); a small ring turning (`.spin`, 1.2 s a turn, 8 px, grey) in place
   of each line's crowding dot per demand level in the line panel until the line has figures
@@ -1738,8 +1779,14 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   back for a game or a real network the clock worker could not load, and as the hover of the status
   tag's "Demand could not load". A page that finds the flag set in sessionStorage at its start
   (set when a game starts loading, cleared when the load ends, fails or the page is left) was
-  reloaded by the browser mid-load, as iOS does on running out of memory: it starts no game and shows
-  the memory sentence with Try again. A browser with no WebGL2 at all (no `WebGL2RenderingContext`;
+  reloaded by the browser mid-load, as iOS does on running out of memory (desktop Chrome's tab dies so too, and
+  is reloaded by the player): if that load ran more than one solving worker at its most (after the memory
+  estimate's planned cut) and its game was in a slot, the page opens that slot again, once, with half of them,
+  at least 1 (the tab's pool cap, as `memoryShort`'s), and a note at the bottom of the map says "This game ran out of
+  memory, so it loaded again with fewer cores." from the start of that load until 45 s after it [T-3933;
+  `game/oomRetry.ts`, notes/T-3933.md]. A load whose last solving worker fails for memory in the page's sight is
+  saved and reloaded into the same retry. Otherwise, or when the retry runs out too, it starts no game and shows the
+  memory sentence with Try again (whose load then has the lower cap). A browser with no WebGL2 at all (no `WebGL2RenderingContext`;
   MapLibre cannot start; `webgl2State`, `map/webgl2.ts`, asked at the top of main.ts) gets its own screen
   before anything else starts: one sentence saying to turn on hardware acceleration or update the browser,
   and no button, since a retry or a way on cannot help [T-3307]. A browser that has WebGL2 but refuses the
