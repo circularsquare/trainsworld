@@ -985,6 +985,11 @@ rect.now { fill-opacity: .45; }
 .rename-box:focus { border-color: var(--accent); outline: none; }
 .rename-box.changed { font-weight: 700; }
 .rename-stops .line-stop-actions { margin-top: 8px; }
+/* the station whose box has the focus, ringed on the map; still for those who ask for less motion */
+.rename-ring { width: 26px; height: 26px; border-radius: 50%; pointer-events: none; border: 3px solid var(--accent);
+               box-shadow: 0 0 0 2px #fff, 0 0 10px 2px var(--accent); animation: rename-ring 1.2s ease-in-out infinite alternate; }
+@keyframes rename-ring { from { transform: scale(0.85); opacity: 1; } to { transform: scale(1.25); opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .rename-ring { animation: none; } }
 /* T-1464: a bus line's stops: a square at each end, a ring at a station, small rings for the street stops */
 .bus-stops { list-style: none; margin: 0; padding: 0; }
 .bus-stops li { display: flex; align-items: center; gap: 8px; min-height: 25px; }

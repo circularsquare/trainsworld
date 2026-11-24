@@ -939,7 +939,9 @@ order, kept and dropped as the Lines tab's is [T-1813]. Riders follows the rider
   bound station stands for its complex, so the bound stations of one complex share one box. A paste of several
   lines into a box fills it and the boxes below, one line each (a blank line leaves its box as it is), so a list
   of names from elsewhere goes in at once. Enter goes to the next box, and on the last box or with Ctrl (Cmd)
-  renames; Escape or Cancel closes it renaming nothing. A changed box is bold, its hover the name it had. "Rename 3
+  renames; Escape or Cancel closes it renaming nothing. A changed box is bold, its hover the name it had. The
+  station whose box has the focus is lit on the map as under a stop row's pointer and ringed in the accent
+  colour, a ring that pulses (still under reduced motion) and goes when the box loses the focus. "Rename 3
   stations" (greyed until a box changes) renames each changed one as its own panel would (an unbound station
   alone, a bound one its complex: `renameStations` in `workers/clockDemand.ts`, `TrackApi.rename_stations`), all
   as one undo, and says "Renamed 3 stations".

@@ -1,12 +1,30 @@
 // A line's stations renamed together from its panel: the Stops list turns into a box per station in the
 // list's order, filled with the names they show. Rename sends the changed ones as one edit (one undo), each
 // renamed as its own panel would (`renameStations` in workers/clockDemand.ts). A paste of several lines
-// fills the box pasted into and those below it, so a list of names from elsewhere goes in at once.
+// fills the box pasted into and those below it, so a list of names from elsewhere goes in at once. The station
+// whose box has the focus is lit on the map, as a stop row under the pointer is, and ringed so it stands out
+// among the line's other stations (the light alone is faint at most zooms).
 
 import { useEffect, useRef, useState } from "preact/hooks";
 import { t as tr } from "../../i18n";
 import { complexOf } from "../../game/complexView";
 import { edit, say, stationNames, stationsById, world } from "../../game/world";
+import { setListHot } from "../../map/hovered";
+import { live } from "../../map/live";
+import { Marker } from "maplibre-gl";
+
+/** The ring on the map round the station whose box has the focus. */
+function ringAt(id: string | null, ring: { current: Marker | null }) {
+  ring.current?.remove();
+  ring.current = null;
+  setListHot(id ? { stations: complexOf(id) } : null);
+  const w = world.peek(), s = id && w ? stationsById(w).get(id) : undefined;
+  if (!s || !live.map) return;
+  // MapLibre places the marker by its element's transform, so the ring that pulses is a child
+  const el = document.createElement("div");
+  el.appendChild(document.createElement("div")).className = "rename-ring";
+  ring.current = new Marker({ element: el }).setLngLat([s.lng, s.lat]).addTo(live.map);
+}
 
 /** One box per station shown, in `order` (station ids as the list shows them, top first); a bound station
  * stands for its complex, so two bound stations of one complex share a box. */
@@ -28,10 +46,12 @@ export function RenameStops({ order, colour, onClose }: { order: readonly string
   const [drafts, setDrafts] = useState<string[]>(() => rows.map((r) => r.name));
   const [busy, setBusy] = useState(false);
   const list = useRef<HTMLOListElement>(null);
+  const ring = useRef<Marker | null>(null);
   const box = (k: number) => list.current?.querySelectorAll("input")[k];
   useEffect(() => {
     box(0)?.focus();
     box(0)?.select();
+    return () => ringAt(null, ring);
   }, []);
   const changed = rows.map((r, k) => ({ r, name: drafts[k].trim() })).filter(({ r, name }) => name && name !== r.name);
   const save = async () => {
@@ -77,6 +97,7 @@ export function RenameStops({ order, colour, onClose }: { order: readonly string
             <input class={"rename-box" + (drafts[k].trim() && drafts[k].trim() !== r.name ? " changed" : "")} value={drafts[k]} disabled={busy}
               aria-label={tr("renameStops.box", { name: r.name })} data-tip={drafts[k].trim() !== r.name ? r.name : undefined}
               onInput={(e) => { const v = e.currentTarget.value; setDrafts((d) => d.map((x, j) => (j === k ? v : x))); }}
+              onFocus={() => ringAt(r.id, ring)} onBlur={() => ringAt(null, ring)}
               onPaste={(e) => paste(k, e)} onKeyDown={(e) => key(k, e)} />
           </li>
         ))}
