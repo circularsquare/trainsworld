@@ -1011,7 +1011,7 @@ function RailLineInspector({ id }: { id: string }) {
           </button>
         )}
         {!editingStops && !renaming && l.stops.length >= 1 && (
-          <button class="btn text mini sort-stops" data-tip={tr("renameStops.openTip")} onClick={() => setRenaming(true)}>{tr("renameStops.open")}</button>
+          <button class="btn text mini rename-open" data-tip={tr("renameStops.openTip")} onClick={() => setRenaming(true)}>{tr("renameStops.open")}</button>
         )}
         {editingStops && st.hand && (
           <button class="btn text mini sort-stops" data-tip={tr("lineInspector.sortStopsTip")} onClick={sortStops}>{tr("lineInspector.sortStops")}</button>

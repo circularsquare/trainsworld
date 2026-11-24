@@ -976,9 +976,9 @@ rect.now { fill-opacity: .45; }
 .order li.dragged { opacity: 0.5; }
 .order li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .order li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
-.h .sort-stops { margin-left: 8px; font-weight: 400; }
+.h .sort-stops, .h .rename-open { margin-left: 8px; font-weight: 400; }
 /* a line's stations renamed together: a box per station on the line's bar */
-.rename-stops > p { margin: 4px 0 6px; }
+.rename-stops { margin-top: 4px; }
 .stops.rename li { min-height: 30px; }
 .rename-box { flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--rule);
               border-radius: 0; padding: 0 4px; height: 26px; }
@@ -987,7 +987,7 @@ rect.now { fill-opacity: .45; }
 .rename-stops .line-stop-actions { margin-top: 8px; }
 /* the station whose box has the focus, ringed on the map; still for those who ask for less motion */
 .rename-ring { width: 26px; height: 26px; border-radius: 50%; pointer-events: none; border: 3px solid var(--accent);
-               box-shadow: 0 0 0 2px #fff, 0 0 10px 2px var(--accent); animation: rename-ring 1.2s ease-in-out infinite alternate; }
+               box-shadow: 0 0 0 2px var(--bg), 0 0 10px 2px var(--accent); animation: rename-ring 1.2s ease-in-out infinite alternate; }
 @keyframes rename-ring { from { transform: scale(0.85); opacity: 1; } to { transform: scale(1.25); opacity: 0.6; } }
 @media (prefers-reduced-motion: reduce) { .rename-ring { animation: none; } }
 /* T-1464: a bus line's stops: a square at each end, a ring at a station, small rings for the street stops */

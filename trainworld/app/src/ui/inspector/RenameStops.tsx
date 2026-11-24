@@ -90,7 +90,6 @@ export function RenameStops({ order, colour, onClose }: { order: readonly string
   };
   return (
     <div class="rename-stops">
-      <p class="muted small">{tr("renameStops.help")}</p>
       <ol ref={list} class="stops rename" style={{ "--c": colour }}>
         {rows.map((r, k) => (
           <li>
