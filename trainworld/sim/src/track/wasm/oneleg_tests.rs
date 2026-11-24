@@ -755,3 +755,85 @@ fn t3711_one_way_stop_on_double_track() {
         assert!(!ls.runs[0].passes(1) && ls.runs[1].passes(1), "right hand {right_hand}: served the way the line goes");
     }
 }
+
+/// Double track from P (0, 0) to Q (10000, 0) with two one-way pairs of single legs, A from x = 2000 to 4000 and
+/// B from 6000 to 8000 (through y = 20 and -20, the north leg of each eastbound), two lines alike from P to Q
+/// stopping at a station on B's westbound leg, which only their way back passes, and two from M (5000, 0) to Q
+/// stopping there too. Returns (the api, the lines from P, the first from M, that station, a piece of A's westbound
+/// leg).
+fn two_pairs(right_hand: bool) -> (TrackApi, Vec<u32>, u32, u32, u32) {
+    let mut a = api(right_hand);
+    for (x0, x1) in [(0.0, 2000.0), (4000.0, 6000.0), (8000.0, 10000.0)] {
+        assert_eq!(a.add_route(&ends(free(x0, 0.0), free(x1, 0.0)), &[], 2, false), 0, "{}", a.issues());
+    }
+    let mut west_legs = vec![];
+    for (x0, x1) in [(2000.0, 4000.0), (6000.0, 8000.0)] {
+        let (j0, j1) = (node_near(&a, x0, 0.0), node_near(&a, x1, 0.0));
+        for y in [20.0, -20.0] {
+            assert_eq!(a.add_route(&ends(at_node(&a, j0), at_node(&a, j1)), &[(x0 + x1) / 2.0, y, 0.0, 0.0], 1, false), 0, "{}", a.issues());
+            let net = &a.w.net;
+            let e = (0..net.edge_count() as u32).filter(|&e| net.edge_ok(e) && net.edge_tracks[e as usize] == 1).min_by(|&p, &q| net.project(p, (x0 + x1) / 2.0, y).1.total_cmp(&net.project(q, (x0 + x1) / 2.0, y).1)).unwrap();
+            // the north leg eastbound, the south one westbound
+            let a_west = net.node_x[net.edge_a[e as usize] as usize] < net.node_x[net.edge_b[e as usize] as usize];
+            let w = if (y > 0.0) == a_west { 1 } else { 2 };
+            assert_eq!(a.set_edge_oneway(e, w), 0, "{}", a.issues());
+            if y < 0.0 {
+                west_legs.push(e);
+            }
+        }
+    }
+    let (p, q) = (end_station(&mut a, 0.0, 0.0), end_station(&mut a, 10000.0, 0.0));
+    let st = station_near(&mut a, 7000.0, -20.0);
+    let lines: Vec<u32> = (0..2).map(|_| new_line(&mut a, &[p, st, q])).collect();
+    let m = station_near(&mut a, 5000.0, 0.0);
+    let short = new_line(&mut a, &[m, st, q]);
+    new_line(&mut a, &[m, st, q]);
+    assert_eq!(a.construct_all(), 0, "{}", a.issues());
+    (a, lines, short, st, west_legs[0])
+}
+
+/// The incremental capacity pass against the global one (as `capacity::tests`).
+fn same_as_global(a: &TrackApi, what: &str) {
+    let mut g = crate::track::service::Service::default();
+    g.update_all(&a.w.net);
+    assert_eq!(a.w.svc.cap.canonical(), g.cap.canonical(), "{what}: resources");
+    for (l, (x, y)) in a.w.svc.lines.iter().zip(&g.lines).enumerate() {
+        assert_eq!((x.ok, x.running), (y.ok, y.running), "{what}: line {l}");
+        for r in 0..2 {
+            assert_eq!((&x.runs[r].holds, &x.runs[r].stop_holds), (&y.runs[r].holds, &y.runs[r].stop_holds), "{what}: line {l} run {r}");
+        }
+    }
+}
+
+/// Lines whose way back runs over track their way out does not take (here a one-way station on the other leg of a
+/// one-way pair) hold resources only that way, and the incremental capacity pass has to rebuild and drop those
+/// as the global one does. It took a rebuilt line's way out alone, so an edit that broke the lines left the way
+/// back's platform at another pair with a stop the lines no longer have, and working out the holds read past the
+/// end of their stops: a panic, the edit undone. The lines from M, which still run, keep that platform.
+#[test]
+fn breaking_a_line_drops_what_its_way_back_held() {
+    for right_hand in [true, false] {
+        let what = format!("right hand {right_hand}");
+        let (mut a, lines, short, st, west_a) = two_pairs(right_hand);
+        for &l in lines.iter().chain([&short]) {
+            let ls = &a.w.svc.lines[l as usize];
+            assert!(ls.running && !ls.runs[0].nodes.contains(&st) && ls.runs[1].nodes.contains(&st), "{what}: {st} on the way back only");
+        }
+        let cap = &a.w.svc.cap;
+        let held = (0..cap.res.len()).any(|r| cap.res[r].node == st && cap.users_of(r).iter().any(|u| u.run == 1 && u.stop >= 0) && cap.delay[r].iter().any(|&d| d > 0.0));
+        assert!(held, "{what}: the platform at {st} holds trains");
+        same_as_global(&a, &format!("{what}, built"));
+        // an edit at that station alone
+        let name = a.w.net.station_data(st).unwrap().name.clone();
+        let plat = a.w.net.node_platform[st as usize];
+        assert_eq!(a.set_station_props(st, plat + 40, name), 0, "{what}: {}", a.issues());
+        same_as_global(&a, &format!("{what}, its platform longer"));
+        // one that breaks the lines away from it
+        assert_eq!(a.delete_edge(west_a), 0, "{what}: {}", a.issues());
+        for &l in &lines {
+            assert!(a.w.net.line_broken[l as usize], "{what}: no way back");
+        }
+        assert!(a.w.svc.lines[short as usize].running, "{what}: the line from M still runs");
+        same_as_global(&a, &format!("{what}, broken"));
+    }
+}

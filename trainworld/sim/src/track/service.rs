@@ -1085,13 +1085,16 @@ impl Service {
             .map(|&l| (l, std::array::from_fn(|r| (0..SLOTS).map(|lev| self.lines[l as usize].stop_to_stop_safe(r, lev)).collect())))
             .collect();
         let mut demand: Vec<u32> = rescheduled.to_vec();
-        // The incremental capacity pass needs the old and new paths of the rebuilt lines.
+        // The incremental capacity pass needs the old and new paths of the rebuilt lines, both ways: a
+        // way back on other track (T-3094, T-3565) holds resources the way out does not pass.
         let mut path_edges: Vec<u32> = vec![];
         let mut path_nodes: Vec<u32> = vec![];
         let mut add_path = |ls: &LineSvc| {
             if ls.running {
-                path_edges.extend(ls.runs[0].segs.iter().map(|&p| path_edge(p)));
-                path_nodes.extend_from_slice(&ls.runs[0].nodes);
+                for run in ls.runs.iter().take(ls.live_runs()) {
+                    path_edges.extend(run.segs.iter().map(|&p| path_edge(p)));
+                    path_nodes.extend_from_slice(&run.nodes);
+                }
             }
         };
         for &l in rebuilt {

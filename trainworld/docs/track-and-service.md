@@ -1049,7 +1049,8 @@ settles from them with an edit's settle and changes nothing; a save without them
 one changed to another frame) settles in full, every line of an unsettled level stepped. A line a save loads at a frequency
 rather than trains takes the whole trains that frequency needs first (architecture.md 11).
 The underlying capacity pass is incremental: an edit
-rebuilds only the resources around the edges, nodes and lines it touched and re-solves those and
+rebuilds only the resources around the edges, nodes and lines it touched (a line's both ways, a way
+back on track of its own too) and re-solves those and
 the ones a rescheduled line uses, with the same result as rebuilding everything (T-050; timings
 in notes/T-050.md). Each delay is baked into the line's run-time profile per demand level as a hold
 at the resource's entry: a slower approach when the delay is shorter than what braking to a stop
