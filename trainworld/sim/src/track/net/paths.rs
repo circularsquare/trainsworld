@@ -2,6 +2,35 @@
 
 use super::*;
 
+/// The first arrival on either side (and on either one), with the same tie order as a single hop.
+#[cfg(feature = "track-api")]
+pub(crate) struct PathTree {
+    arrivals: Vec<[u32; 3]>,
+    prev: Vec<u32>,
+}
+
+#[cfg(feature = "track-api")]
+impl PathTree {
+    pub(crate) fn path(&self, to: u32, want: Option<u8>) -> Option<(Vec<u32>, u8)> {
+        let arrivals = self.arrivals[to as usize];
+        let end = arrivals[want.unwrap_or(2) as usize];
+        if end == u32::MAX {
+            return None;
+        }
+        Some((path_to(&self.prev, end), u8::from(end != arrivals[0])))
+    }
+}
+
+fn path_to(prev: &[u32], mut edge: u32) -> Vec<u32> {
+    let mut path = vec![edge];
+    while prev[edge as usize] != u32::MAX {
+        edge = prev[edge as usize];
+        path.push(edge);
+    }
+    path.reverse();
+    path
+}
+
 impl Network {
     /// The constructed station or edge set is complete for a line: it can carry trains.
     pub fn line_constructed(&self, l: u32) -> bool {
@@ -203,6 +232,30 @@ impl Network {
     /// arrives so the train carries on round). `tram`: the hop is a tram line's, which may run on
     /// any track; else it keeps off tram track (T-3889).
     pub fn find_path_side(&self, from: u32, to: u32, arrived: Option<u8>, want: Option<u8>, tram: bool) -> Option<(Vec<u32>, u8)> {
+        let (prev, hit) = self.search_paths(from, arrived, tram, |node, _, side| node == to && want.map_or(true, |w| w == side));
+        hit.map(|(edge, side)| (path_to(&prev, edge), side))
+    }
+
+    #[cfg(feature = "track-api")]
+    pub(crate) fn path_tree(&self, from: u32, arrived: Option<u8>, tram: bool) -> PathTree {
+        let mut arrivals = vec![[u32::MAX; 3]; self.node_count()];
+        let (prev, _) = self.search_paths(from, arrived, tram, |node, edge, side| {
+            let at = &mut arrivals[node as usize];
+            if at[side as usize] == u32::MAX {
+                at[side as usize] = edge;
+            }
+            if at[2] == u32::MAX {
+                at[2] = edge;
+            }
+            false
+        });
+        PathTree { arrivals, prev }
+    }
+
+    fn search_paths(
+        &self, from: u32, arrived: Option<u8>, tram: bool,
+        mut done: impl FnMut(u32, u32, u8) -> bool,
+    ) -> (Vec<u32>, Option<(u32, u8)>) {
         let barred = |e: u32| self.edge_barred(e, tram);
         let ne = self.edge_count();
         let mut dist = vec![f64::INFINITY; 2 * ne];
@@ -226,15 +279,8 @@ impl Network {
             let (node, arr, mut on) = self.moves_after(st);
             let p = &self.node_ports[node as usize];
             let arr_side = arr.map_or(0, |i| p.side[i]);
-            if node == to && want.map_or(true, |w| w == arr_side) {
-                let mut path = vec![st];
-                let mut cur = st;
-                while prev[cur as usize] != u32::MAX {
-                    cur = prev[cur as usize];
-                    path.push(cur);
-                }
-                path.reverse();
-                return Some((path, arr_side));
+            if done(node, st, arr_side) {
+                return (prev, Some((st, arr_side)));
             }
             // a train may turn back at a track end (T-797 B3, T-3595), the way it came
             let back = if self.turn_end(node) { arr.or(Some(0)) } else { None };
@@ -255,7 +301,7 @@ impl Network {
                 }
             }
         }
-        None
+        (prev, None)
     }
 
     /// Fastest path through a list of stops, hop by hop; it may turn back at a stop.
@@ -294,7 +340,7 @@ impl Network {
             let carry = want.and_then(|_| self.find_path_side(w[0], w[1], side, want, tram));
             let plain = self.find_path_side(w[0], w[1], side, None, tram);
             let (p, s) = match (carry, plain) {
-                (Some(c), Some(p)) => if self.carry_worth(&c.0, &p.0) { c } else { p },
+                (Some(c), Some(p)) => if self.carry_worth(&path, &c.0, &p.0) { c } else { p },
                 (c, p) => c.or(p).ok_or(k)?,
             };
             path.extend(p);
@@ -339,11 +385,19 @@ impl Network {
     }
 
     /// Whether a loop's closing hop that carries on round (`carry`) is taken over the plain one,
-    /// which may turn back at the first stop (`plain`): when it is at most `CARRY_SLACK_S` slower,
-    /// so a closing never runs a long way round the network to avoid a turn (T-3021).
-    pub fn carry_worth(&self, carry: &[u32], plain: &[u32]) -> bool {
+    /// which may turn back at the first stop (`plain`), both leaving the end of `before`: when it is
+    /// at most `CARRY_SLACK_S` slower, so a closing never runs a long way round the network to avoid a
+    /// turn (T-3021). A plain hop that turns back on the way more often (where it leaves, or at a track
+    /// end) goes back over the line's own track and makes no loop at all: the carry is taken however
+    /// long, as a long stretch with no stops before the first stop would otherwise never close (T-4223).
+    pub fn carry_worth(&self, before: &[u32], carry: &[u32], plain: &[u32]) -> bool {
+        let turns = |hop: &[u32]| {
+            let mut p: Vec<u32> = before.last().copied().into_iter().collect();
+            p.extend_from_slice(hop);
+            self.path_reversals(&p).len()
+        };
         let t = |p: &[u32]| p.iter().map(|&x| self.edge_time[path_edge(x) as usize]).sum::<f64>();
-        t(carry) <= t(plain) + CARRY_SLACK_S
+        turns(plain) > turns(carry) || t(carry) <= t(plain) + CARRY_SLACK_S
     }
 
     /// T-3021: the quickest way on from a path's last node, round a loop of track and back onto the

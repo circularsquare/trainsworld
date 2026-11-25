@@ -41,7 +41,7 @@ import { keyIsTheirs } from "../ui/keys";
 import { BUS_KEY } from "../ui/toolKeys";
 import type { ClockClient } from "../workers/clockClient";
 import { metresBetween } from "../game/walks";
-import { SAME_TAP_PX, touchInput, type TouchCtl } from "./touch";
+import { LONG_PRESS_MS, SAME_TAP_PX, TOUCH_HANDLE_PX, TOUCH_SLOP_PX, touchInput, type TouchCtl } from "./touch";
 import type { Overlay } from "./overlay";
 import { BusRoads, SNAP_M, type BusRefusal, type Leg } from "./busRoads";
 import { setGrabbing } from "./nodeDrag";
@@ -51,7 +51,7 @@ import { setToolHot } from "./hovered";
 import { routeMeets } from "../game/busLinks";
 import { CurveLabelPool, type CurveLabel } from "./trackTagRows";
 import { busRoadColour } from "./basemap";
-import { toLngLat } from "./geo";
+import { buswaysOf } from "./buswayLines";
 
 /** the sim's `bus::MIN_ROUTE_M` */
 const MIN_ROUTE_M = 100;
@@ -67,14 +67,9 @@ const HANDLE_PX = 8;
 const NEAR_POINT_SQ_M = 12 * 12;
 /** a press on a handle becomes a drag once the pointer has moved this far, px (MapLibre's click tolerance) */
 const DRAG_PX = 3;
-/** a finger's reach to a handle, and how far it may wander (px) before the press is a drag, not a hold */
-const TOUCH_HANDLE_PX = 18;
-const TOUCH_SLOP_PX = 8;
 /** a press this close (px) to the route's path, between its points, drags a new point out of it (T-3366) */
 const PATH_PX = 7;
 const TOUCH_PATH_PX = 12;
-/** a finger held still on a handle this long (ms) deletes the point (T-1517) */
-const LONG_PRESS_MS = 500;
 
 /** a refusal as the tag over the pointer says it, and as the message after a click (T-2451) */
 const refusalTag = (r: BusRefusal) => t(r === "far" ? "busDraw.tagFar" : r === "path" ? "busDraw.tagPath" : "busDraw.tagLong");
@@ -251,7 +246,10 @@ export class BusDraw {
       const p = { lng: routeLL[2 * i], lat: routeLL[2 * i + 1] };
       if (from >= 0) {
         const road = !!((kinds[i] ?? 0) & K_ROAD);
-        this.legs.push(road ? { pts: routeLL.slice(2 * from, 2 * i + 2), road, ready: true, m: 0 } : this.roads.leg(this.pts[this.pts.length - 1], p));
+        // its trunk stretches as saved (open-source issue 28): a leg is searched again only when one of its
+        // ends moves, so the save that ends this edit writes these back for the legs left alone
+        const fast = road ? Array.from({ length: i - from }, (_, j) => !!((kinds[from + 1 + j] ?? 0) & K_TRUNK)) : [];
+        this.legs.push(road ? { pts: routeLL.slice(2 * from, 2 * i + 2), road, ready: true, m: 0, ...(fast.some(Boolean) ? { fast } : {}) } : this.roads.leg(this.pts[this.pts.length - 1], p));
       }
       this.pts.push(p);
       from = i;
@@ -1438,25 +1436,4 @@ function reversedLeg(leg: Leg): Leg {
   const pts: number[] = [];
   for (let i = leg.pts.length - 2; i >= 0; i -= 2) pts.push(leg.pts[i], leg.pts[i + 1]);
   return { ...leg, pts, ...(leg.fast ? { fast: [...leg.fast].reverse() } : {}) };
-}
-
-/** T-3378: the busways (track of kind 4, constructed or planned) as lng, lat lines for the bus router, worked out again
- * when the world's edges or the drawn network change. */
-let buswayMemo: { edges: unknown; net: unknown; out: { key: string; lines: number[][] } } | null = null;
-function buswaysOf(overlay: Overlay): { key: string; lines: number[][] } {
-  const w = world.peek(), n = overlay.renderer.net;
-  if (!w || !n) return { key: "", lines: [] };
-  if (buswayMemo && buswayMemo.edges === w.edges && buswayMemo.net === n) return buswayMemo.out;
-  const lines: number[][] = [], keys: string[] = [];
-  for (const e of w.edges) {
-    if (e.kind !== 4) continue;
-    const pts = n.edgePts.get(e.id);
-    if (!pts || pts.length < 6) continue;
-    const ll: number[] = [];
-    for (let k = 0; k + 2 < pts.length; k += 3) ll.push(...toLngLat(pts[k], pts[k + 1]));
-    lines.push(ll);
-    keys.push(`${e.id}:${e.lengthM}:${ll[0]},${ll[1]}`);
-  }
-  buswayMemo = { edges: w.edges, net: n, out: { key: keys.join("|"), lines } };
-  return buswayMemo.out;
 }

@@ -5,14 +5,15 @@ import { PERIODS, periodAt } from "../game/periods";
 import { t } from "../i18n";
 import { tPlace } from "../i18n/places";
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { JSX } from "preact";
+import { Fragment, type JSX } from "preact";
 import { COUNT_MS, countingRiders, openings } from "../game/openingDay";
 import { createLine } from "../game/lineActions";
 import { boatsText, busesText, count, money } from "../game/format";
 import { DEMAND_INDEX, type Demand, type LineInput, type LineStats } from "../game/types";
 import { lineSort, selection, uiScale } from "../game/ui";
 import { busStopsById, listedLines, edit, renameLine, stationsById } from "../game/world";
-import { closedGroups, groupName, groupTree, lineGroups, toggleGroup } from "../game/lineGroups";
+import { closedGroups, groupName, groupTree, lineGroups, setAllGroups, toggleGroup } from "../game/lineGroups";
+import "../game/groupsClosed";
 import { byHand, handOrder, setHandOrder } from "../game/handOrder";
 import { GroupPill } from "./GroupPill";
 import { trainsNowAt } from "../game/lineRunning";
@@ -429,6 +430,11 @@ export function LinesTab() {
         dragged.current = true;
         setTimeout(() => { dragged.current = false; }, 0);
         if (u.type === "pointerup") dropLine(d);
+      } else if (u.type === "pointerup" && (u.target as Element | null)?.closest?.("ul.rows") && !(u.target as Element).closest("button, input")) {
+        // the list may have sorted again under the press, which moves the row and loses the click: open what the press began on
+        pick(id);
+        dragged.current = true;
+        setTimeout(() => { dragged.current = false; }, 0);
       }
       setDrag(null);
     };
@@ -451,7 +457,10 @@ export function LinesTab() {
       markDepth = gr ? gr.depth + 1 : 0;
     }
   }
-  const pick = (id: string) => { if (!dragged.current) selection.value = { kind: "line", line: id }; };
+  function pick(id: string) {
+    if (dragged.current) return;
+    selection.value = id.startsWith("g:") ? { kind: "group", group: Number(id.slice(2)) } : { kind: "line", line: id };
+  }
   // T-3420: the lines hidden on the map, and whether the rows show their eyes
   const hid = hiddenLines.value, eyes = visToggles.value;
   /** T-3423: a row in a group, indented a step for each group it is in */
@@ -466,7 +475,7 @@ export function LinesTab() {
     const on = (sel?.kind === "line" || sel?.kind === "train") && sel.line === l.id;
     const drop = "l:" + l.id, dp = depthOf(depth, drop);
     return (
-      <li class={(on ? "on" : "") + dp.cls + (hid.has(l.id) ? " hidden-line" : "") + (marks.get(drop) ?? "") + (drag?.on && drag.id === l.id ? " dragged" : "")} style={dp.style}
+      <li key={drop} class={(on ? "on" : "") + dp.cls + (hid.has(l.id) ? " hidden-line" : "") + (marks.get(drop) ?? "") + (drag?.on && drag.id === l.id ? " dragged" : "")} style={dp.style}
         data-drop={drop} onPointerDown={(e) => pointerDown(e, l.id)} onClick={() => pick(l.id)} onDblClick={() => locateLine(l.stops)}>
         {eyes && <VisToggle ids={[l.id]} />}
         <Chip line={l} />
@@ -497,12 +506,13 @@ export function LinesTab() {
     const isOpen = !closed.has(it.g), drop = "g:" + it.g, dp = depthOf(depth, drop);
     const on = !isOpen && sel?.kind === "group" && sel.group === it.g;
     return (
-      <>
+      <Fragment key={drop}>
         <li class={"group-row" + (on ? " on" : "") + dp.cls + (it.ls.every((l) => hid.has(l.id)) ? " hidden-line" : "") + (marks.get(drop) ?? "") + (drag?.on && drag.id === drop ? " dragged" : "")} style={dp.style} data-drop={drop} onPointerDown={(e) => pointerDown(e, drop)}
           onClick={() => { if (!dragged.current) selection.value = { kind: "group", group: it.g }; }} onDblClick={() => locateLine(it.ls.flatMap((l) => l.stops))}>
           {eyes && <VisToggle ids={it.ls.map((l) => l.id)} group />}
-          <button class={"btn icon mini chevron" + (isOpen ? " open" : "")} data-tip={isOpen ? t("linesTab.closeGroup") : t("linesTab.openGroup")} aria-label={isOpen ? t("linesTab.closeGroup") : t("linesTab.openGroup")}
-            aria-expanded={isOpen} onClick={(e) => { e.stopPropagation(); toggleGroup(it.g); }} onDblClick={(e) => e.stopPropagation()}><Icon.chevron /></button>
+          <button class={"btn icon mini chevron" + (isOpen ? " open" : "")} data-tip={isOpen ? t("linesTab.closeGroupTip") : t("linesTab.openGroupTip")} aria-label={isOpen ? t("linesTab.closeGroup") : t("linesTab.openGroup")}
+            aria-expanded={isOpen} onClick={(e) => { e.stopPropagation(); if (e.detail < 2) toggleGroup(it.g); }}
+            onDblClick={(e) => { e.stopPropagation(); setAllGroups(closedGroups.peek().has(it.g) ? tree.keys() : null); }}><Icon.chevron /></button>
           <GroupPill ls={it.ls} g={it.g} tip={it.ls.map((l) => l.name).join("\n")} />
           {renaming === it.g ? (
             <input class="name-edit grow" value={it.name} aria-label={t("linesTab.groupName")} ref={(el) => { if (el && document.activeElement !== el) { el.focus(); el.select(); } }}
@@ -517,7 +527,7 @@ export function LinesTab() {
           {key === "near" && <Near m={near(it.ls)} />}
         </li>
         {isOpen && kidsShown(it).map((k) => (k.g ? groupRows(k, depth + 1) : lineRow(k.ls[0], depth + 1)))}
-      </>
+      </Fragment>
     );
   };
   const renameGroup = (it: Item, typed: string) => {

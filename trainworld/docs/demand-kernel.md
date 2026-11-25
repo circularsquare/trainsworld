@@ -98,8 +98,8 @@ levels:
    scattering each station over the cells near it. With routes (T-275) each station's walk is
    searched once per position, every station once per worker on opening; an edit searches only
    its new or moved stations (timings: notes/T-275.md). **Bus corridors** (T-1464): a bus stop
-   that is no station is never walked to straight; each of them serves a stretch of its route (the
-   route's points nearer it than any other such stop of the line), and a cell within 600 m (`BUS_REACH_M`; 300 until T-3856) of a
+   that is no station is never walked to straight. On automatic lines its stretch ends halfway to
+   each neighboring stop, including a station stop. A cell within 500 m (`BUS_REACH_M`; 300 until T-3856, 600 until T-4224) of a
    stretch reaches that stop with a walk of its distance to the route plus 100 m (the mean walk
    along it to a street stop). A cell keeps its 6 stations and adds at most 2 such bus stops, the
    nearest, so a bus never hides a station.
@@ -183,8 +183,10 @@ levels:
    like one whose trains an hour did (T-124), and the cache key (T-328) includes it. The wait
    inside service stays half the period's headway.
    **Boarding a bus** costs what boarding a train does (T-3856; from T-1576 to then a bus boarding cost 6, later 4,
-   perceived minutes). A bus line (`Network::bus_line`: the snapshot's bus cars, or a bus-only stop) differs only in its
-   crowding (`BUS_CROWD_START`).
+   perceived minutes). A bus line (`Network::bus_line`: the snapshot's bus cars, or a bus-only stop, a BRT line too)
+   differs in its crowding (`BUS_CROWD_START`), in counting each minute aboard `BUS_RIDE_WEIGHT` (1.1) times, and in
+   a headway of at least twice `BUS_MIN_WAIT_MIN` (2 minutes) in `build_graph`, so its wait is at least 2 minutes and
+   its share of a stop's boardings is worked from that headway (T-4224); its real minutes and room are unchanged.
    **Ferries** (T-2195, design notes/T-2177.md 3.6): a ferry line is a line like any other in the
    snapshot (`SnapshotLine.ferry`), its stops its ports, which are stations: walked to as any station
    (a landing the pack's walk grid calls water starts its walks from the nearest land pixels, as any
@@ -281,9 +283,12 @@ levels:
    than one merged station: each keeps its own catchment and position, a long link is not a free
    teleport, and transfers stay counted platform to platform for the complex map (T-176). The
    trip explorer shows such a change as a walk between the two stations. The 100 m merge is single
-   linkage, so a chain of platforms is one demand station; complexes add walks only between
-   members more than 300 m apart (long platforms end to end, a long chained complex the player
-   builds, linked stations; the real New York save has none, notes/T-161.md).
+   linkage, so a chain of platforms is one demand station (two stations the player kept apart, T-4048,
+   `DemandApi::set_apart`, are never merged, not even through a third station near both, nor given the 300 m
+   walk); complexes add the walks between members the 300 m walk does not give: members more than 300 m apart
+   (long platforms end to end, a long chained complex the player builds, linked stations; the real New York
+   save has none, notes/T-161.md), and a pair kept apart that a passage, a building or a third station joins
+   into one complex again.
    Destination strategies and boarding frequencies
    are kept for loading. Each destination's search is independent, so only stations someone can
    end a rail trip at are searched towards (`egress_stations`: the walks of subzones with jobs, and
@@ -335,7 +340,8 @@ levels:
    two walks together pass `pair_walk_max` (80 perceived minutes, 4.3) are skipped without being
    visited: each zone's destinations are kept cheapest walk first, and the destination zones by
    their cheapest walk, so an origin stops at the first that is too far. Zone pairs carrying under
-   0.1 trips in the period (`COMMUTE_CHUNK`; effect in notes/T-874.md; 1 trip in a zone opened coarse, T-1222) are dealt their trips in chunks (T-874, as the market's, T-780): per origin zone and block of
+   1 person a day (`COMMUTE_CHUNK_DAY`, the number to tune, T-921: that day's share in the period's trips; at least
+   0.1 trips, `COMMUTE_CHUNK`, and 1 trip in a zone opened coarse, T-1222) are dealt their trips in chunks (T-874, as the market's, T-780): per origin zone and block of
    8 x 8 destination zones, the block's small pairs in zone order are sampled by trips from a
    start fixed by the zone and block, each pair drawn carrying its draws' trips and the rest
    skipped. Each block's trips stay exact and the deal depends on trips alone, never on rail's

@@ -6,7 +6,7 @@ A station has four things you can add, from the row of icons in its panel. You b
 
 **Passing tracks.** A second platform track each way. Trains that stop use the outer one, and trains that don't use the inner one, or a second train can stop. A slower line that stops here waits for faster ones to pass, so an express can overtake a local ([[slower-trains]]). It costs the platform plus {{sim/src/track/upgrades.rs:PASSING_EXTRA_KM}} km of double track at the station's level, more on high-speed track and over water. It only works on double track, at a station with platforms on both tracks.
 
-**Park and ride.** A drive to or from the station counts {{sim/src/track/upgrades.rs:PARK_RIDE_MIN|0}} minutes less ([[walking-to-stations]]). It costs US${{sim/src/track/upgrades.rs:PARK_RIDE_COST|0}}M. A P shows after the station's name.
+**Park and ride.** A drive to or from the station counts {{sim/src/track/upgrades.rs:PARK_RIDE_MIN|0}} minutes less ([[walking-to-stations]]). It costs US${{sim/src/track/upgrades.rs:PARK_RIDE_COST|0}}M, or US${{sim/src/track/upgrades.rs:TRAM_PARK_RIDE_COST|0}}M at a tram stop, which gets a smaller lot. A P shows after the station's name.
 
 **Waiting room.** Waiting for a train here counts {{sim/src/track/upgrades.rs:WAITING_ROOM_WAIT}} of its minutes ([[waiting-and-changing]]). It costs US${{sim/src/track/upgrades.rs:WAITING_ROOM_COST|0}}M.
 

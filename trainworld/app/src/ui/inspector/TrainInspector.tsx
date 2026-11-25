@@ -4,7 +4,7 @@ import { clock } from "../../game/clock";
 import { demandView, lineDemand } from "../../game/demand";
 import { loadFailure, tripsOff } from "../../game/loading";
 import { PERIODS, periodAt } from "../../game/periods";
-import { distanceOf, exact } from "../../game/format";
+import { exact } from "../../game/format";
 import { lowerWord, t } from "../../i18n";
 import type { LineInput } from "../../game/types";
 import { linesById, stationNames, world } from "../../game/world";
@@ -16,6 +16,7 @@ import { following, toggleFollow } from "../../map/cameraFollow";
 import { Chip, Icon, Row } from "../widgets";
 import { OneRider } from "./OneRider";
 import { TrainStops } from "./TrainStops";
+import { Speedometer } from "./Speedometer";
 import { profileLine, profileRun } from "../../map/profiles";
 
 export function TrainInspector({ line, profile, dep }: { line: string; profile: number; dep: number }) {
@@ -33,7 +34,6 @@ export function TrainInspector({ line, profile, dep }: { line: string; profile: 
   const stops = run === 0 ? l.stops : [...l.stops].reverse();
   const stopS = st.stopS[run] ?? [];
   const next = at ? stopS.findIndex((s) => s > at.s + 1) : -1;
-  const len = net.meta[profile * 4 + 3];
   const head = stops.length - 1;
   return (
     <>
@@ -48,12 +48,13 @@ export function TrainInspector({ line, profile, dep }: { line: string; profile: 
       </div>
       <div class="sub muted">{t("trainInspector.towards", { name: name.get(stops[head]) ?? "" })}</div>
       {at ? (
-        <ul class="rows">
-          <Row label={t("trainInspector.nextStop")}>{next >= 0 ? name.get(stops[next]) : t("trainInspector.terminus")}</Row>
-          <Row label={t("trainInspector.along")}>
-            {distanceOf(at.s, len)}
-          </Row>
-        </ul>
+        <div class="next-stop">
+          <div class="next-stop-text">
+            <div>{t("trainInspector.nextStop")}</div>
+            <div>{next >= 0 ? name.get(stops[next]) : t("trainInspector.terminus")}</div>
+          </div>
+          <Speedometer profile={profile} dep={dep} />
+        </div>
       ) : (
         <p class="muted">{t("trainInspector.finished", { vehicle: vehicleOf(st) })}</p>
       )}

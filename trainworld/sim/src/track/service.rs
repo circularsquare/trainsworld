@@ -4,7 +4,7 @@
 
 use super::capacity::{self, Capacity};
 use super::geom;
-use super::net::{path_dir, path_edge, LoopKind, Network};
+use super::net::{path_dir, path_edge, DayFleet, LoopKind, Network};
 use super::params::*;
 use super::profile::{self, Hold, Profile};
 
@@ -164,6 +164,16 @@ impl LineSvc {
             return Some(s);
         }
         r.nodes.get(*r.stop_idx.get(k)? as usize).copied()
+    }
+    /// T-1067, T-4052: the most riders waiting at stop `k` of run `run`: a platform side's `WAITING_CAP` at a
+    /// station or a port; at a bus line's stop, which has no platform, `BUS_STOP_WAITING`, or `BRT_STATION_WAITING`
+    /// at a BRT station.
+    pub fn waiting_cap(&self, net: &Network, run: usize, k: usize) -> f64 {
+        use super::boarding::{BRT_STATION_WAITING, BUS_STOP_WAITING, WAITING_CAP};
+        let Some(plan) = self.bus.as_ref().filter(|_| !self.ferry) else { return WAITING_CAP };
+        let n = plan.stops.len();
+        let at = plan.stops.get(if run == 0 { k } else { n.wrapping_sub(1 + k) }).and_then(|s| s.station);
+        if at.is_some_and(|s| net.is_brt_station(s)) { BRT_STATION_WAITING } else { BUS_STOP_WAITING }
     }
 }
 
@@ -756,6 +766,9 @@ pub struct Service {
     /// them all (a world just made or reloaded).
     changed: Vec<u32>,
     pub changed_all: bool,
+    /// T-4299: the same lines for the model's kept money (`wasm/kept.rs`, `take_kept`), its own cursor
+    kept_changed: Vec<u32>,
+    kept_all: bool,
     /// Per line id, its own calendar (`Cal`): the kind of day of its holidays and its country's
     /// weekend. Not saved; the clock worker sends it (`TrackApi::set_line_rows`).
     pub cal: Vec<Cal>,
@@ -768,6 +781,59 @@ pub struct Service {
     /// T-4132: while a trial times no train (`TrackWorld::trial_with`), the variants each line it
     /// rebuilds had before it, to put back after (`timing::put_back`); None otherwise.
     pub timing_held: Option<Vec<(u32, super::timing::Held)>>,
+    /// T-4149: the lines whose runs lie anywhere new on the track since `take_moved` (`update_scoped`), for the clock
+    /// worker's drawn runs; None for every line (a service just made, never taken from). Put back after a trial
+    /// (`TrackWorld::trial_with`), with `spans`.
+    pub(crate) moved: Option<Vec<u32>>,
+    /// T-4281: per moved line and run, where it moved since `take_moved` (`Span`), None where that is not known; put
+    /// back after a trial with `moved`.
+    pub(crate) spans: std::collections::HashMap<(u32, u8), Option<Span>>,
+    /// T-4281: the spans of the lines the last `take_moved` listed (`take_spans`)
+    taken_spans: Vec<(u32, u8, Span)>,
+}
+
+/// T-4281: where a rebuilt line's run lies anywhere new: from offset `lo` to `hi` (offsets of the run now); before
+/// `lo` its points are where they were, bit for bit; past `hi` they are the same track's, each moved along it by
+/// at most `drift` metres (the run's length changed by about that much before them: a station splitting an edge moves
+/// the pieces' lengths by a few mm). Several rebuilds since a take add up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    pub lo: f64,
+    pub hi: f64,
+    pub drift: f64,
+}
+
+/// T-4281: how far apart two offsets of the same entry past a change may be and still count as moved by the run's
+/// length change alone, m
+const SPAN_EPS_M: f64 = 1e-6;
+
+/// T-4281: run `x`'s span against what it was (`segs`, `off`, `len`), its edges in `touched` (sorted) counted as
+/// changed; None when nothing past the start is alike.
+fn span_of(x: &Run, segs: &[u32], off: &[f64], len: f64, touched: &[u32]) -> Option<Span> {
+    let same_edge = |p: u32| touched.binary_search(&path_edge(p)).is_err();
+    let (n0, n1) = (segs.len().min(off.len()), x.segs.len().min(x.seg_off.len()));
+    let mut i = 0;
+    while i < n0 && i < n1 && segs[i] == x.segs[i] && off[i].to_bits() == x.seg_off[i].to_bits() && same_edge(x.segs[i]) {
+        i += 1;
+    }
+    let shift = x.len - len;
+    if !shift.is_finite() {
+        return None;
+    }
+    // (the most an entry past the change moved along the run: the length change, give or take `SPAN_EPS_M`)
+    let (mut j, mut drift) = (0, shift.abs());
+    while j < n0 - i && j < n1 - i {
+        let (a, b) = (n0 - 1 - j, n1 - 1 - j);
+        let moved = x.seg_off[b] - off[a];
+        if segs[a] != x.segs[b] || !same_edge(x.segs[b]) || (moved - shift).abs() > SPAN_EPS_M {
+            break;
+        }
+        drift = drift.max(moved.abs());
+        j += 1;
+    }
+    let lo = if i < n1 { x.seg_off[i] } else { x.len };
+    let hi = if j > 0 { x.seg_off[n1 - j] } else { x.len };
+    (i > 0 || j > 0).then_some(Span { lo, hi: hi.max(lo), drift })
 }
 
 /// One run of the stops and path its trains run (`line`: the whole plan, or the part of it a
@@ -1166,6 +1232,11 @@ impl Service {
         let (rebuilt, rescheduled) = (&sorted(rebuilt)[..], &sorted(rescheduled)[..]);
         let mut d = ServiceDirty { rebuilt: rebuilt.to_vec(), ..Default::default() };
         self.lines.resize(net.line_count(), LineSvc::default());
+        // T-4149: what places each rebuilt line's runs on the track, to tell the lines that run anywhere new
+        let old_geo: Vec<(bool, [(Vec<u32>, Vec<f64>, f64); 2])> = rebuilt
+            .iter()
+            .map(|&l| { let ls = &self.lines[l as usize]; (ls.ok, std::array::from_fn(|r| (ls.runs[r].segs.clone(), ls.runs[r].seg_off.clone(), ls.runs[r].len))) })
+            .collect();
         let old_times: Vec<(u32, [Vec<Vec<f64>>; 2])> = rebuilt
             .iter()
             .map(|&l| (l, std::array::from_fn(|r| (0..SLOTS).map(|lev| self.lines[l as usize].stop_to_stop_safe(r, lev)).collect())))
@@ -1203,6 +1274,7 @@ impl Service {
                 demand.push(l);
             }
         }
+        self.note_moved(net, rebuilt, &old_geo, touched.map(|t| t.0));
         // Lines whose holds may have changed: all of them after the global pass; after the
         // incremental one, the owners of resources rebuilt or re-solved, plus every rebuilt or
         // rescheduled line.
@@ -1311,12 +1383,104 @@ impl Service {
         self.timing_memo.clear();
     }
 
+    /// T-4149: of the lines just rebuilt (`was`: each one's ok and runs' entries, offsets and length before), those whose
+    /// runs can lie anywhere new: a train line whose entries, offsets or length moved, or with an edge under it in
+    /// `edges` (touched: its shape may have), every bus and ferry line (laid along its route), every line after a global
+    /// pass (`edges` None). An edit rebuilds every bus line and every line with a way back on most edits; most run where
+    /// they ran.
+    fn note_moved(&mut self, net: &Network, rebuilt: &[u32], was: &[(bool, [(Vec<u32>, Vec<f64>, f64); 2])], edges: Option<&[u32]>) {
+        let Some(moved) = self.moved.as_mut() else { return };
+        let mut touched = edges.map(|e| e.to_vec());
+        if let Some(t) = touched.as_mut() {
+            t.sort_unstable();
+            t.dedup();
+        }
+        for (&l, (ok, runs)) in rebuilt.iter().zip(was) {
+            let ls = &self.lines[l as usize];
+            let bits = |a: &[f64], b: &[f64]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+            let same = touched.as_ref().is_some_and(|t| {
+                ls.ok == *ok && ls.bus.is_none() && net.route_points(l).is_none()
+                    && (0..2).all(|r| {
+                        let (x, (segs, off, len)) = (&ls.runs[r], &runs[r]);
+                        x.segs == *segs && x.len.to_bits() == len.to_bits() && bits(&x.seg_off, off) && !x.segs.iter().any(|&p| t.binary_search(&path_edge(p)).is_ok())
+                    })
+            });
+            if !same {
+                moved.push(l);
+                // T-4281: a train line that stays ok, on edges an edit touched (not a global pass): where each run moved
+                let local = ls.ok && *ok && ls.bus.is_none() && net.route_points(l).is_none();
+                for (r, (segs, off, len)) in runs.iter().enumerate() {
+                    let s = touched.as_ref().filter(|_| local).and_then(|t| span_of(&ls.runs[r], segs, off, *len, t));
+                    let key = (l, r as u8);
+                    let merged = match self.spans.get(&key) {
+                        None => s,
+                        Some(None) => None,
+                        // (the earlier span in the offsets of now: it moved by at most the later drift)
+                        Some(Some(a)) => s.map(|b| Span { lo: a.lo.min(b.lo) - b.drift, hi: a.hi.max(b.hi) + b.drift, drift: a.drift + b.drift }),
+                    };
+                    self.spans.insert(key, merged);
+                }
+            }
+        }
+        if moved.len() > 1 << 16 {
+            self.moved = None;
+            self.spans.clear();
+        }
+    }
+
+    /// T-4149: the lines whose runs lie anywhere new on the track since the last call (`note_moved`), ascending;
+    /// `[u32::MAX]` for all of them.
+    pub fn take_moved(&mut self) -> Vec<u32> {
+        let spans = std::mem::take(&mut self.spans);
+        match self.moved.replace(vec![]) {
+            None => {
+                self.taken_spans.clear();
+                vec![u32::MAX]
+            }
+            Some(mut v) => {
+                v.sort_unstable();
+                v.dedup();
+                self.taken_spans = spans.into_iter().filter_map(|((l, r), s)| s.map(|s| (l, r, s))).collect();
+                self.taken_spans.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+                v
+            }
+        }
+    }
+
+    /// T-4281: the spans of the runs the last `take_moved` listed that are known (`Span`), by line and run; a listed
+    /// line with no span here may lie anywhere new
+    pub fn take_spans(&mut self) -> Vec<(u32, u8, Span)> {
+        std::mem::take(&mut self.taken_spans)
+    }
+
     pub fn note_changed(&mut self, lines: &[u32]) {
         if self.changed.len() > 1 << 20 {
             self.changed.clear();
             self.changed_all = true;
         }
         self.changed.extend_from_slice(lines);
+        if self.kept_changed.len() > 1 << 20 {
+            self.kept_changed.clear();
+            self.kept_all = true;
+        }
+        self.kept_changed.extend_from_slice(lines);
+    }
+
+    /// Every line changed (a world just made or reloaded), for both readers.
+    pub fn note_all(&mut self) {
+        self.changed_all = true;
+        self.kept_all = true;
+    }
+
+    /// T-4299: the lines noted since the last call (`note_changed`), ascending, or None for every line.
+    pub fn take_kept(&mut self) -> Option<Vec<u32>> {
+        let mut v = std::mem::take(&mut self.kept_changed);
+        if std::mem::take(&mut self.kept_all) {
+            return None;
+        }
+        v.sort_unstable();
+        v.dedup();
+        Some(v)
     }
 
     /// The lines whose service changed since the last call, ascending; `[u32::MAX]` for all of them.
@@ -1426,6 +1590,27 @@ impl Service {
         out
     }
 
+    /// T-4227: line `l`'s fleet on kind of day `row` (`params::WEEKDAYS`, `WEEKEND`), as its
+    /// departures share a slot its hours mix out by (`Network::place_tph_in`): on weekends the
+    /// weekend fleet where it runs weekend rates of its own (`rest_fleet`), else the weekdays'.
+    pub fn fleet_on(&self, net: &Network, l: usize, row: usize) -> Option<DayFleet> {
+        if row == WEEKEND && net.runs_own_weekend(l) { self.rest_fleet(net, l) } else { net.fleet(l) }
+    }
+
+    /// T-4227: line `l`'s weekend fleet: its weekend trains at each place (`Network::weekend_places_by`;
+    /// a headway line at a percent the trains its weekend headway takes over the round trip, not cut
+    /// to what the track lets run, which cuts the slot's rate instead), its weekend headways, and its
+    /// settled weekend rates and pacing.
+    pub fn rest_fleet(&self, net: &Network, l: usize) -> Option<DayFleet> {
+        let ls = self.lines.get(l);
+        let trains = net.weekend_places_by(l, |slots, h| {
+            let ls = ls?;
+            let each = if ls.paired() { 2 } else { 1 };
+            Some(slots.iter().map(|&s| each * super::world::auto_trains(ls.round_trip[s] / each as f64, h)).max().unwrap_or(0))
+        })?;
+        Some(DayFleet { trains, auto: net.weekend_auto(l), tph: std::array::from_fn(|s| net.line_tph_on(l, WEEKEND, s)), pace: net.line_pace_rest_of(l as u32) })
+    }
+
     /// A running line's departure pattern now (None when it is not running).
     pub fn lattice(&self, net: &Network, l: usize) -> Option<Lattice> {
         let ls = self.lines.get(l)?;
@@ -1470,6 +1655,9 @@ impl Service {
         } else {
             (split, p, net.auto_of(l), net.line_pace_of(l as u32))
         };
+        // T-4227: a slot its hours share between rows shares its weekend rate out by the weekend's
+        // trains (`fleet_on`), so a row with none there on weekdays runs its weekend ones
+        let fleet_r = net.mix(l).and_then(|_| self.fleet_on(net, l, WEEKEND));
         let spare_r = |lev: usize, t: f64| self.spare_paced(net, l, lev, t, auto_r.map(|a| a[net.place(l, lev)]), pace_r[lev]);
         // T-3542: pieces of a slot the line's hours share between rows run each row's own rate
         let hours_of = |rest: &[f32; SLOTS]| -> Hours {
@@ -1488,7 +1676,7 @@ impl Service {
                 let (a, ar) = (auto.map(|a| a[k]), auto_r.map(|a| a[k]));
                 let tk = net.place_tph(l, s, k, tph[s], ls.round_trip[s]);
                 h.own[i][WEEKDAYS] = (tk, off_at(sr, tk, &split, &|lev, t| self.spare_with(net, l, lev, t, a)), phase_in(&p, sr, tk));
-                let tk = net.place_tph(l, s, k, rest[s], ls.round_trip[s]);
+                let tk = fleet_r.as_ref().map_or(rest[s], |f| net.place_tph_in(l, s, k, rest[s], ls.round_trip[s], f));
                 h.own[i][WEEKEND] = (tk, off_at(sr, tk, &split_r, &|lev, t| self.spare_paced(net, l, lev, t, ar, pace_r[lev])), phase_in(&p_r, sr, tk));
             }
             h
@@ -2160,5 +2348,23 @@ impl LineSvc {
             return vec![];
         }
         self.stop_to_stop(r, lev)
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    /// T-4285: an entry past a station's split that moved by less than `SPAN_EPS_M` while the run's length came out the
+    /// same bit for bit is counted in the span's drift, so the clock worker's kept samples are checked within it
+    #[test]
+    fn drift_covers_every_kept_entry() {
+        let was_segs = [2, 4, 6];
+        let was_off = [0.0, 10.0, 20.0];
+        let moved = 1e-7;
+        let x = Run { segs: vec![2, 8, 10, 6], seg_off: vec![0.0, 10.0, 15.0, 20.0 + moved], len: 30.0, ..Default::default() };
+        let s = span_of(&x, &was_segs, &was_off, 30.0, &[2, 4, 5]).expect("a span");
+        assert_eq!((s.lo, s.hi), (10.0, 20.0 + moved));
+        assert!(s.drift >= (20.0 + moved) - 20.0, "drift {}", s.drift);
     }
 }

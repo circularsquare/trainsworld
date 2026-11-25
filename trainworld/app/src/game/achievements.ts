@@ -10,7 +10,7 @@ import { CITIES, cityById, type CityId } from "./cities";
 import { complexes } from "./complexView";
 import { continentLabel, continentOf } from "./continents";
 import { AVERAGE_DAY, WEEKDAY_LONG } from "./days";
-import { demandByDay, demandUpdating, lineFiguresIn, marketIn, zoneViews, type Corridors } from "./demand";
+import { mainDemandByDay, demandUpdating, lineFiguresIn, marketIn, zoneViews, type Corridors, type DayDemand, type DemandView } from "./demand";
 import { bigDistance, clockTime, dayOf, money, speed } from "./format";
 import { t, tCountry, tList, tNumber } from "../i18n";
 import { tPlace } from "../i18n/places";
@@ -25,6 +25,8 @@ import { stationsById, world } from "./world";
 import { RIDES_PER_PERSON, sumModes } from "./worldTotals";
 import { zonesLoaded } from "./zones";
 import type { LineInput, LineStats, StationInput, WorldView } from "./types";
+import type { Complexes } from "./complexes";
+import { checkPatches, freshly, freshNow, PerLine, sameBuilt } from "./worldDiff";
 import { gameStamp, postAchievements, queryClock } from "../workers/clockClient";
 import type { Achieved } from "../workers/saveFile";
 
@@ -173,92 +175,147 @@ function runningLines(w: WorldView): { l: LineInput; st: LineStats }[] {
 /** What the figures read of the world: the stations and the running lines. The same object while
  * neither changes (clockClient.ts keeps a station's, line's and line's stats' objects while their rows
  * stay), so an edit to track alone leaves the figures as they were (T-2403). */
-interface AchWorld { stations: readonly StationInput[]; byId: Map<string, StationInput>; running: { l: LineInput; st: LineStats }[] }
+interface AchWorld { w: WorldView; stations: readonly StationInput[]; readonly byId: Map<string, StationInput>; running: { l: LineInput; st: LineStats }[] }
 let lastAch: AchWorld | null = null;
 const achWorld = computed<AchWorld | null>(() => {
   const w = world.value;
   if (!w) return (lastAch = null);
   const running = runningLines(w), was = lastAch;
   if (was && was.stations === w.save.stations && was.running.length === running.length && was.running.every((x, i) => x.l === running[i].l && x.st === running[i].st)) return was;
-  return (lastAch = { stations: w.save.stations, byId: stationsById(w), running });
+  return (lastAch = { w, stations: w.save.stations, get byId() { return stationsById(w); }, running });
 });
 
-/** The figures that come from the network alone. */
-export const networkFigures = computed(() => {
-  const w = achWorld.value;
-  void zonesLoaded.value; // boundaries arriving re-place the stations
-  if (!w) return null;
-  const byId = w.byId;
+/** T-4150 stage 2: what one running line gives the network's figures, kept while neither it nor its stations change */
+type NetPart = { zones: CityId[]; countries: string[]; continents: string[]; top: number; circle: number };
+const netParts = new PerLine<NetPart>();
+let netZl = NaN;
+function netPartOf(l: LineInput, st: LineStats, byId: Map<string, StationInput>): NetPart {
+  const zones = new Set<CityId>(), countries = new Set<string>(), continents = new Set<string>();
+  for (const id of l.stops) {
+    const s = byId.get(id);
+    if (!s?.built) continue;
+    const z = stationZone(s);
+    if (!z) continue;
+    zones.add(z);
+    const cc = cityById(z)?.country;
+    if (!cc) continue;
+    countries.add(cc);
+    const c = continentOf(cc, s.lng, s.lat);
+    if (c) continents.add(c);
+  }
+  // T-3128: a whole circle only: no turnaround partway (a stem or a loop-back) and no stop visited twice
+  const stops = l.stops.length - 1;
+  const circle = st.loop === "circle" && !st.bus && !st.reversals?.length && new Set(l.stops).size === stops ? stops : 0;
+  return { zones: [...zones], countries: [...countries], continents: [...continents], top: Math.max(0, ...st.stretches.map((x) => x.reached)), circle };
+}
+function netFigures(w: AchWorld, zl: number) {
+  netParts.begin(w.w, zl === netZl);
+  netZl = zl;
   const served = new Set<CityId>();
   const firsts = new Map<FirstId, Detail>();
   let long: Detail | null = null, bullet: Detail | null = null, circle: Detail | null = null;
   for (const { l, st } of w.running) {
-    const countries = new Set<string>(), continents = new Set<string>();
-    for (const id of l.stops) {
-      const s = byId.get(id);
-      if (!s?.built) continue;
-      const z = stationZone(s);
-      if (!z) continue;
-      served.add(z);
-      const cc = cityById(z)?.country;
-      if (!cc) continue;
-      countries.add(cc);
-      const c = continentOf(cc, s.lng, s.lat);
-      if (c) continents.add(c);
-    }
-    if (countries.size > 1 && !firsts.has("border")) firsts.set("border", { of: l.name, in: [...countries] });
-    if (continents.size > 1 && !firsts.has("continents")) firsts.set("continents", { of: l.name, in: [...continents] });
+    const p = netParts.get(l.id, () => netPartOf(l, st, w.byId));
+    for (const z of p.zones) served.add(z);
+    if (p.countries.length > 1 && !firsts.has("border")) firsts.set("border", { of: l.name, in: [...p.countries] });
+    if (p.continents.length > 1 && !firsts.has("continents")) firsts.set("continents", { of: l.name, in: [...p.continents] });
     const m = st.km * 1000;
     if (m >= LONG_M && (!long || m > long.v!)) long = { of: l.name, v: m };
-    const top = Math.max(0, ...st.stretches.map((x) => x.reached));
-    if (top >= BULLET_KMH && (!bullet || top > bullet.v!)) bullet = { of: l.name, v: top };
-    // T-3128: a whole circle only: no turnaround partway (a stem or a loop-back) and no stop visited twice
-    const stops = l.stops.length - 1;
-    if (st.loop === "circle" && !st.bus && !st.reversals?.length && new Set(l.stops).size === stops && stops >= CIRCLE_STOPS && (!circle || stops > circle.v!)) circle = { of: l.name, v: stops };
+    if (p.top >= BULLET_KMH && (!bullet || p.top > bullet.v!)) bullet = { of: l.name, v: p.top };
+    if (p.circle >= CIRCLE_STOPS && (!circle || p.circle > circle.v!)) circle = { of: l.name, v: p.circle };
   }
+  netParts.end();
   if (long) firsts.set("long", long);
   if (bullet) firsts.set("bullet", bullet);
   if (circle) firsts.set("circle", circle);
   return { cities: served.size, firsts, running: w.running.length };
+}
+
+/** The figures that come from the network alone. */
+export const networkFigures = computed(() => {
+  const w = achWorld.value;
+  const zl = zonesLoaded.value; // boundaries arriving re-place the stations
+  if (!w) return null;
+  const out = netFigures(w, zl);
+  if (checkPatches() && !sameBuilt(out, freshly(() => netFigures(w, zl)))) console.error("T-4150 check: the network's achievement figures kept per line differ from a whole build");
+  return out;
 });
+
+/** T-4150 stage 2: a running line's built stops as the corridors read them: each with the corridors whose start (bit k
+ * of `from`, CORRIDORS[k]) or end it is in, kept while neither the line nor its stations change */
+type CorridorStop = { id: string; name: string; from: number; to: number };
+const corridorParts = new PerLine<{ ids: string[]; ends: CorridorStop[]; from: number; to: number }>();
+let corridorZl = NaN;
+function corridorPartOf(l: LineInput, byId: Map<string, StationInput>) {
+  const ids: string[] = [], ends: CorridorStop[] = [];
+  for (const id of l.stops) {
+    const s = byId.get(id);
+    if (!s?.built) continue;
+    ids.push(id);
+    const zone = stationZone(s);
+    const at: Where = { zone, cc: zone ? cityById(zone)?.country : undefined, lng: s.lng, lat: s.lat };
+    let from = 0, to = 0;
+    CORRIDORS.forEach((c, k) => { if (c.from(at)) from |= 1 << k; if (c.to(at)) to |= 1 << k; });
+    if (from || to) ends.push({ id, name: s.name || (zone ? cityById(zone).name : ""), from, to });
+  }
+  // (T-4284: the corridors it has a start or an end of)
+  let from = 0, to = 0;
+  for (const e of ends) { from |= e.from; to |= e.to; }
+  return { ids, ends, from, to };
+}
+function corridorsMet(w: AchWorld, zl: number, cx: Complexes) {
+  corridorParts.begin(w.w, zl === corridorZl);
+  corridorZl = zl;
+  // stations joined where they share a station or a complex: by complex number (a station of none by an own number after them)
+  const own = new Map<string, number>();
+  const keyOf = (id: string) => { const c = cx.of.get(id); return c !== undefined ? c : (own.get(id) ?? own.set(id, -1 - own.size).get(id)!); };
+  const parts = w.running.map(({ l }) => corridorParts.get(l.id, () => corridorPartOf(l, w.byId)));
+  corridorParts.end();
+  const out = new Map<FirstId, Detail>();
+  // T-4284: only a corridor with a built station at each end on some line can be met; with none such, no network is joined
+  let from = 0, to = 0;
+  for (const p of parts) { from |= p.from; to |= p.to; }
+  const live = from & to;
+  if (!live) return { firsts: out };
+  // (a complex's number is a node number, T-4300: kept in a map)
+  const up = new Map<number, number>();
+  const find = (k: number): number => { let r = k; while (up.get(r) !== r) r = up.get(r)!; while (up.get(k) !== r) { const nx = up.get(k)!; up.set(k, r); k = nx; } return r; };
+  for (const p of parts) {
+    let first: number | undefined;
+    for (const id of p.ids) {
+      const k = keyOf(id);
+      if (!up.has(k)) up.set(k, k);
+      if (first === undefined) first = k; else { const a = find(k), b = find(first); if (a !== b) up.set(a, b); }
+    }
+  }
+  const ends = new Map<number, { from?: string; to?: string }>();
+  CORRIDORS.forEach((c, k) => {
+    ends.clear();
+    const bit = 1 << k;
+    if (!(live & bit)) return;
+    for (const p of parts) for (const s of p.ends) {
+      if (!((s.from | s.to) & bit)) continue;
+      const root = find(keyOf(s.id)), e = ends.get(root) ?? {};
+      if (!e.from && s.from & bit) e.from = s.name;
+      if (!e.to && s.to & bit) e.to = s.name;
+      ends.set(root, e);
+      if (e.from && e.to) { out.set(c.id, { of: e.from, in: [e.to] }); return; }
+    }
+  });
+  return { firsts: out };
+}
 
 /** T-3037: the corridors with service. Lines are joined where they share a station or a complex (the
  * places a rider changes at); a corridor is met when one such network holds a built station at each end.
  * Worked out when the running lines or the stations change, not with the clock. */
 export const corridorFigures = computed(() => {
   const w = achWorld.value;
-  void zonesLoaded.value;
+  const zl = zonesLoaded.value;
   const cx = complexes.value;
   if (!w) return null;
-  const up = new Map<string, string>();
-  const find = (k: string): string => { let r = k; while (up.get(r) !== r) r = up.get(r)!; up.set(k, r); return r; };
-  const key = (id: string) => { const c = cx.of.get(id); return c === undefined ? id : "c" + c; };
-  const stops: { name: string; k: string; at: Where }[] = [];
-  for (const { l } of w.running) {
-    let first: string | null = null;
-    for (const id of l.stops) {
-      const s = w.byId.get(id);
-      if (!s?.built) continue;
-      const k = key(id);
-      if (!up.has(k)) up.set(k, k);
-      if (first === null) first = k; else up.set(find(k), find(first));
-      const zone = stationZone(s);
-      stops.push({ name: s.name || (zone ? cityById(zone).name : ""), k, at: { zone, cc: zone ? cityById(zone)?.country : undefined, lng: s.lng, lat: s.lat } });
-    }
-  }
-  const ends = new Map<string, { from?: string; to?: string }>();
-  const out = new Map<FirstId, Detail>();
-  for (const c of CORRIDORS) {
-    ends.clear();
-    for (const { name, k, at } of stops) {
-      const root = find(k), e = ends.get(root) ?? {};
-      if (!e.from && c.from(at)) e.from = name;
-      if (!e.to && c.to(at)) e.to = name;
-      ends.set(root, e);
-      if (e.from && e.to) { out.set(c.id, { of: e.from, in: [e.to] }); break; }
-    }
-  }
-  return { firsts: out };
+  const out = corridorsMet(w, zl, cx);
+  if (checkPatches() && !sameBuilt(out, freshly(() => corridorsMet(w, zl, cx)))) console.error("T-4150 check: the corridors kept per line differ from a whole build");
+  return out;
 });
 
 /** The longest a rider is sure to stay on one of the line's trains, s, among riders at least
@@ -307,14 +364,34 @@ function corridorSums(corr: Corridors, places: ReadonlyMap<number, CityId>): Map
   return sums;
 }
 
-/** The figures from demand: final results only, on the average day, coarse zones' too (T-4117). */
+/** T-4150 stage 2: the zones' views of a day's figures, once per figures */
+const zoneViewsKept = new WeakMap<object, { intercity: unknown; views: Map<CityId, DemandView> }>();
+function zoneViewsOf(d: DayDemand): Map<CityId, DemandView> {
+  let z = zoneViewsKept.get(d.cities);
+  if (!z || z.intercity !== d.intercity || freshNow()) {
+    z = { intercity: d.intercity, views: zoneViews(d) };
+    if (!freshNow()) zoneViewsKept.set(d.cities, z);
+  }
+  return z.views;
+}
+/** T-4150 stage 2: a running line's longest sure ride, kept while it, its stations and the figures are the same */
+const sleeperParts = new PerLine<number>();
+let sleeperView: DemandView | null = null;
+
+/** The figures from demand: the main pool's final results only (T-4307), on the average day, coarse zones' too (T-4117). */
 export const demandFigures = computed(() => {
   const w = achWorld.value;
   void zonesLoaded.value;
-  const d = demandByDay.value[AVERAGE_DAY];
+  const d = mainDemandByDay.value[AVERAGE_DAY];
   const v = d?.view;
   // (T-3509: the zones' trips within wait for the market's result while the game has one)
   if (!w || !v?.final || (!marketIn(d) && !marketOff())) return null;
+  const cx = complexes.value;
+  const out = demandFiguresOf(w, d, v, cx);
+  if (checkPatches() && !sameBuilt(out, freshly(() => demandFiguresOf(w, d, v, cx)))) console.error("T-4150 check: the demand achievement figures kept per line differ from a whole build");
+  return out;
+});
+function demandFiguresOf(w: AchWorld, d: DayDemand, v: DemandView, cx: Complexes) {
   const byId = w.byId;
   const run = w.running;
   const firsts = new Map<FirstId, Detail>();
@@ -322,38 +399,54 @@ export const demandFigures = computed(() => {
   const built = new Set<CityId>();
   for (const s of w.stations) if (s.built) { const z = stationZone(s); if (z) built.add(z); }
   // (T-3509: each zone's trips within it, its far-apart parts' longer trips included)
-  const zones = zoneViews(d);
+  const zones = zoneViewsOf(d);
   const views = [...built].map((id) => zones.get(id)).filter((x) => x?.final);
   const trips = sumModes(views)?.rides.train ?? 0;
-  // busiest station, by complex
-  const cx = complexes.value;
-  const byCx = new Map<string, { n: number; top: number; name: string }>();
+  // busiest station, by complex (each complex by a place of its own, one of none after them, in the order first met)
+  const n = cx.members.size, own = new Map<string, number>(), slot = new Map<number, number>();
+  const sum = new Float64Array(n), top = new Float64Array(n).fill(-1), names: string[] = new Array(n), seen = new Uint8Array(n), met: number[] = [];
+  const more: { n: number; top: number; name: string }[] = [];
   let transfers = 0;
   for (const [sid, sd] of v.stations) {
     const s = byId.get(sid);
     if (!s) continue;
     transfers += sd.transfers ?? 0;
-    const c = cx.of.get(sid), k = c === undefined ? sid : "c" + c;
-    const e = byCx.get(k) ?? { n: 0, top: -1, name: s.name };
-    e.n += sd.boardings;
-    if (sd.boardings > e.top) { e.top = sd.boardings; e.name = s.name; }
-    byCx.set(k, e);
+    const num = cx.of.get(sid);
+    if (num === undefined) {
+      let k = own.get(sid);
+      if (k === undefined) { own.set(sid, (k = more.length)); more.push({ n: 0, top: -1, name: s.name }); met.push(n + k); }
+      const e = more[k];
+      e.n += sd.boardings;
+      if (sd.boardings > e.top) { e.top = sd.boardings; e.name = s.name; }
+      continue;
+    }
+    let c = slot.get(num);
+    if (c === undefined) slot.set(num, (c = slot.size));
+    if (!seen[c]) { seen[c] = 1; names[c] = s.name; met.push(c); }
+    sum[c] += sd.boardings;
+    if (sd.boardings > top[c]) { top[c] = sd.boardings; names[c] = s.name; }
   }
   let station: Detail | null = null;
-  for (const e of byCx.values()) if (!station || e.n > station.v!) station = { of: e.name || undefined, v: e.n };
+  for (const k of met) {
+    const e = k < n ? { n: sum[k], name: names[k] } : more[k - n];
+    if (!station || e.n > station.v!) station = { of: e.name || undefined, v: e.n };
+  }
   let line: Detail | null = null, sleeper: Detail | null = null;
   // whether the result is this network's: every running line has figures for its stops (after a load
   // the last game's result can stand until the new one's lands)
   let covered = true;
+  sleeperParts.begin(w.w, v === sleeperView);
+  if (!freshNow()) sleeperView = v;
   for (const { l, st } of run) {
     const dm = v.lines.get(l.id);
     if (!dm || !lineFiguresIn(v, l.id, l.stops.length)) { covered = false; continue; }
     // T-3333: a line on both pairs counts its hidden twin's riders as its own; the twin is not a line of its own
     const riders = dm.ridersPerDay + (st.twin ? v.lines.get(st.twin)?.ridersPerDay ?? 0 : 0);
     if (!l.twinOf && (!line || riders > line.v!)) line = { of: l.name, v: riders };
-    const s = longestRide(l, st, dm.loads, dm.board);
+    const s = sleeperParts.get(l.id, () => longestRide(l, st, dm.loads, dm.board));
     if (s >= SLEEPER_S && (!sleeper || s / 3600 > sleeper.v!)) sleeper = { of: l.name, v: s / 3600 };
   }
+  sleeperParts.end();
   if (sleeper) firsts.set("sleeper", sleeper);
   if (v.railTripsPerDay >= CHANGE_MIN_TRIPS && transfers / v.railTripsPerDay >= CHANGES_PER_TRIP) firsts.set("change", { v: transfers / v.railTripsPerDay });
   // a city's own trips (its 20% goal) and its trips to and from other places
@@ -390,7 +483,7 @@ export const demandFigures = computed(() => {
   for (const n of NATIONS) { const v = shareOf(railIn.get(n.cc) ?? 0, n.people); if (v >= n.share) firsts.set(`nation:${n.cc}`, { of: n.cc, v }); }
   const transfersPerTrip = v.railTripsPerDay > 0 ? transfers / v.railTripsPerDay : undefined;
   return { trips, station, line, firsts, covered, transfersPerTrip };
-});
+}
 
 /** The best line's profit over the past 24 hours (the Lines tab's Money figure), asked of the clock
  * worker as each game hour turns and with each new demand result; undefined until the first answer. */
@@ -401,7 +494,7 @@ export const longProfitable = signal<Detail | null>(null);
 let profitView: unknown = null;
 let profitHour = NaN, profitGame = -1, profitAsked: unknown = null;
 effect(() => {
-  const m = moneyState.value, g = gameStamp.value, dv = demandByDay.value[AVERAGE_DAY]?.view ?? null;
+  const m = moneyState.value, g = gameStamp.value, dv = mainDemandByDay.value[AVERAGE_DAY]?.view ?? null;
   if (g !== profitGame) { profitGame = g; profitHour = NaN; profitAsked = profitView = null; bestProfit.value = undefined; longProfitable.value = null; }
   const hour = m?.hours.at(-1)?.hour;
   if (!m || m.mode === "sandbox" || hour === undefined || (hour === profitHour && dv === profitAsked)) return;
@@ -455,7 +548,7 @@ export const metNow = computed(() => {
   if (trainsfanReached.value) out.trainsfan = { v: TRAINSFAN_HOURS };
   // an older save's quiet working-out waits for the loaded game's own world, this network's own final
   // (a cached result shown ahead of it is solved again, `demandUpdating`) and the profit asked after it
-  const settled = !!df?.covered && bp !== undefined && profitView === demandByDay.value[AVERAGE_DAY]?.view;
+  const settled = !!df?.covered && bp !== undefined && profitView === mainDemandByDay.value[AVERAGE_DAY]?.view;
   return { met: out, ready: worldSinceLoad.value && !demandUpdating.value && (nf.running === 0 || settled) };
 });
 

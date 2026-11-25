@@ -61,11 +61,11 @@ fn a_feeder_bus_stops_at_the_station_it_reaches_and_runs_at_its_speed() {
         assert!((k - k.round()).abs() < 1e-6, "a middle stop on the street grid: {c:?}");
     }
     assert!(a.bus_street(b).is_empty());
-    // covers: every ground metre of the route belongs to one stop that is not a station
+    // The linked station bounds the last street stop's corridor.
     let covers: Vec<[f64; 2]> = s.iter().filter(|c| c[6].is_finite()).map(|c| [c[6], c[7]]).collect();
     assert_eq!(covers.len(), s.len() - 1);
     assert_eq!(covers[0][0], 0.0);
-    assert!((covers.last().unwrap()[1] - road).abs() < 1e-6);
+    assert!((covers.last().unwrap()[1] - 0.5 * (s[s.len() - 2][3] + road)).abs() < 1e-6);
     assert!(covers.windows(2).all(|w| (w[0][1] - w[1][0]).abs() < 1e-9));
     // planned: no service yet, no cost, nothing charged
     assert!(!a.w.svc.lines[b as usize].running && a.cash() == cash);
@@ -112,6 +112,22 @@ fn a_feeder_bus_stops_at_the_station_it_reaches_and_runs_at_its_speed() {
 }
 
 #[test]
+fn an_automatic_bus_terminal_does_not_cover_the_road_beyond_nearby_stations() {
+    let mut a = api();
+    let (_, stations) = rail(&mut a, 9, 500.0);
+    let line = a.new_line_id();
+    let route = [-500.0, 0.0, 1.0, 9000.0, 0.0, (bus::K_CORNER | bus::K_ROAD) as f64];
+    assert_eq!(a.set_bus_line(line, &route, 480, 600, 1200, 30.0, 120.0, 0x2d7dd2, "B1".into()), 0, "{}", a.issues());
+    let s = stops(&a, line);
+    assert_eq!(s.len(), stations.len() + 1);
+    assert_eq!(s[0][4], KIND_END as f64);
+    assert!(s[1..].iter().all(|stop| stop[4] == KIND_STATION as f64 && stop[6].is_nan()));
+    let catches = a.bus_catches(line);
+    assert_eq!(catches[0], 2.0);
+    assert!((catches[3] + 250.0).abs() < 1e-6, "the terminal's corridor ends halfway to the first station: {catches:?}");
+}
+
+#[test]
 fn stops_follow_stations_built_near_the_route_and_crossings() {
     let mut a = api();
     let (_, st) = rail(&mut a, 4, 2000.0);
@@ -146,6 +162,7 @@ fn stops_follow_stations_built_near_the_route_and_crossings() {
     assert_eq!(a.add_route(&ends, &[], 2, false), 0, "{}", a.issues());
     let n0 = a.nodes_info().chunks_exact(10).find(|c| c[1] == 0.0 && c[2] == 600.0).unwrap()[0] as u32;
     assert_eq!(a.add_station(1, n0, 0.0, 0.0, 120, "North".into()), 0, "{}", a.issues());
+    a.settle_owed(); // T-4272: its services after its answer
     assert!(!stops(&a, b).iter().any(|c| c[5] == n0 as f64), "600 m away is out of reach");
     let nodes_before = a.nodes_info().len();
     let ends: Vec<f64> = [0.0, 0.0, 500.0, 300.0, -1.0, 0.0, 0.0, 1500.0, 300.0, -1.0].to_vec();
@@ -153,6 +170,7 @@ fn stops_follow_stations_built_near_the_route_and_crossings() {
     assert!(a.nodes_info().len() > nodes_before);
     let n1 = a.route_end();
     assert_eq!(a.add_station(1, n1, 0.0, 0.0, 120, "Near".into()), 0, "{}", a.issues());
+    a.settle_owed();
     assert!(stops(&a, b).iter().any(|c| c[5] == n1 as f64), "a planned bus previews planned stations");
 }
 
@@ -469,6 +487,91 @@ fn a_bus_lines_rate_follows_its_headway() {
     }
 }
 
+/// T-4052: a bus stop holds what a bus's length of pavement holds (`BUS_STOP_WAITING`), as a platform side holds
+/// `WAITING_CAP`: with a bus every 2 minutes and three times their room coming all morning, its queue stays within it,
+/// and the riders the day's buses left at the stop stay under 1.5 a rider carried, as a station's do.
+#[test]
+fn a_crowded_bus_stop_holds_a_bus_stops_crowd() {
+    use crate::track::boarding::{BUS_STOP_WAITING, DAY, PERIODS};
+    let (mut a, b) = a_built_bus();
+    assert_eq!(a.set_auto_headway(b, 120, 900, 1800), 0, "{}", a.issues());
+    let n = a.w.svc.lines[b as usize].runs[0].stop_s.len();
+    assert!(n >= 3 && (0..n).all(|k| a.w.svc.lines[b as usize].waiting_cap(&a.w.net, 0, k) == BUS_STOP_WAITING), "{n} stops");
+    // run 0's riders board at its first stop for its last: 30 buses an hour of 80 full all morning
+    let per_hour = [30.0 * BUS_CRUSH as f32, 100.0, 100.0, 100.0, 10.0];
+    let (mut riders, mut come) = (vec![1.0f32; PERIODS], vec![]);
+    riders.extend([b as f32, n as f32]);
+    come.extend([b as f32, n as f32]);
+    for (p, &(h0, h1)) in PERIOD_HOURS.iter().enumerate() {
+        let x = per_hour[p] * (h1 - h0) as f32;
+        let (mut on, mut off, mut came) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+        (on[0], off[n - 1], came[0]) = (x, x, if p == 0 { 3.0 * x } else { x });
+        riders.extend(on.into_iter().chain(off));
+        come.extend(came);
+    }
+    a.set_riders(riders, 0);
+    a.set_arrivals(come, 0);
+    a.boarding.ensure(&a.w.net, &a.w.svc);
+    let ra = &a.boarding.accounts[0][b as usize].as_ref().unwrap().runs[0];
+    let most = (0..ra.deps.len()).map(|j| ra.queues.q_after(j * n)).fold(0.0f32, f32::max) as f64;
+    assert!(most > 0.0 && most <= BUS_STOP_WAITING - BUS_CRUSH + 1e-3, "{most} waiting as a bus leaves");
+    let v = a.boarding.today(&a.w.svc, 2.0 * DAY + 23.999 * 3600.0);
+    let (carried, left) = (v[3], v[5]);
+    assert!(left > 0.0 && left <= 1.5 * carried, "{left} left behind, {carried} carried");
+}
+
+/// T-4052 stage 2: the riders full buses leave at a stop count once each, however many buses they miss, and riders
+/// turned away by a full stop are not counted. A bus every 2 minutes takes 50 at its first stop for its last, leaving
+/// room for 30 at its second, where three times that come all morning: the stop holds 200, so a rider who joins waits
+/// through about six buses, and two in three who come are turned away. The past 24 hours' riders left at the stop are
+/// about the morning's boarders there (counting each bus's newcomers up to the queue it left, as before, made it 3x).
+#[test]
+fn riders_left_at_a_bus_stop_count_once_each() {
+    use crate::track::boarding::{BUS_STOP_WAITING, DAY, PERIODS};
+    let (mut a, b) = a_built_bus();
+    assert_eq!(a.set_auto_headway(b, 120, 900, 1800), 0, "{}", a.issues());
+    let n = a.w.svc.lines[b as usize].runs[0].stop_s.len();
+    assert!(n >= 3 && a.w.svc.lines[b as usize].waiting_cap(&a.w.net, 0, 1) == BUS_STOP_WAITING, "{n} stops");
+    let (mut riders, mut come) = (vec![1.0f32; PERIODS], vec![]);
+    riders.extend([b as f32, n as f32]);
+    come.extend([b as f32, n as f32]);
+    for (p, &(h0, h1)) in PERIOD_HOURS.iter().enumerate() {
+        let hours = (h1 - h0) as f32;
+        // the rest of the day, no more than the fewer buses then take
+        let calm = [0.0, 100.0, 100.0, 20.0, 10.0][p] * hours;
+        let (first, second) = if p == 0 { (30.0 * 50.0 * hours, 30.0 * 30.0 * hours) } else { (calm, calm) };
+        let (mut on, mut off, mut came) = (vec![0.0f32; 2 * n], vec![0.0f32; 2 * n], vec![0.0f32; 2 * n]);
+        (on[0], on[1], off[n - 1]) = (first, second, first + second);
+        (came[0], came[1]) = (first, if p == 0 { 3.0 * second } else { second });
+        riders.extend(on.into_iter().chain(off));
+        come.extend(came);
+    }
+    a.set_riders(riders, 0);
+    a.set_arrivals(come, 0);
+    a.boarding.ensure(&a.w.net, &a.w.svc);
+    let ra = &a.boarding.accounts[0][b as usize].as_ref().unwrap().runs[0];
+    // the second stop's boarders, those of buses leaving it in the morning
+    let morning: f64 = (0..ra.deps.len())
+        .filter(|&j| { let t = (ra.deps[j] + ra.stop_dep_of(j)[1]).rem_euclid(DAY); t >= 6.0 * 3600.0 && t < 10.0 * 3600.0 })
+        .map(|j| (ra.load[j * n + 1] - ra.load[j * n]) as f64)
+        .sum();
+    // nobody waits at the first stop; the second holds its 200, the next buses' room for 30 each
+    let most = |k: usize| (0..ra.deps.len()).map(|j| ra.queues.q_after(j * n + k)).fold(0.0f32, f32::max) as f64;
+    assert!(most(0) == 0.0 && (most(1) - (BUS_STOP_WAITING - 30.0)).abs() < 5.0, "{} {}", most(0), most(1));
+    assert!((morning - 4.0 * 900.0).abs() < 0.05 * 3600.0, "{morning} boarded in the morning");
+    let v = a.boarding.past_day(&a.w.svc, 2.0 * DAY + 12.0 * 3600.0);
+    let (carried, left) = (v[3], v[5]);
+    // each morning boarder there but the first bus's was left behind once, and those still waiting as the morning ends
+    // (the 170 its last bus leaves, and the first midday riders behind them) once too
+    assert!(left > morning && left < morning + 300.0, "{left} left behind against {morning} who boarded in the morning");
+    // the turned away (no one waits 90 minutes here), nearly twice as many, are not among them
+    assert!(ra.gave_up > 1.5 * left, "{} turned away, {left} left behind", ra.gave_up);
+    assert!(left < carried && left <= ra.arrived - ra.gave_up, "{left} {carried}");
+    // the day's count by hour (`line_summary`) and the past 24 hours' (the issues row and the line panel) agree
+    let day = a.boarding.line_summary_day(&a.w.svc, b as usize, 0)[2];
+    assert!((day - left).abs() < 1e-4 * left, "{day} in the day, {left} in the past 24 hours");
+}
+
 /// T-3767: a bus line sets five rows as a rail line does: made in a game of five, its midday and
 /// afternoon start at its high headway; a midday headway or count edit moves the midday's rate at once
 /// (T-3704), and only the midday's running cost.
@@ -483,11 +586,11 @@ fn a_bus_line_runs_five_periods() {
     assert_eq!(a.line_row_headways(b), vec![480, 480, 480, 900, 1800]);
     let tph = |a: &TrackApi, s: usize| a.w.net.line_tph[b as usize][s] as f64;
     assert!((tph(&a, 1) - 7.5).abs() < 0.01, "midday at high's 8 minutes: {}", tph(&a, 1));
-    let cost = |a: &TrackApi| (0..5).map(|k| a.running_cost_period(k)).collect::<Vec<_>>();
-    let before = cost(&a);
+    let cost = |a: &mut TrackApi| (0..5).map(|k| a.running_cost_period(k)).collect::<Vec<_>>();
+    let before = cost(&mut a);
     assert_eq!(a.set_line_row_headways(b, vec![480, 1200, 480, 900, 1800]), 0, "{}", a.issues());
     assert!((tph(&a, 1) - 3.0).abs() < 0.01 && (tph(&a, 0) - 7.5).abs() < 0.01 && (tph(&a, 2) - 7.5).abs() < 0.01, "a 20 minute midday: {:?}", a.w.net.line_tph[b as usize]);
-    let after = cost(&a);
+    let after = cost(&mut a);
     assert!(after[1] < before[1] && [0, 2, 3, 4].iter().all(|&k| after[k] == before[k]), "only midday's cost moves: {before:?} {after:?}");
     // its buses by count, then a midday count of its own
     assert_eq!(a.clear_auto_headway(b), 0, "{}", a.issues());

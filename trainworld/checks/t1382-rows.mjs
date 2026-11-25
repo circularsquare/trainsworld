@@ -41,7 +41,8 @@ import { gunzipSync } from 'node:zlib';
 import init, { TrackApi } from '../app/src/wasm/track/sim.js';
 import { loadApp, REAL_SAVE, ARTIFACTS } from './lib.mjs';
 
-const { StateRows, upgradesOf, Regions, PlatformLines, buildComplexes } = await loadApp("export { StateRows, upgradesOf } from '@app/src/workers/stateRows.ts'; export { Regions } from '@app/src/workers/regions.ts'; export { PlatformLines } from '@app/src/workers/platformLines.ts'; export { buildComplexes } from '@app/src/game/complexes.ts';");
+const { StateRows, upgradesOf, Regions, PlatformLines } = await loadApp("export { StateRows, upgradesOf } from '@app/src/workers/stateRows.ts'; export { Regions } from '@app/src/workers/regions.ts'; export { PlatformLines } from '@app/src/workers/platformLines.ts';");
+const NO_APART = new Set();
 await init({ module_or_path: readFileSync(new URL('../app/src/wasm/track/sim_bg.wasm', import.meta.url)) });
 const { nearestNode, toLocal } = await loadApp("export { nearestNode } from '@app/src/map/snapIndex.ts'; export { toLocal } from '@app/src/map/geo.ts';");
 
@@ -62,11 +63,10 @@ function envFor(api) {
     ...env,
     pl,
     platformLine: (a, id, x, y, platform) => pl.of(a, id, x, y, platform, 1),
-    complexKey: (a) => a.station_links().join(),
-    complexes: (rows) => {
-      const fl = api.station_links(), links = [];
+    complexInputs: (a) => {
+      const fl = a.station_links(), links = [];
       for (let k = 0; k + 1 < fl.length; k += 2) links.push([String(fl[k]), String(fl[k + 1])]);
-      return buildComplexes(rows.map((r) => ({ id: String(r.id), x: r.x, y: r.y, heading: r.heading, length: r.platform, ...(r.line ? { line: r.line } : {}) })), links);
+      return { links, apart: NO_APART, buildings: [], kAt: () => 1, frame: 'flat' };
     },
   };
 }
@@ -158,7 +158,8 @@ let tableChecks = 0;
 async function nearDifference(rows, api, rnd) {
   const ll = (x, y) => [x / 111320, Math.max(-80, Math.min(80, y / 111320))];
   const all = rows.nodes.map((n) => { const [lng, lat] = ll(n.x, n.y); return { id: n.id, lng, lat, ports: n.ports ?? 0, ...(n.bus ? { bus: true } : {}), ...(n.port ? { port: true } : {}), ...(n.brtStation ? { brtStation: true } : {}), ...(n.kind ? { kind: n.kind } : {}) }; });
-  const w = { nodes: new Map(all.map((n) => [n.id, n])) }, at = all.map((n) => toLocal(n.lng, n.lat));
+  // (`save`: the page's world diff reads its lists, none here)
+  const w = { nodes: new Map(all.map((n) => [n.id, n])), save: {} }, at = all.map((n) => toLocal(n.lng, n.lat));
   const pts = [], m = api.markers_in(0);
   for (let k = 0; k < m.length && pts.length < 150; k += 7) pts.push(toLocal(...ll(m[k], m[k + 1])));
   for (let k = 0; k < 40; k++) { const [x, y] = at[Math.floor(rnd() * at.length)]; pts.push([x + (rnd() - 0.5) * 4000, y + (rnd() - 0.5) * 4000]); }
@@ -355,12 +356,15 @@ for (let seed = Number(process.env.FROM ?? 1); seed <= SEEDS; seed++) {
     rowsTotal += now.edges.length + now.nodes.length + now.lines.length;
     const old = new Set([...before.edges, ...before.nodes, ...before.lines]);
     for (const k of ['edges', 'nodes', 'lines']) for (const r of now[k]) if (old.has(r)) rowsKept++;
-    // the one-pass cost sums are the two passes' to the bit, and the two models agree on them
+    // the one-pass cost sums are the two passes' (T-4299: kept per record, summed exactly, so to a part in 1e9; the kept
+    // money against the same from nothing to the bit is `kept_check`), and the two models agree on them
     const cA = A.api.costs(), cB = B.api.costs();
+    const near = (x, y) => Math.abs(x - y) <= 1e-9 * Math.max(Math.abs(x), Math.abs(y), 1e-6);
     // (model A keeps the water under its nodes, B asks the mask every time; total_cost and built_cost
     // ask every time as well, in two passes; the quote is read from both, in step, after the rows)
     const qA = A.api.blueprint_cost_items(), qB = B.api.blueprint_cost_items();
-    const dc = !Object.is(cA[0], A.api.total_cost()) || !Object.is(cA[1], A.api.built_cost()) ? `costs() ${cA} against total_cost ${A.api.total_cost()} and built_cost ${A.api.built_cost()}` : !Object.is(cA[0], cB[0]) || !Object.is(cA[1], cB[1]) ? `the models' costs differ: ${cA} against ${cB}` : qA.length !== qB.length || qA.some((v, i) => !Object.is(v, qB[i])) ? `the models' construct-all quotes differ: ${Array.from(qA).slice(0, 14)} against ${Array.from(qB).slice(0, 14)}` : null;
+    const kept = A.api.kept_check(env.periodHours);
+    const dc = kept ? `T-4299: the kept money differs: ${kept}` : !near(cA[0], A.api.total_cost()) || !near(cA[1], A.api.built_cost()) ? `costs() ${cA} against total_cost ${A.api.total_cost()} and built_cost ${A.api.built_cost()}` : !Object.is(cA[0], cB[0]) || !Object.is(cA[1], cB[1]) ? `the models' costs differ: ${cA} against ${cB}` : qA.length !== qB.length || qA.some((v, i) => !Object.is(v, qB[i])) ? `the models' construct-all quotes differ: ${Array.from(qA).slice(0, 14)} against ${Array.from(qB).slice(0, 14)}` : null;
     if (dc) { failures++; console.log(`FAIL  seed ${seed} step ${step} ${kind}: ${dc}`); break; }
     // (the quotes above ran trials, which note the lines they recompute)
     const dt2 = tables ? tablesDifference(rows, A.api, 'after the read and the quotes\' trials') : null;

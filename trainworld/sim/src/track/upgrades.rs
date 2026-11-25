@@ -31,6 +31,8 @@ pub const TERMINAL_KM: f64 = 1.0;
 /// turnouts and run-out either side).
 pub const PASSING_EXTRA_KM: f64 = 0.4;
 pub const PARK_RIDE_COST: f64 = 20.0;
+/// A tram stop's park and ride is a smaller lot (about 300 spaces; Anita 2026-11-25, to stop spamming them), so US$10k a game day of upkeep.
+pub const TRAM_PARK_RIDE_COST: f64 = 5.0;
 pub const WAITING_ROOM_COST: f64 = 5.0;
 pub const PARK_RIDE_MIN: f32 = 10.0;
 pub const WAITING_ROOM_WAIT: f32 = 0.8;
@@ -89,7 +91,7 @@ pub fn price(bit: u8, level: i8, wet: bool, platform: u16, kind: TrackKind) -> f
     match bit {
         TERMINAL => km(TERMINAL_KM),
         PASSING => km(platform as f64 / 1000.0 + PASSING_EXTRA_KM) * if kind.is_hsr() { HSR_COST } else { 1.0 },
-        PARK_RIDE => PARK_RIDE_COST,
+        PARK_RIDE => if kind.is_tram() { TRAM_PARK_RIDE_COST } else { PARK_RIDE_COST },
         WAITING_ROOM => WAITING_ROOM_COST,
         _ => 0.0,
     }

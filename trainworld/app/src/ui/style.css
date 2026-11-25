@@ -219,7 +219,7 @@ svg .stroke2 { stroke-width: 2; }
 @media (hover: hover) { .help-q:hover { color: var(--accent); } }
 .help-q svg { width: 12px; height: 12px; flex: none; }
 .help-q.open svg { transform: rotate(90deg); }
-.help-a { margin: 0 0 6px 16px; }
+.help-a { margin: 0 0 6px 16px; white-space: pre-line; }
 .help-ctl { color: var(--accent); }
 /* T-2264: the explainer opened by the "?" beside the effective time */
 .help-topic p { margin: 0 0 6px; }
@@ -330,6 +330,16 @@ svg .stroke2 { stroke-width: 2; }
 .tt-scroll.dragging, .tt-scroll.dragging *, .tt-chart:active { cursor: grabbing; }
 /* T-3817: over a drawn column the hovered one lands on, the table's own background */
 .tt-cover { position: absolute; top: 0; bottom: 0; z-index: 1; background-color: var(--bg); background-image: inherit; pointer-events: none; }
+/* T-4276: a group's looks b and c, each line on rows of its own: a column's border and hover only where it has a time */
+.tt-body.lanes { background-image: none; }
+.tt-body.lanes .tt-col { border-left: none; pointer-events: none; }
+.tt-body.lanes .tt-col span:not(:empty) { border-left: 1px solid var(--shade); pointer-events: auto; }
+.tt-rule { position: absolute; left: 0; right: 0; z-index: 2; height: 1px; background: var(--rule); pointer-events: none; }
+.tt-rule.faint { background: var(--shade); }
+.tt-names span.ln { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.tt-names span.ln.band { justify-content: flex-start; padding-left: 2px; font-weight: 700; }
+.tt-names span.ln > .nm { height: auto; min-width: 0; padding: 0; line-height: inherit; }
+.tt-names span.tt-lane { flex: none; height: 11px; min-width: 11px; padding: 0 2px; border-radius: 3px; background: var(--c); color: var(--ct); font-weight: 700; line-height: 11px; text-align: center; overflow: visible; }
 .help-panel dl { display: grid; grid-template-columns: 170px 1fr; gap: 3px 12px; margin: 0; }
 .help-panel dt { color: var(--muted); }
 .help-panel dd { margin: 0; }
@@ -788,6 +798,7 @@ svg.junction-map { display: block; margin: 8px auto 2px; width: 112px; height: 1
 .complex-stations { margin-top: 6px; }
 .complex-stations .val { min-width: 40px; }
 .complex-stations .val.bad, .rows .val.bad { color: var(--bad); }
+.rows > li.line-fare-cap { color: var(--bad); font-size: 12px; min-height: 0; padding: 0 0 4px; }
 /* T-3154, T-3173: a station's row: name, a Lines column of up to 3 bullets and a "+", figures, terminal button */
 .rows.pick.complex-stations > li { padding-top: 1px; padding-bottom: 1px; }
 .complex-stations .terminal-slot { flex: none; width: 28px; display: inline-flex; justify-content: flex-end; }
@@ -800,6 +811,18 @@ svg.junction-map { display: block; margin: 8px auto 2px; width: 112px; height: 1
 .board-bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
 .board-bar .fill.over { background: var(--warn); }
 .board-bar .seats { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--text); }
+/* T-4243: the train panel's speed dial (ui/inspector/Speedometer.tsx); the rim is a conic gradient under the svg */
+/* her 11-25: the next stop's label over its name, two 24 px rows, with the dial beside them at the panel's right */
+.next-stop { display: flex; align-items: center; gap: 8px; margin: 4px 0 2px; }
+.next-stop-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.next-stop-text > div { padding: 2px 0; }
+.speedo { position: relative; flex: none; overflow: hidden; }
+.speedo-rim { position: absolute; left: 0; top: 0; border-radius: 50%; }
+.speedo svg { position: relative; display: block; width: 100%; height: 100%; overflow: visible; stroke: none; }
+.speedo-needle { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+.speedo-hub { fill: var(--bg); stroke: var(--rule); }
+.speedo-fig { font-size: 14px; font-weight: 700; text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; }
+.speedo-unit { font-size: 12px; fill: var(--muted); text-anchor: middle; }
 .rows .grow.chip-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .moves .what { display: flex; flex-direction: column; gap: 1px; }
 /* T-164: a station's waiting riders, a line and direction a row */
@@ -1008,6 +1031,13 @@ rect.now { fill-opacity: .45; }
 .order li.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .order li.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .h .sort-stops { margin-left: 8px; font-weight: 400; }
+/* T-4259: a line's stations renamed together, a box per station on the line's bar */
+.stops.rename li { min-height: 28px; }
+.rename-box { flex: 1; min-width: 0; height: 24px; box-sizing: border-box; margin: 0; padding: 0 4px; font: inherit; color: var(--text);
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 0; }
+.rename-box:focus { border-color: var(--accent); outline: 0; }
+.rename-box.changed { font-weight: 700; }
+.rename-stops .line-stop-actions { margin: 8px 0 12px; }
 /* T-1464: a bus line's stops: a square at each end, a ring at a station, small rings for the street stops */
 .bus-stops { list-style: none; margin: 0; padding: 0; }
 .bus-stops li { display: flex; align-items: center; gap: 8px; min-height: 25px; }
@@ -1053,9 +1083,10 @@ rect.now { fill-opacity: .45; }
 .stops .route-mark.crossing::after { transform: rotate(-45deg); }
 /* T-1168: the stops with the related lines; the drawing (--gw wide, the line at --spine) is one SVG
    beside the rows, so the rows draw no bar or dot of their own */
-.h .related-toggle { align-self: center; margin-left: 6px; color: var(--muted); width: 22px; min-width: 22px; height: 22px; }
-.h .related-toggle svg { width: 19px; height: 19px; }
-.h .related-toggle:hover { color: var(--text); }
+.h .related-toggle, .h .rename-toggle { align-self: center; margin-left: 6px; color: var(--muted); width: 22px; min-width: 22px; height: 22px; }
+.h .related-toggle svg, .h .rename-toggle svg { width: 19px; height: 19px; }
+.h .related-toggle:hover, .h .rename-toggle:hover { color: var(--text); }
+.h .related-toggle + .rename-toggle { margin-left: 2px; }
 .h .btn.related-toggle.on { background: var(--tint); color: var(--text); }
 .related { position: relative; }
 .related-draw { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; z-index: 1; }
@@ -1283,7 +1314,7 @@ body:has(.guide.open) .install-banner { display: none; }
 .demand-selector .hint-cell { flex: none; display: grid; place-items: center; width: 28px; height: 28px;
   border: 1px solid var(--rule); background: var(--bg); color: var(--text); }
 /* T-1835: no outline, a lighter purple */
-.hint-cell .bubble { fill: color-mix(in oklab, color-mix(in oklab, #ff4d4d, #4d4dff) 62%, #fff); stroke: none; }
+.hint-cell .bubble, .select-bar .bubble { fill: color-mix(in oklab, color-mix(in oklab, #ff4d4d, #4d4dff) 62%, #fff); stroke: none; }
 /* T-1851: the track row's icon has a yellow line along its lower right; the station row's has a small
    blue station circle on top (the entries blue of map/stationCircles.ts) */
 .hint-cell .yline { stroke: var(--yellow); stroke-width: 1.8; }
@@ -1559,6 +1590,12 @@ button.save-add:hover { color: var(--text); }
 .tool-bar .stepper.wide .v { min-width: 72px; }
 .tool-bar .btn.icon svg { width: 19px; height: 19px; }
 .tool-bar .tb-narrow, .tool-bar-pop { display: none; }
+/* T-4330: the Select tool's modes, her icons: track in the blueprint blue (game/shadeTable.ts markBlueprint), track in
+   grey, the purple bubble; the selection bar under the bar (its 28 px buttons, 6 px padding, 3 px of border, a 6 px gap) */
+.select-bar .sm-blueprint { color: #2f62b3; }
+:root[data-shade="dark"] .select-bar .sm-blueprint { color: #8db6ee; }
+.select-bar .sm-track { color: var(--muted); }
+.blueprint-bar.under-bar { margin-top: 49px; }
 /* T-2284: the click mode's colour round the map, full at the edge and gone 8 px in; nothing at the
    map's edges sits within it (the tool notes, the attribution, the phone bars are 10 px in) */
 .mode-aura { position: absolute; inset: 0; z-index: 6; pointer-events: none;
@@ -1652,6 +1689,11 @@ button.save-add:hover { color: var(--text); }
 .grabbing, .grabbing * { cursor: grabbing !important; }
 .pi-mark.drag:hover::before { background: var(--tint); }
 .snap-ring { width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 2px solid var(--accent); border-radius: 50%; }
+/* T-4048: a passage's or connection's remove button while a passage is placed (map/joinButtons.ts); hovered, the
+   delete tool's ring round a station about to go */
+.btn.icon.join-x { position: absolute; left: 0; top: 0; width: 18px; min-width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: auto; }
+.btn.icon.join-x svg { width: 12px; height: 12px; }
+.btn.icon.join-x:hover { background: var(--bg); outline: 2px solid var(--accent); outline-offset: 0; }
 /* T-1721: the track tool's point: branching off track, joining it, or running beside it */
 .snap-ring.branch, .snap-ring.join { width: 19px; height: 19px; margin: -9.5px 0 0 -9.5px; border-color: var(--bg); }
 .snap-ring.branch { background: var(--bad); }
@@ -1682,6 +1724,7 @@ button.save-add:hover { color: var(--text); }
 .touch-handle::after { content: ""; position: absolute; left: 15px; top: 15px; width: 10px; height: 10px; border-radius: 50%;
   background: #fff; border: 2px solid var(--net-ink); }
 .stn-label.plan { opacity: 0.6; }
+.stn-label.bus { font-size: calc(10.5px * var(--ui, 1)); opacity: 0.85; }
 html.no-blueprints .stn-label.plan { display: none; }
 .track-modes .group { display: grid; grid-template-columns: 1fr 1fr; }
 .track-modes .btn { white-space: normal; height: auto; min-height: 40px; line-height: 1.35; padding: 4px 6px; }
@@ -2182,6 +2225,7 @@ html.no-blueprints .stn-label.plan { display: none; }
   .sky-status .status-tag { width: max-content; max-width: calc(100cqw - 20px); }
   #map:has(.sky-status .status-tag) .guide { top: 66px; }
   .blueprint-bar { top: 178px; }
+  .blueprint-bar.under-bar { top: 148px; }
 }
 /* T-1868: with no room for the picture beside the demand row, the purpose filter goes first */
 @container map-column (max-width: 460px) {
@@ -2219,6 +2263,9 @@ html.no-blueprints .stn-label.plan { display: none; }
   .tool-bar-pop .btn.lv { min-width: calc(40px / var(--ui, 1)); }
   /* the tool notes (the mode's descriptor first) right above a bar */
   #main:has(.tool-bar, .blueprint-bar) #tools { bottom: calc(36px / var(--ui, 1) + 26px); }
+  /* T-4330: the selection bar over the Select tool's bar, the tool notes and the level choices over both */
+  .blueprint-bar.under-bar { top: auto; margin: 0 0 calc(36px / var(--ui, 1) + 17px); }
+  #main:has(.under-bar) #tools { bottom: calc(72px / var(--ui, 1) + 43px); }
   /* T-3516: the track bar's one row is about 500 px of buttons, so on a phone the snap buttons take a row of their own under the rest */
   @media (max-width: 540px) {
     .track-bar { flex-wrap: wrap; overflow-x: hidden; }
@@ -2238,6 +2285,7 @@ html.no-blueprints .stn-label.plan { display: none; }
   .blueprint-bar .btn.bp-level { display: inline-grid; }
   .blueprint-levels .btn.lv { min-width: calc(40px / var(--ui, 1)); }
   .blueprint-levels { display: block; position: absolute; left: 50%; bottom: calc(36px / var(--ui, 1) + 26px); transform: translateX(-50%); z-index: 4; }
+  .under-bar ~ .blueprint-levels { bottom: calc(72px / var(--ui, 1) + 43px); }
 }
 
 /* T-195: the trip explorer's inspector and its canvas over the demand views' */

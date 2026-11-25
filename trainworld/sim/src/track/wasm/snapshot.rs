@@ -27,17 +27,36 @@ impl TrackApi {
         if self.w.net.take_repriced() && v.first() != Some(&u32::MAX) {
             v = vec![u32::MAX];
         }
-        let (out, now) = self.stamped(v);
+        // (T-4299: the kept money first, whose model state the track limits are worked out for once; the state's first read,
+        // so with every line's money compared)
+        self.kept_with(true);
+        let (out, now) = match self.stamps_peeked.take() {
+            Some((g, noted, r)) if g == self.kept.gen && noted == v && !self.stamps_off => r,
+            _ => self.stamped_kept(v),
+        };
         self.keep_stamps(now);
         out
     }
     /// `take_changed_lines` without taking: what has changed since, for the phase tables to be read
     /// after the trials that pricing a planned line runs (T-1540).
-    pub fn peek_changed_lines(&self) -> Vec<u32> {
+    pub fn peek_changed_lines(&mut self) -> Vec<u32> {
         if self.w.net.repriced() {
             return vec![u32::MAX];
         }
-        self.stamped(self.w.svc.peek_changed()).0
+        // (T-4299: with the kept money's track limits, and kept for the take that follows)
+        self.kept_now();
+        let v = self.w.svc.peek_changed();
+        let r = self.stamped_kept(v.clone());
+        let out = r.0.clone();
+        self.stamps_peeked = Some((self.kept.gen, v, r));
+        out
+    }
+    /// `stamped` with the track limits of the kept money's model state
+    fn stamped_kept(&mut self, v: Vec<u32>) -> (Vec<u32>, Vec<(u32, Option<u64>)>) {
+        let mut most = self.kept.take_limits();
+        let r = self.stamped(v, &mut most);
+        self.kept.put_limits(most);
+        r
     }
     /// T-1382: the nodes whose station name was set or cleared since the last call, ascending, or
     /// `[u32::MAX]` when the caller knows none of them (a new network).
@@ -53,18 +72,17 @@ impl TrackApi {
     /// Per live edge, 10 numbers: id, a, b, tracks, constructed (1/0), length m, cost US$M,
     /// lowest speed limit km/h, lowest and highest level.
     pub fn edges_info(&self) -> Vec<f64> {
-        let n = &self.w.net;
         let mut out = vec![];
-        for e in 0..n.edge_count() as u32 {
-            if !n.edge_ok(e) {
-                continue;
-            }
-            let i = e as usize;
-            // the track's own: the player's limit on it (T-3405) is not a curve
-            let vmin = n.edge_limits(e, n.v_kind_cap(e)).iter().map(|l| l.v).fold(n.v_kind_cap(e), f64::min);
-            let zs = n.edge_vert(e).iter().map(|v| v[1]);
-            let (lo, hi) = zs.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), z| (a.min(z), b.max(z)));
-            out.extend([e as f64, n.edge_a[i] as f64, n.edge_b[i] as f64, n.edge_tracks[i] as f64, n.edge_built[i] as u8 as f64, n.edge_len[i], n.edge_cost[i], vmin * 3.6, (lo / LEVEL_H).round(), (hi / LEVEL_H).round()]);
+        for e in 0..self.w.net.edge_count() as u32 {
+            self.edge_info_into(e, &mut out);
+        }
+        out
+    }
+    /// T-4214: `edges_info`'s numbers for the live edges among `ids` (a gone one has none).
+    pub fn edges_info_of(&self, ids: &[u32]) -> Vec<f64> {
+        let mut out = vec![];
+        for &e in ids {
+            self.edge_info_into(e, &mut out);
         }
         out
     }
@@ -94,25 +112,34 @@ impl TrackApi {
     /// track runs out with no way in, T-3164), platform length (0 = no station), station
     /// constructed, heading (rad).
     pub fn nodes_info(&self) -> Vec<f64> {
-        let n = &self.w.net;
         let mut out = vec![];
-        let busy = crate::track::capacity::conflict_nodes(n, &self.w.svc.lines);
-        for k in 0..n.node_count() as u32 {
-            if !n.node_ok(k) {
-                continue;
-            }
-            let i = k as usize;
-            // T-3745: a built junction shows only where two moves some line runs cross; a blueprint one always
-            let crosses = crate::track::capacity::junction_crosses(n, k) && (n.built_ports(k) < 3 || busy.binary_search(&k).is_ok());
-            let flags = n.node_flying[i] as u8 | (crosses as u8) << 1 | n.node_unusable(k) << 2;
-            out.extend([k as f64, n.node_x[i], n.node_y[i], n.node_level[i] as f64, n.node_ports[i].n as f64, n.built_ports(k) as f64, flags as f64, n.node_platform[i] as f64, n.node_built[i] as u8 as f64, n.node_heading[i]]);
+        let busy = crate::track::capacity::conflict_nodes(&self.w.net, &self.w.svc.lines);
+        for k in 0..self.w.net.node_count() as u32 {
+            self.node_info_into(k, &mut |k| busy.binary_search(&k).is_ok(), &mut out);
+        }
+        out
+    }
+    /// T-4214: `nodes_info`'s numbers for the live nodes among `ids` (a gone one has none); the lines' conflict nodes
+    /// are worked out only for a built junction among them.
+    pub fn nodes_info_of(&mut self, ids: &[u32]) -> Vec<f64> {
+        // (T-4299: a junction's crossing moves from the pairs kept per node)
+        self.kept_now();
+        let mut out = vec![];
+        for &k in ids {
+            self.node_info_into(k, &mut |k| self.kept.busy(k), &mut out);
         }
         out
     }
     /// Per crossing of two edges at one height, 6 numbers: x, y, kind (0 flat, 1 bad), level (a
     /// flat crossing's, else 0), built (1 when both its edges are constructed), tram tracks
     /// (`Network::crossing_trams`, T-3062). For the map's marks (T-629).
-    pub fn crossings_info(&self) -> Vec<f64> {
+    pub fn crossings_info(&mut self) -> Vec<f64> {
+        // (T-4299: the edges in use kept per line, `wasm/kept.rs`)
+        self.kept_now();
+        self.kept.crossings(&self.w)
+    }
+    /// `crossings_info` worked out whole (before T-4299), for `kept_check`.
+    pub(super) fn crossings_whole(&self) -> Vec<f64> {
         let n = &self.w.net;
         let mut out = vec![];
         let used = crate::track::capacity::edges_in_use(&self.w.svc.lines);
@@ -288,4 +315,54 @@ impl TrackApi {
         out
     }
 
+}
+
+impl TrackApi {
+    /// `edges_info`'s 10 numbers for edge `e`, if it is live.
+    fn edge_info_into(&self, e: u32, out: &mut Vec<f64>) {
+        let n = &self.w.net;
+        if (e as usize) >= n.edge_count() || !n.edge_ok(e) {
+            return;
+        }
+        let i = e as usize;
+        // the track's own: the player's limit on it (T-3405) is not a curve
+        let vmin = n.edge_limits(e, n.v_kind_cap(e)).iter().map(|l| l.v).fold(n.v_kind_cap(e), f64::min);
+        let zs = n.edge_vert(e).iter().map(|v| v[1]);
+        let (lo, hi) = zs.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), z| (a.min(z), b.max(z)));
+        out.extend([e as f64, n.edge_a[i] as f64, n.edge_b[i] as f64, n.edge_tracks[i] as f64, n.edge_built[i] as u8 as f64, n.edge_len[i], n.edge_cost[i], vmin * 3.6, (lo / LEVEL_H).round(), (hi / LEVEL_H).round()]);
+    }
+
+    /// `nodes_info`'s 10 numbers for node `k`, if it is live; `busy`: whether a line's moves conflict there.
+    fn node_info_into(&self, k: u32, busy: &mut dyn FnMut(u32) -> bool, out: &mut Vec<f64>) {
+        let n = &self.w.net;
+        if (k as usize) >= n.node_count() || !n.node_ok(k) {
+            return;
+        }
+        let i = k as usize;
+        // T-3745: a built junction shows only where two moves some line runs cross; a blueprint one always
+        let crosses = crate::track::capacity::junction_crosses(n, k) && (n.built_ports(k) < 3 || busy(k));
+        let flags = n.node_flying[i] as u8 | (crosses as u8) << 1 | n.node_unusable(k) << 2;
+        out.extend([k as f64, n.node_x[i], n.node_y[i], n.node_level[i] as f64, n.node_ports[i].n as f64, n.built_ports(k) as f64, flags as f64, n.node_platform[i] as f64, n.node_built[i] as u8 as f64, n.node_heading[i]]);
+    }
+}
+
+/// T-4239: what `add_pack_streets` runs once a zone's street speeds are in, over every bus line, for
+/// bin/edit_bench to time a load's street speeds natively (native builds only, not in the WASM interface).
+#[cfg(not(target_arch = "wasm32"))]
+impl TrackApi {
+    pub fn rework_all_buses(&mut self) -> i32 {
+        self.w.rework_buses(None) as i32
+    }
+
+    /// T-4239: per line and level a settle keeps off its fleet (`settle_kept`, weekdays), its trains
+    /// short of the fleet's rate (negative: over it) and its running trains, for bin/edit_bench.
+    pub fn settle_kept_offsets(&self) -> Vec<(u32, usize, f64, f64)> {
+        let (n, s) = (&self.w.net, &self.w.svc);
+        n.settle_kept.iter().filter(|e| (e.0 as usize) < n.line_count() && (e.0 as usize) < s.lines.len()).map(|e| {
+            let (l, lev) = (e.0 as usize, e.1);
+            let trip = s.lines[l].round_trip[lev];
+            let runs = n.running_trains(l, lev, trip);
+            (e.0, lev, runs - n.line_tph[l][lev] as f64 * trip / 3600.0, runs)
+        }).collect()
+    }
 }

@@ -8,13 +8,12 @@ import { runLag } from "../game/moneyTiming";
 import { networkFromState, networkSteps, newNetCache, runsTrains, shiftNetCache, type NetworkBuffers } from "../map/network";
 import { terminalEnds } from "../map/terminalBays";
 import { packCross } from "../map/markData";
-import { type Complexes } from "../game/complexes";
-import { StateRows, upgradesOf, type RowEnv } from "./stateRows";
+import { alignList, StateRows, upgradesOf, type RowEnv } from "./stateRows";
 import { PlatformLines } from "./platformLines";
-import type { ClockNode, ClockState } from "./protocol";
+import type { ClockEdge, ClockLine, ClockNode, ClockState } from "./protocol";
 import { publishSlots, saves } from "./slots";
 import { META_PER_LINE, profileOf } from "../map/profiles";
-import { buildSnapshot, busRow, complexesOf, complexOfNodes, groundK, loadsLater, nodeComplexes, putXferSet, sendTrips, shownBuildings, snapTimer, StationGeo } from "./clockDemand";
+import { buildSnapshot, busRow, complexInputs, complexOfNodes, forgetKeeps, groundK, loadsLater, namedKeeps, putXferSet, sendTrips, shownBuildings, snapTimer } from "./clockDemand";
 import { pinFareRef } from "./clockFares";
 import { moneyState } from "./clockMoney";
 import { keep } from "./clockPanic";
@@ -48,9 +47,32 @@ export function hex(c: number) {
   return "#" + c.toString(16).padStart(6, "0");
 }
 
+/** T-4291: a map that notes, for each reader it hands out, the keys set or deleted since that reader last emptied its
+ * record (`all`: cleared since) */
+class NotedMap<K, V> extends Map<K, V> {
+  private readers?: { keys: Set<K>; all: boolean }[];
+  reader(): { keys: Set<K>; all: boolean } {
+    const r = { keys: new Set<K>(), all: true };
+    (this.readers ??= []).push(r);
+    return r;
+  }
+  set(k: K, v: V): this {
+    if (this.readers) for (const r of this.readers) r.keys.add(k);
+    return super.set(k, v);
+  }
+  delete(k: K): boolean {
+    if (this.readers) for (const r of this.readers) r.keys.add(k);
+    return super.delete(k);
+  }
+  clear() {
+    if (this.readers) for (const r of this.readers) { r.all = true; r.keys.clear(); }
+    super.clear();
+  }
+}
+
 // What the renderer draws, per edge and per line, in local units, kept between edits: an edit
 // re-renders only the edges and lines it dirtied (T-063). Cleared when a game is loaded.
-export const edgeDrawn = new Map<number, Float32Array>();
+export const edgeDrawn = new NotedMap<number, Float32Array>();
 const edgeSpeedDrawn = new Map<number, Float32Array>();
 export const lineDrawn = new Map<number, Float32Array>();
 /** T-1170: the same points in mercator 0..1 (float64; z or nothing after x, y), which no anchor move
@@ -114,17 +136,146 @@ export function forget(all = false) {
     lineMerc.clear();
     lineBends.clear();
     backDrawn.clear();
+    pathsMoved.clear();
+    dropped.clear();
+    droppedBack.clear();
+    pathsAllMoved = true;
+    // (the model's list of lines that moved starts again with this: every line is sampled anew anyway)
+    api?.take_moved_lines();
+    api?.take_moved_spans();
+    drift.clear();
     shiftFrom = null;
     stateRows.reset();
     platformLines.clear();
     postWhole();
     return;
   }
-  const edges = api!.dirty_edges();
+  const a = api!, edges = a.dirty_edges();
   for (const e of edges) { edgeDrawn.delete(e); edgeSpeedDrawn.delete(e); edgeMerc.delete(e); platformLines.forgetEdge(e); }
-  for (const l of api!.dirty_lines()) { lineDrawn.delete(l); lineMerc.delete(l); lineBends.delete(l); backDrawn.delete(l); }
-  // (a way back is not on the edges' lines: any track edit may move one)
-  if (edges.length) backDrawn.clear();
+  // T-4149: a line's runs are sampled again only where they lie anywhere new on the track; the other lines whose profiles
+  // were worked out again (a settle's timing: most of a big network's lines on shared track) or that were rebuilt onto the
+  // same track run where they ran. A bus or ferry line's runs follow its route and keep the older rule.
+  const moved = a.take_moved_lines(), spans = a.take_moved_spans();
+  if (moved[0] === 0xffffffff) {
+    for (const l of lineMerc.keys()) keepRun0(l);
+    for (const l of backDrawn.keys()) keepBack(l);
+    lineDrawn.clear(); lineMerc.clear(); lineBends.clear(); backDrawn.clear(); drift.clear();
+  } else {
+    // T-4281: a run 0 that moved only in a stretch (`take_moved_spans`) is sampled again there alone
+    const near = new Map<number, ArrayLike<number>>();
+    for (let k = 0; k + 5 < spans.length; k += 6) if (spans[k + 1] === 0) near.set(spans[k], spans.subarray(k, k + 6));
+    // T-4291: a way back is sampled again only where its line moved (`note_moved` looks at both runs: their entries and
+    // the touched edges under each), whole
+    for (const l of moved) if (!spliceRun0(a, l, near.get(l))) dropDrawnLine(l); else dropBack(l);
+  }
+  for (const l of a.dirty_lines()) if (a.is_bus(l) || a.is_ferry(l)) dropDrawnLine(l);
+}
+
+/** T-4280: the run samples and bends of lines dropped since the last network was posted, as they were drawn: a line sampled
+ * again is named in `pathsMoved` only where its new ones differ (bus lines are dropped on most edits, onto the same route) */
+const dropped = new Map<number, { merc: Float64Array; bends: Float32Array }>();
+const droppedBack = new Map<number, { merc: Float64Array; bends: Float32Array }>();
+function keepRun0(l: number) {
+  const m = lineMerc.get(l);
+  if (m) dropped.set(l, { merc: m, bends: lineBends.get(l) ?? NO_PHASES });
+}
+function keepBack(l: number) {
+  const b = backDrawn.get(l);
+  if (b) droppedBack.set(l, { merc: b.merc, bends: b.bends });
+}
+/** whether a run sampled again (`merc`, `bends`) differs from its samples before (`was`, none: a run new to the drawing) */
+function resampled(was: { merc: Float64Array; bends: Float32Array } | undefined, merc: Float64Array, bends: Float32Array): boolean {
+  if (!was || was.merc.length !== merc.length || was.bends.length !== bends.length) return true;
+  for (let k = 0; k < merc.length; k++) if (was.merc[k] !== merc[k]) return true;
+  for (let k = 0; k < bends.length; k++) if (was.bends[k] !== bends[k]) return true;
+  return false;
+}
+function dropDrawnLine(l: number) {
+  keepRun0(l); dropBack(l);
+  lineDrawn.delete(l); lineMerc.delete(l); lineBends.delete(l); drift.delete(l);
+}
+function dropBack(l: number) {
+  keepBack(l);
+  backDrawn.delete(l);
+}
+/** T-4281: per line, how far (ground m) its kept run 0 samples past a stretch sampled again may lie along the track from
+ * where a whole resample would put them: the summed length changes of the cuts since its last whole sampling (a station
+ * splitting an edge moves the pieces' lengths by a few mm) */
+const drift = new Map<number, number>();
+/** T-4281: the most `drift` a line's samples may carry before they are taken whole again (a train is drawn at most this
+ * far along its track from its place; `BEND_TOL_M` is a train's leeway across it) */
+const DRIFT_MAX_M = 0.05;
+/** T-4281: line `l`'s kept run 0 samples and bends with the stretch of `span` (`[line, run, lo, hi, drift, len]`) sampled
+ * again, as `drawnLine` samples a run whole; false (nothing changed) where it must be sampled whole: none kept, no span,
+ * the drift past `DRIFT_MAX_M` or the count of samples changed */
+function spliceRun0(a: TrackApi, l: number, span: ArrayLike<number> | undefined): boolean {
+  const m = lineMerc.get(l), b = lineBends.get(l);
+  // (`?patch=walk` samples every moved run whole, as before, to time against)
+  if (!m || !b || !span || patchMode === "walk") return false;
+  const [, , lo, hi, moved, len] = Array.from(span);
+  const d = (drift.get(l) ?? 0) + moved, n = Math.ceil(len / SAMPLE_STEP);
+  if (!(d <= DRIFT_MAX_M) || m.length !== (n + 1) * 2) return false;
+  const k0 = Math.max(0, Math.floor(lo / SAMPLE_STEP) - 1), k1 = Math.min(n, Math.ceil(hi / SAMPLE_STEP) + 1);
+  const p = a.run_polyline_range(l, 0, SAMPLE_STEP, k0, k1);
+  if (p.length !== (k1 - k0 + 1) * 2) return false;
+  const merc = m.slice();
+  for (let k = 0; k < p.length; k += 2) merc.set(toMerc01(...packLngLat(p[k], p[k + 1])), k0 * 2 + k);
+  // the bends of every interval with a sample sampled again
+  const b0 = Math.max(0, k0 - 1), b1 = Math.min(n, k1 + 1);
+  const fresh = bendsOf(a.run_bends_range(l, 0, SAMPLE_STEP, BEND_TOL_M, b0, b1), merc);
+  const out: number[] = [];
+  let at = 0, cut = 0;
+  for (; at < b.length && b[at] < b0; at += 2 + 2 * b[at + 1]) cut = at + 2 + 2 * b[at + 1];
+  let tail = at;
+  for (; tail < b.length && b[tail] < b1; tail += 2 + 2 * b[tail + 1]);
+  for (let k = 0; k < cut; k++) out.push(b[k]);
+  for (let k = 0; k < fresh.length; k++) out.push(fresh[k]);
+  for (let k = tail; k < b.length; k++) out.push(b[k]);
+  const bends = new Float32Array(out);
+  let changed = bends.length !== b.length;
+  for (let k = k0 * 2; !changed && k <= k1 * 2 + 1; k++) changed = merc[k] !== m[k];
+  for (let k = cut; !changed && k < cut + fresh.length; k++) changed = bends[k] !== b[k];
+  lineMerc.set(l, merc);
+  lineBends.set(l, bends);
+  lineDrawn.delete(l);
+  if (d > 0) drift.set(l, d);
+  if (changed) pathsMoved.add(l);
+  return true;
+}
+/** T-4149: the lines whose drawn runs moved since the last network was posted (`ClockState.touched.paths`), or all of them;
+ * T-4280: a line is named where it was sampled again into other samples or bends than before (`resampled`) */
+export const pathsMoved = new Set<number>();
+export let pathsAllMoved = false;
+/** T-4149: every drawn position moved since the last network was posted (the view's anchor): `touched.all` */
+export let drawnAllMoved = false;
+export function pathsPosted() { pathsMoved.clear(); pathsAllMoved = false; drawnAllMoved = false; dropped.clear(); droppedBack.clear(); }
+/** The view's anchor moved (T-307): every drawn position again, relative to the new anchor */
+export function forgetDrawn() { edgeDrawn.clear(); lineDrawn.clear(); drawnAllMoved = true; }
+
+/** `?patch=check` (T-4149): every line's kept run samples and bends against the model's now. A line whose runs moved and
+ * whose samples were kept anyway draws its trains off its track. */
+function checkSamples(a: TrackApi, lines: readonly ClockLine[]) {
+  const bad: number[] = [];
+  const same = (x: ArrayLike<number> | undefined, y: ArrayLike<number>) => !!x && x.length === y.length && Array.prototype.every.call(y, (v: number, k: number) => Object.is(v, x[k]));
+  const fresh = (id: number, run: number) => {
+    const p = a.run_polyline(id, run, SAMPLE_STEP), m = new Float64Array(p.length);
+    for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
+    return { m, bends: bendsOf(a.run_bends(id, run, SAMPLE_STEP, BEND_TOL_M), m) };
+  };
+  // T-4281: run 0 samples kept past a stretch sampled again lie within the line's drift (ground m) of a whole resample
+  const near = (x: Float64Array, y: Float64Array, tol: number) => x.length === y.length && x.every((v, k) => {
+    if (k % 2) return true;
+    const ground = Math.hypot(v - y[k], x[k + 1] - y[k + 1]) * EARTH_C / Math.cosh(Math.PI * (1 - 2 * y[k + 1]));
+    return ground <= tol + 1e-3;
+  });
+  for (const l of lines) {
+    if (!l.ok) continue;
+    const m = lineMerc.get(l.id), b = backDrawn.get(l.id), tol = drift.get(l.id) ?? 0;
+    if (m && tol > 0) { if (!near(m, fresh(l.id, 0).m, tol)) bad.push(l.id); }
+    else if (m) { const f = fresh(l.id, 0); if (!same(m, f.m) || !same(lineBends.get(l.id), f.bends)) bad.push(l.id); }
+    if (b && l.back?.length) { const f = fresh(l.id, 1); if (!same(b.merc, f.m) || !same(b.bends, f.bends)) bad.push(l.id); }
+  }
+  if (bad.length) console.error(`T-4149 check: the kept run samples of lines ${bad.slice(0, 8).join(", ")} differ from the model's`);
 }
 
 /** The track model's mark rows (`crossings_info`, `preview_marks`) with x, y moved to local units. */
@@ -150,15 +301,8 @@ export function previewMarkRows(rows: Float64Array): Float32Array {
 /** T-1859: each station's platform line, for the complexes */
 const platformLines = new PlatformLines();
 export const platformLineOf = (a: TrackApi, id: number, x: number, y: number, platform: number) => platformLines.of(a, id, x, y, platform, groundK(y));
-/** T-3288: the complexes of the station rows, for the one name their untyped members show */
-function rowComplexes(rows: readonly ClockNode[]): Complexes {
-  const geo: StationGeo[] = rows.map((r) => ({ id: String(r.id), x: r.x, y: r.y, heading: r.heading, length: r.platform, ...(r.line ? { line: r.line } : {}) }));
-  const fl = api!.station_links(), links: [string, string][] = [];
-  for (let k = 0; k + 1 < fl.length; k += 2) links.push([String(fl[k]), String(fl[k + 1])]);
-  return complexesOf(nodeComplexes, geo, links);
-}
-export const rowEnv: RowEnv = { lngLat: packLngLat, periodHours: PERIOD_HOURS, busRow, platformLine: platformLineOf, complexes: rowComplexes,
-  complexKey: (a) => a.station_links().join() + "|" + a.buildings_info().join() };
+export const rowEnv: RowEnv = { lngLat: packLngLat, periodHours: PERIOD_HOURS, busRow, platformLine: platformLineOf, complexInputs,
+  platformLineNow: (a, id, x, y, platform, changed) => platformLines.peekOf(a, id, x, y, platform, groundK(y), changed) };
 /** the rows of the last states, read again only where the track model says something changed (T-1382);
  * `?patch=0` reads them whole */
 export const stateRows = new StateRows();
@@ -204,7 +348,11 @@ export function drawnLine(a: TrackApi, id: number): Float32Array {
       m = new Float64Array(p.length);
       for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
       lineMerc.set(id, m);
-      lineBends.set(id, bendsOf(a.run_bends(id, 0, SAMPLE_STEP, BEND_TOL_M), m));
+      const bends = bendsOf(a.run_bends(id, 0, SAMPLE_STEP, BEND_TOL_M), m);
+      lineBends.set(id, bends);
+      drift.delete(id);
+      if (resampled(dropped.get(id), m, bends)) pathsMoved.add(id);
+      dropped.delete(id);
     }
     d = localOf(m, 2);
     lineDrawn.set(id, d);
@@ -221,13 +369,39 @@ function drawnBack(a: TrackApi, id: number, back: readonly number[]): Float32Arr
     const p = a.run_polyline(id, 1, SAMPLE_STEP);
     const m = new Float64Array(p.length);
     for (let k = 0; k < p.length; k += 2) m.set(toMerc01(...packLngLat(p[k], p[k + 1])), k);
+    const was = c ?? droppedBack.get(id);
+    droppedBack.delete(id);
     backDrawn.set(id, (c = { key, merc: m, bends: bendsOf(a.run_bends(id, 1, SAMPLE_STEP, BEND_TOL_M), m), at: null, d: null }));
+    if (resampled(was, m, c.bends)) pathsMoved.add(id);
   }
   if (!c.d || c.at !== anchor()) {
     c.d = localOf(c.merc, 2);
     c.at = anchor();
   }
   return c.d;
+}
+
+/** T-4291: each edge's points and speeds (`drawnEdge`) beside the edges' list, as the last full state's had them: only those of
+ * rows that changed, came or went since, and of edges whose points were dropped or made again since (`edgeDrawn`'s own
+ * record), are looked up again */
+let listed: { read: number; edges: readonly ClockEdge[]; drawn: Float32Array[]; speeds: (Float32Array | undefined)[] } | null = null;
+const listedFresh = edgeDrawn.reader();
+function drawnLists(a: TrackApi, edges: readonly ClockEdge[]): { drawn: Float32Array[]; speeds: (Float32Array | undefined)[] } {
+  const read = stateRows.readNumber, rows = listed && !listedFresh.all && patchMode !== "walk" ? stateRows.changedSince(listed.read, 0) : null;
+  let out: { drawn: Float32Array[]; speeds: (Float32Array | undefined)[] };
+  if (!listed || !rows) out = { drawn: edges.map((e) => drawnEdge(a, e.id)), speeds: [] };
+  else {
+    const ids = new Set([...rows, ...listedFresh.keys]);
+    out = ids.size || edges !== listed.edges ? { drawn: alignList(listed.drawn, listed.edges, edges, ids, (id) => drawnEdge(a, id)), speeds: [] } : listed;
+    if (out !== listed) out.speeds = alignList(listed.speeds, listed.edges, edges, ids, (id) => edgeSpeedDrawn.get(id));
+  }
+  if (!listed || !rows) out.speeds = edges.map((e) => edgeSpeedDrawn.get(e.id));
+  // (after the points made just now, which note themselves)
+  listedFresh.all = false;
+  listedFresh.keys.clear();
+  listed = { read, edges, ...out };
+  if (patchMode === "check" && edges.some((e, k) => out.drawn[k] !== edgeDrawn.get(e.id) || out.speeds[k] !== edgeSpeedDrawn.get(e.id))) console.error("T-4291 check: the edges' points kept beside their list differ from those drawn");
+  return out;
 }
 
 /** T-4113: the view's bounds, west, south, east, north, from the page's "view"; a rows state reads the regions there
@@ -245,38 +419,45 @@ function viewRect(): [number, number, number, number] | undefined {
 function buildState(rowsOnly = false): ClockState {
   const tq0 = performance.now();
   const a = api!;
+  // T-4272: the runs and rows of what answered edits still owe are their old ones until the follow-up's first step
+  if (patchMode === "check" && a.owes()) console.error("T-4272 check: a state was built while answered edits still owe their services");
   if (patchMode === "0") stateRows.reset();
   stateRows.bind(a, frame);
   // T-4113: `?patch=walk` makes every record's own calls on every read, as before regions (for timing against)
   StateRows.bounded = patchMode !== "walk";
+  StateRows.alternate = patchMode === "check";
   // (with `?patch=walk` a rows state is built as a full one, as before)
   rowsOnly &&= StateRows.bounded;
   stateRows.begin(a, rowsOnly ? { rect: viewRect() } : undefined);
+  if (patchMode === "check") {
+    const [n, e] = stateRows.regions.counts(), ni = a.nodes_info().length / 10, ei = a.edges_info().length / 10;
+    if (n !== ni || e !== ei) console.error(`T-4299 check: the regions hold ${n} nodes and ${e} edges, the model ${ni} and ${ei}`);
+  }
   const edges = stateRows.edges(a);
-  const drawn: Float32Array[] = [];
-  if (!rowsOnly) for (const { id } of edges) drawn.push(drawnEdge(a, id));
-  const speedParts = rowsOnly ? [] : edges.map((e) => edgeSpeedDrawn.get(e.id));
+  const { drawn, speeds: speedParts } = rowsOnly ? { drawn: [], speeds: [] } : drawnLists(a, edges);
   const tq1 = performance.now(); timing.sEdges = tq1 - tq0;
-  const ups = upgradesOf(a);
-  platformLines.sync(edges);
-  let nodes = stateRows.nodes(a, rowEnv, ups);
+  platformLines.sync(edges, stateRows.changes(0), (id) => stateRows.edgeNow(id));
+  if (patchMode === "check") { const bad = platformLines.differs(edges); if (bad.length) console.error(`T-4291 check: the platforms' ${bad.join(", ")} laid from changes differ from a whole sync`); }
+  let nodes = stateRows.nodes(a, rowEnv);
   // T-3759: an older save's typed stations that showed their own names keep them, unbound (once a load,
   // not on undo)
   if (a.take_old_names()) {
     const apart = stateRows.oldApart();
     if (apart.length && a.adopt_old_names(new Uint32Array(apart)) === 0) {
       forget();
-      nodes = stateRows.nodes(a, rowEnv, ups);
+      nodes = stateRows.nodes(a, rowEnv);
     }
   }
   const stationCount = nodes.length;
   const tq2 = performance.now(); timing.sNodes = tq2 - tq1;
   const lines = stateRows.lines(a, rowEnv, nodes);
-  platformLines.setLines(lines);
+  platformLines.setLines(lines, stateRows.changes(2), (id) => stateRows.lineNow(id));
+  if (patchMode === "check") { const bad = platformLines.differs(edges, lines); if (bad.length) console.error(`T-4291 check: the platforms' ${bad.join(", ")} from changes differ from whole ones`); }
   const tq3 = performance.now(); timing.sLines = tq3 - tq2;
   const w = stateRows.work;
+  timing.sFold = w.foldMs;
   timing.nEdges = w.edges; timing.nNodes = w.nodes; timing.nLines = w.lines; timing.nBuses = w.buses; timing.nRegions = w.leaves; timing.nLeft = w.left;
-  if (patchMode === "check") checkRows({ edges, nodes, lines }, a, ups);
+  if (patchMode === "check") checkRows({ edges, nodes, lines }, a, upgradesOf(a));
   // a bus line's stops that are no station were added to the nodes by its row
   const busNodes = new Map(nodes.slice(stationCount).map((n) => [n.id, n]));
   lineFirstStops = new Map(lines.map((l) => {
@@ -285,8 +466,11 @@ function buildState(rowsOnly = false): ClockState {
   }));
   const tq3a = performance.now();
   placeLineCountries();
-  termEnds = terminalEnds(edges, nodes, lines);
+  // T-4291: from the rows by id, not a pass over every edge and node
+  termEnds = terminalEnds(edges, nodes, lines, { edgeOf: { get: (id) => stateRows.edgeNow(id) }, nodeOf: { get: (id) => stateRows.nodeNow(id) }, endCount: { get: (n) => platformLines.endsAt(n) } });
+  if (patchMode === "check" && JSON.stringify([...termEnds]) !== JSON.stringify([...terminalEnds(edges, nodes, lines)])) console.error("T-4291 check: the line ends read by id differ from those of every row");
   timing.sEnds = performance.now() - tq3a;
+  const tq3b = performance.now();
   let first: ClockNode | null = null;
   for (let k = 0; k < stationCount; k++) if (nodes[k].stationBuilt && (!first || nodes[k].id < first.id)) first = nodes[k];
   firstBuiltAt = first ? [first.lng, first.lat] : null;
@@ -294,6 +478,7 @@ function buildState(rowsOnly = false): ClockState {
   pinDayShift();
   syncHolidays();
   applyRunFactors();
+  const tq3c = performance.now(); timing.sSync = tq3c - tq3b;
   // Keyframes: phase tables, profile meta, and run 0 of every line resampled; a line whose return run
   // takes its own way back (T-3094) has that run resampled too, in the table's second half (T-3250,
   // network.ts `backSlot`)
@@ -321,9 +506,11 @@ function buildState(rowsOnly = false): ClockState {
     lineTable.set([nSamples, d.length / 2, meta[profileOf(l.id, 1, 0) * 4 + 3] || l.lengthM, SAMPLE_STEP], (nLines + l.id) * 4);
     nSamples += d.length / 2;
   }
+  if (patchMode === "check" && !rowsOnly) checkSamples(a, lines);
   const samples = new Float32Array(nSamples * 2);
   runs.reduce((o, d) => (samples.set(d, o), o + d.length), 0);
   const { sampleBend, bends } = bendTables(nSamples, runBends);
+  const tq3d = performance.now(); timing.sSamples = tq3d - tq3c;
   // T-3542: per period, read once per slot serving periods
   const slots = a.period_slots();
   const bySlot = new Map<number, ClockState["markers"][number]>();
@@ -347,11 +534,13 @@ function buildState(rowsOnly = false): ClockState {
     crossings.set(info.subarray(k, k + 5), j);
     if (info[k + 2] === 0) crossings[j + 3] = packCross(info[k + 3], info[k + 5]);
   }
-  const tq4 = performance.now(); timing.sRest = tq4 - tq3;
+  const tq4 = performance.now(); timing.sRest = tq4 - tq3; timing.sMarks = tq4 - tq3d;
   const fullBySlot = new Map<number, Float64Array>();
   const fullTrack = PERIODS.map((_, p) => fullBySlot.get(slots[p]) ?? fullBySlot.set(slots[p], a.full_track_in(p)).get(slots[p])!);
   const tq4a = performance.now(); timing.sFull = tq4a - tq4;
   const [totalCost, builtCost] = a.costs();
+  // T-4299: the money kept per record against the same worked out from nothing
+  if (patchMode === "check") { const d = a.kept_check(PERIOD_HOURS); if (d) console.error(`T-4299 check: ${d}`); }
   const blueprintCost = Math.max(totalCost - builtCost, 0);
   const tq5 = performance.now(); timing.sSums = tq5 - tq4a; timing.sCosts = tq5 - tq4;
   // (a rows state carries none: the tables changed stay pending for the next full one)
@@ -378,7 +567,9 @@ function buildState(rowsOnly = false): ClockState {
     nodes,
     lines,
     links: Array.from(a.station_links()),
-    buildings: timed("sBld", () => shownBuildings(a, nodes)),
+    apart: Array.from(a.station_apart()),
+    buildings: timed("sBld", () => shownBuildings(a)),
+    keeps: namedKeeps(a),
     render: {
       edgeParts: drawn,
       edgeSpeedParts: speedParts,
@@ -391,6 +582,7 @@ function buildState(rowsOnly = false): ClockState {
     },
     money: moneyState(),
     anchor: anchorSpec(),
+    rowsRead: stateRows.lastRead,
   };
 }
 
@@ -414,6 +606,7 @@ export function sendHome() {
 /** After a load or a new game: the clock, fresh state, a new snapshot for demand. */
 export function restart(t: number, from: "autosave" | "file" | "new", reason?: "rebuilt") {
   putMidLoad(false);
+  forgetKeeps();
   putClk({ t, rate: clk.rate, at: wallNow() });
   game++;
   saves.edited = false;

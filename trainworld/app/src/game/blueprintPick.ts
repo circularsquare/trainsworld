@@ -9,8 +9,9 @@ import { describeIssues } from "./issues";
 import { heightRunLength, noteHeight } from "./deleteHint";
 import { setOneWays } from "./oneWay";
 import { isBigDelete, lineEffects, removeQuestion } from "./remove";
-import type { Level, TrackEdge } from "./types";
-import { ask, buildLevel, selection, setTrackType, tool } from "./ui";
+import type { Level, TrackEdge, WorldView } from "./types";
+import { checkPatches, sameBuilt, worldDiff } from "./worldDiff";
+import { ask, buildLevel, selection, selectMode, setTrackType, tool } from "./ui";
 import { edit, say, stationsByNum, world } from "./world";
 import { t, tList } from "../i18n";
 
@@ -53,17 +54,21 @@ export const clearBpPicked = () => {
   if (bpPicked.peek().edges.length || bpPicked.peek().stations.length) bpPicked.value = NONE;
 };
 
-/** One kind only (Anita, T-829): any blueprint in it keeps only the blueprint, else constructed. */
+/** T-4330: the Select tool's Built track only mode is on; plain selecting keeps the usual rule. */
+const builtOnly = () => tool.peek() === "blueprint" && selectMode.peek() === "track";
+
+/** One kind only (Anita, T-829): any blueprint in it keeps only the blueprint, else constructed; in the Select
+ * tool's Built track only mode always constructed (T-4330). Every pick of the tool and of plain selecting passes here. */
 export function onlyOneKind(p: BpPicked): BpPicked {
   const w = world.peek();
   if (!w) return p;
   const builtEdge = new Set(w.edges.filter((e) => e.built).map((e) => e.id));
   const builtStation = new Set(w.save.stations.filter((s) => s.built).map((s) => s.num));
-  const bp = p.edges.some((e) => !builtEdge.has(e)) || p.stations.some((s) => !builtStation.has(s));
+  const bp = !builtOnly() && (p.edges.some((e) => !builtEdge.has(e)) || p.stations.some((s) => !builtStation.has(s)));
   const nodes = p.nodes ? { nodes: p.nodes } : {};
-  return trimNodes(bp
-    ? { edges: p.edges.filter((e) => !builtEdge.has(e)), stations: p.stations.filter((s) => !builtStation.has(s)), ...nodes }
-    : { edges: p.edges, stations: p.stations, built: p.edges.length + p.stations.length > 0, ...nodes });
+  if (bp) return trimNodes({ edges: p.edges.filter((e) => !builtEdge.has(e)), stations: p.stations.filter((s) => !builtStation.has(s)), ...nodes });
+  const edges = p.edges.filter((e) => builtEdge.has(e)), stations = p.stations.filter((s) => builtStation.has(s));
+  return trimNodes({ edges, stations, built: edges.length + stations.length > 0, ...nodes });
 }
 
 /** Merge two picks (shift adds), one kind kept. */
@@ -239,9 +244,11 @@ export function reversePicked(pieces: readonly TrackEdge[]) {
 
 /** What the picked pieces are now: how many are switched off, their track's length, and the one
  * elevation all of it is on (null when mixed or ramped). */
+const NOTHING_PICKED = { edges: 0, stations: 0, off: 0, on: 0, built: false, lengthM: 0, level: null as Level | null, hsr: 0, regular: 0, tram: 0, ones: 0, twos: 0 };
 export const pickedState = computed(() => {
   const w = world.value, p = bpPicked.value;
-  if (!w) return { edges: 0, stations: 0, off: 0, on: 0, built: false, lengthM: 0, level: null as Level | null, hsr: 0, regular: 0, tram: 0, ones: 0, twos: 0 };
+  // (T-4150 stage 2: with nothing picked, nothing of the world is read)
+  if (!w || (!p.edges.length && !p.stations.length)) return { ...NOTHING_PICKED, built: !!w && !!p.built };
   const edges = new Map(w.edges.map((e) => [e.id, e]));
   const stations = stationsByNum(w);
   let off = 0, on = 0, lengthM = 0, hsr = 0, regular = 0, tram = 0, ones = 0, twos = 0;
@@ -265,11 +272,25 @@ export const pickedState = computed(() => {
  * Tram track (`tram` in `pickedState`) can become either, and rail tram (T-3088, T-3108). */
 const canBeHsr = (e: TrackEdge) => !e.crossover && !e.kind;
 
-/** Every blueprint piece switched off, for the Build tab. */
+/** Every blueprint piece switched off, for the Build tab. T-4284: the last world's counts moved by the pieces its diff
+ * names, not a pass over every piece */
+let offLast: { w: WorldView; edges: number; stations: number } | null = null;
+const isOff = (p: { built: boolean; off?: boolean } | undefined) => (p && !p.built && p.off ? 1 : 0);
+const offWhole = (w: WorldView) => ({ edges: w.edges.filter((e) => !e.built && e.off).length, stations: w.save.stations.filter((s) => !s.built && s.off).length });
 export const offTotals = computed(() => {
   const w = world.value;
-  if (!w) return { edges: 0, stations: 0 };
-  return { edges: w.edges.filter((e) => !e.built && e.off).length, stations: w.save.stations.filter((s) => !s.built && s.off).length };
+  if (!w) return (offLast = null), { edges: 0, stations: 0 };
+  const was = offLast, d = was ? worldDiff(was.w, w) : null;
+  let out: { edges: number; stations: number };
+  if (was && d) {
+    let edges = was.edges, stations = was.stations;
+    for (const [x, y] of d.edges.values()) edges += isOff(y) - isOff(x);
+    for (const [x, y] of d.stations.values()) stations += isOff(y) - isOff(x);
+    out = { edges, stations };
+    if (checkPatches() && !sameBuilt(out, offWhole(w))) console.error("T-4284 check: the blueprint pieces switched off, counted by the diff, differ from a whole count");
+  } else out = offWhole(w);
+  offLast = { w, ...out };
+  return out;
 });
 
 /** Switch the picked pieces off (Construct and the quote leave them out) or on: one undoable edit. */

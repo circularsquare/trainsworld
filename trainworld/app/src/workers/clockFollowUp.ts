@@ -2,11 +2,12 @@
 
 import { toMerc01 } from "../map/geo";
 import type { ClockState, EditOp, ToClock } from "./protocol";
-import { game, localOf, sendRows, sendState, shiftFrom, stateSteps } from "./clockMain";
-import { isPanic, MODEL_RESTORED, recover } from "./clockPanic";
+import { forget, game, localOf, sendRows, sendState, shiftFrom, stateSteps } from "./clockMain";
+import { isPanic, MODEL_RESTORED, modelDown, recover } from "./clockPanic";
 import { diagramOn, postDiagram, posted } from "./clockPost";
-import { api, messages, packLngLat, putMessages, putTiming, send } from "./clockState";
-import { loadsOwed } from "./clockDemand";
+import { api, messages, packLngLat, putMessages, putTiming, send, timing } from "./clockState";
+import { loadsOwed, scheduleSnapshot } from "./clockDemand";
+import { gameNow } from "./clockMoney";
 
 // T-1039: previews the main thread no longer wants (`previewStale`, sent outside the queue) are
 // answered `stale` without being worked out, or while they wait for masks
@@ -23,12 +24,14 @@ export function sendStale(seq: number) {
 //
 // An edit's state, trips and boarding hour (and, unless it was answered `early`, its answer) wait
 // until the previews asked while it was applied are answered, so the ghost waits for the model's
-// change only. Any other message, and any trips sent meanwhile, run it first: nothing but the
-// previews sees the model ahead of its state. T-3803: its state is built a piece a task, and an
-// edit that comes between the pieces goes ahead (`goesAhead`), the two edits sharing one state.
+// change only. Nothing but the previews sees the model ahead of its state: questions, demand's
+// results and trips from a timer wait for it (T-4272, T-4281), any other message runs it first.
+// T-3803: its state is built a piece a task, and an edit that comes between the pieces goes ahead
+// (`goesAhead`), the two edits sharing one state.
 
-/** messages answered ahead of an edit's follow-up: they read the model and change nothing */
-export const jumpsAhead = (m: ToClock) => isPreview(m) || m.kind === "previewStation" || m.kind === "previewCrossover";
+/** messages answered ahead of an edit's follow-up: they read the model and change nothing (T-4214: and the delete
+ * question's trial of a removal, which a delete clicked right after an edit waited a whole state for) */
+export const jumpsAhead = (m: ToClock) => isPreview(m) || m.kind === "previewStation" || m.kind === "previewCrossover" || (m.kind === "query" && m.q.what === "removal");
 /** how long an `early` edit's state waits for the ghost the track tool asks on its answer, ms */
 export const EARLY_WAIT_MS = 30;
 /** T-2404: an early edit's follow-up is held while the track tool keeps asking ghosts (the pointer
@@ -74,7 +77,7 @@ export function later(ask: StateAsk, after: () => void, fail: () => void, waitin
     // T-3803: one state for both, not held: the earlier edit's network does not wait for this one's pointer to rest
     f = joined(prev, f);
     hold = false;
-  } else runFollowUp();
+  } else runFollowUp("edit");
   clearTimeout(followTimer);
   followUp = f;
   if (hold) {
@@ -98,12 +101,38 @@ function joined(a: FollowUp, b: FollowUp): FollowUp {
 /** the follow-up's state, its trips, and its edits' work after it, a piece per `next` */
 function* followSteps(f: FollowUp): Generator<void, void, void> {
   putTiming({});
+  // (from its first edit's apply to its state begun: the queue and the held wait)
+  timing.fromApply = performance.now() - f.ask.at;
+  // T-4272: the services stations and deletes answered from what they touch owe, a piece of their own before the state
+  // reads them (an edit coming after it goes ahead of the rest)
+  if (settleOwed(f)) yield;
   const a = f.ask, light = !a.net && !(a.name && shiftFrom);
   yield* stateSteps(light, a.effectiveAt, a.trips, a.early, true, (s) => { f.rows = s; }, a.service ? a.at : undefined);
   // the schematic reads its names off the world when a graph comes, so the same graph again
   if (light && a.name && diagramOn) postDiagram();
   if (a.service && !loadsOwed()) serviceEditMs = performance.now() - a.at;
   f.after();
+}
+/** T-4272: the services answered edits owe worked out (`settle_owed`), or what a refused edit, an undo with nothing to take
+ * or a trial worked out of them first, taken in as an edit's would be: the drawn lines they moved forgotten (the edit's
+ * own `forget` ran before them), and trips with the state where they moved a line for demand (they moved no running
+ * line's trains, so no rider's trip moves otherwise). Whether there were any. */
+function settleOwed(f?: FollowUp): boolean {
+  const a = api!;
+  if (a.owes()) a.set_now(gameNow());
+  if (!a.settle_owed()) return false;
+  forget();
+  a.take_service_moved();
+  if (a.take_settled_demand().length) {
+    if (f) f.ask.trips = true;
+    scheduleSnapshot();
+  }
+  return true;
+}
+/** T-4272: what answered edits owe worked out now, for a save, which then holds no edit without its services (autosave
+ * waits for them; a game left while an edit waits for its ground does not) */
+export function settleOwedNow() {
+  if (api?.owes()) settleOwed(followUp ?? undefined);
 }
 /** a follow-up's steps a task each, then its state a piece a task (T-3803), outside the message queue: a message
  * that reads the model runs what is left of it first, and an edit may come between the pieces (`standAside`) */
@@ -133,7 +162,8 @@ function pump(f: FollowUp) {
     if (!isPanic(err)) send({ kind: "error", message: String(err) });
     return queueFollowUp();
   }
-  if (done || followUp) return;
+  if (done) return stateWent();
+  if (followUp) return;
   followUp = f;
   followTimer = setTimeout(() => pump(f), 0) as unknown as number;
 }
@@ -141,6 +171,8 @@ function pump(f: FollowUp) {
  * service (a train count's lead is sized to a train count's state, T-1071) when `f` builds the network and its rows can
  * go as a rows state (a network posted, no anchor move pending) */
 export function goesAhead(m: ToClock, f: FollowUp): boolean {
+  // T-4214: a station's name after its edit joins that edit's state, as a rename's rows would
+  if (m.kind === "stationName") return f.ask.net && !!posted.net && !shiftFrom && m.game === game;
   if (m.kind !== "edit" || !f.ask.net || !posted.net || shiftFrom) return false;
   if (m.game !== undefined && m.game !== game) return false;
   return !OWN_STATE_OPS.has(m.op.op) && !isServiceOp(m.op);
@@ -158,6 +190,9 @@ export function isServiceOp(op: EditOp): boolean {
 export function standAside(f: FollowUp) {
   clearTimeout(followTimer);
   if (f.waiting.some((w) => w.owes())) {
+    // T-4272: these rows answer an edit, so they hold what answered edits owe (one whose map had no patch waits for its
+    // world); rows already built came after them
+    if (!f.rows) settleOwed(f);
     sendRows(f.rows);
     for (const w of f.waiting) w.worldSent();
   }
@@ -180,6 +215,51 @@ export function holdOn() {
   clearTimeout(followTimer);
   const rest = f.held.stops ? STOP_REST_MS : REST_MS;
   followTimer = setTimeout(() => stepThenRun(f), Math.max(1, Math.min(rest, f.held.until - performance.now()))) as unknown as number;
+}
+/** T-4272: messages that go at once, a follow-up waiting or not: the page's money figures from the world it holds, a paid
+ * edit's split it read off it, and the clock. None reads what a follow-up changes or sends (T-2766's stop clicks and
+ * T-2404's holds passed them already), and each ran a waiting follow-up whole in one block, which the next click waited
+ * behind (0.4-2.5 s on her Asia save, notes/T-4267-measure.md) */
+export const passesFollowUp = (m: ToClock) => STOP_KINDS.has(m.kind);
+/** T-4272: demand's results, which may not reach the model ahead of its state (T-1407) and which nothing waits on: kept,
+ * in order, until no follow-up waits (`keepUntilState`), instead of running it whole. T-4281: and every question but those
+ * answered ahead (`jumpsAhead`): the page reads a panel's figures or a quote against the world it holds (a line's counts
+ * by its stops, a quote by the world's version), so each is answered after the state holding the model it reads, and
+ * none runs that state in one block, which a click sent after it waited behind (`today`, the Build tab's quote: a whole
+ * follow-up, 0.4-1 s on her Asia save). A held follow-up keeps its own passes (`passesHeld`); anything else still ends it. */
+export const waitsFollowUp = (m: ToClock, f: FollowUp) => m.kind === "riders" || m.kind === "transfers" || (m.kind === "query" && !f.held && !jumpsAhead(m));
+/** each with the game it came in, as a game opened or rebuilt since (queued ahead of them) clears what they set */
+type Kept = { m: ToClock; game: number };
+let keptMsgs: Kept[] = [];
+let onStateWent: ((msgs: Kept[]) => void) | null = null;
+export function keepUntilState(m: ToClock) { keptMsgs.push({ m, game }); }
+/** T-4281: work that needs a waiting follow-up's state before it (trips are drawn on the runs of the state before them),
+ * done once none waits instead of running that state whole; dropped if another game opened meanwhile or the model is
+ * down, and a panic in it recovered, as a message's (T-4297) */
+let afterState: (() => void)[] = [];
+export function whenNoneWaits(fn: () => void) { afterState.push(fn); }
+async function guardedAfter(fn: () => void, g: number) {
+  if (g !== game || modelDown) return;
+  try { fn(); } catch (err) {
+    if (isPanic(err)) await recover(err, "trips after an edit's state", MODEL_RESTORED, performance.now()); // i18n-ignore
+    else send({ kind: "error", message: String(err) });
+  }
+}
+/** `cb` takes the kept messages once no follow-up waits (into the message queue, in order, each dropped there if its
+ * game is gone) */
+export function whenStateWent(cb: (msgs: Kept[]) => void) { onStateWent = cb; }
+function stateWent() {
+  if (followUp) return;
+  if (afterState.length) {
+    const fs = afterState, g = game;
+    afterState = [];
+    // (each in the message queue, as the kept messages after them, so an edit queued meanwhile still goes first)
+    for (const fn of fs) putMessages(messages.then(() => guardedAfter(fn, g)).catch((err) => send({ kind: "error", message: String(err) })));
+  }
+  if (!keptMsgs.length) return;
+  const msgs = keptMsgs;
+  keptMsgs = [];
+  onStateWent?.(msgs);
 }
 /** T-2404: messages a held follow-up stays held for: they read nothing it would change (blueprint
  * track changes no line's run), and a later early edit joins it. T-2766: a stop click's, the next stop click and the
@@ -214,23 +294,36 @@ export function heldEdges(): Float32Array[] {
 }
 /** the waiting follow-up, now (what is left of its state, when it has started); one that throws answers its edits as
  * failed */
-export function runFollowUp() {
+export function runFollowUp(why: string) {
   clearTimeout(followTimer);
   const f = followUp;
   followUp = null;
   if (!f) return;
+  const t0 = performance.now();
   try {
     const g = (f.job ??= followSteps(f));
     while (!g.next().done);
-  } catch (err) { f.fail(); throw err; }
+  } catch (err) { f.fail(); throw err; } finally {
+    const k = "forced:" + why;
+    forcedRuns[k] = (forcedRuns[k] ?? 0) + performance.now() - t0;
+    stateWent();
+  }
+}
+/** T-4281: the follow-ups run whole in one block since the last edit came, ms by what ran each ("forced:" and a message's
+ * kind, a question's `what`, "trips", "edit", "outside"): what that edit waited behind in the worker, in its answer's `ms` */
+let forcedRuns: Record<string, number> = {};
+export function takeForced(): Record<string, number> {
+  const f = forcedRuns;
+  forcedRuns = {};
+  return f;
 }
 /** the follow-up into the message queue; a failure there never leaves the queue rejected, which
  * would skip the next message (and an edit's answer with it) */
 function queueFollowUp() {
-  putMessages(messages.then(guardedFollowUp).catch((err) => send({ kind: "error", message: String(err) })));
+  putMessages(messages.then(() => guardedFollowUp("again")).catch((err) => send({ kind: "error", message: String(err) })));
 }
-export async function guardedFollowUp() {
-  try { runFollowUp(); } catch (err) {
+export async function guardedFollowUp(why: string) {
+  try { runFollowUp(why); } catch (err) {
     if (isPanic(err)) await recover(err, "an edit's state", MODEL_RESTORED, performance.now()); // i18n-ignore
     else send({ kind: "error", message: String(err) });
   }
@@ -246,7 +339,7 @@ export function sendStateOutside() {
     f.job = undefined;
     f.rows = undefined;
     // (its own pieces' timer would find no state to build)
-    if (!f.held) void guardedFollowUp();
+    if (!f.held) void guardedFollowUp("outside");
     else if (begun) startNow(f);
   }
   sendState();
@@ -257,6 +350,7 @@ export function dropFollowUp() {
   const f = followUp;
   followUp = null;
   f?.fail();
+  stateWent();
 }
 
 /** Wall ms the last train count or headway edit took here, from applying it to its trips sent with their loads. */

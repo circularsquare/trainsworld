@@ -183,12 +183,6 @@ export function bigDistance(m: number): string {
   return `${tNumber(v, { maximumFractionDigits: v >= 100 ? 0 : 1 })} ${us() ? "mi" : "km"}`;
 }
 
-/** A position along something and its whole length: "1.2 of 5.4 km". */
-export function distanceOf(part: number, whole: number): string {
-  const u = us() ? M_PER_MILE : 1000;
-  return t("format.distanceOf", { part: (part / u).toFixed(1), whole: `${(whole / u).toFixed(1)} ${us() ? "mi" : "km"}` });
-}
-
 /** A limit in a rule: 1000 -> "1 km" or "0.62 mi". */
 export function roughDistance(m: number): string {
   return us() ? `${trim(m / M_PER_MILE, 2)} mi` : `${trim(m / 1000, 1)} km`;
@@ -230,8 +224,14 @@ export function shortDistance(m: number): string {
 
 /** 160 -> "160 km/h" or "99 mph"; `nearest` rounds in the shown unit (the speed key uses 5). */
 export function speed(kmh: number, nearest = 1): string {
+  const [v, unit] = speedParts(kmh, nearest);
+  return `${v} ${unit}`;
+}
+
+/** `speed`'s figure and unit apart, for the train panel's dial (T-4243): 160 -> ["160", "km/h"] or ["99", "mph"]. */
+export function speedParts(kmh: number, nearest = 1): [string, string] {
   const v = us() ? kmh / M_PER_MILE * 1000 : kmh;
-  return `${Math.round(v / nearest) * nearest} ${us() ? "mph" : "km/h"}`;
+  return [String(Math.round(v / nearest) * nearest), us() ? "mph" : "km/h"];
 }
 
 /** Round lengths a scale bar can show, shortest first, in metres with their labels. */

@@ -30,6 +30,9 @@
 //   alone    stations no line stops at are in demand's network
 //   firm     an edit's solve is not run to its end when a newer network arrives
 //   restart  (T-3925) a newer edit never stops an edit's whole solve part way: it waits for its final (with firm on)
+//   localEnd (T-2188) a city edit's solve goes on from its local result to the whole solve, as for an intercity edit
+//   refresh  (T-2188) no idle refresh: a city edit's local result stands until a whole solve comes for another reason
+//   editAside (T-4220) a whole solve sends no snapshot of the figures on screen, so no edit made during it is solved aside
 //   rough    no rough solve of the zone in view while the packs open
 //   selected the zone the city view shows waits its turn in the queues, and its figures wait for its cluster's final
 //   viewRound  the zone in view gets no figures from each round of a cluster solved ahead
@@ -80,11 +83,13 @@
 // The network diagram:
 //   carryWasm  the carry on the rubber sheet solved in JavaScript, not WASM (the same drawing, slower; T-2589)
 //   msaa     the network's canvas without multisampling at any pixel ratio (T-3497, to measure its memory)
+//   keepGl   each network's textures and stroke buffers made anew, its traffic marks and lanes worked out whole (before
+//            T-4262; `renderer.keepGl`)
 
 const q = new URLSearchParams(location.search);
 const off = new Set((q.get("perfOff") ?? "").split(",").filter(Boolean));
 if (import.meta.env.DEV) (globalThis as { twPerfOff?: Set<string> }).twPerfOff = off;
 
-export const perfOff = (part: "labels" | "shadow" | "hover" | "clock" | "overlay" | "markers" | "clusters" | "periods" | "split" | "reach" | "chunks" | "farChunks" | "close" | "marks" | "fans" | "zoneZoom" | "moving" | "cap" | "grow" | "keepSlack" | "rough" | "cacheAhead" | "cacheCard" | "standIn" | "estimate" | "splitAhead" | "strokeCache" | "strokeCull" | "strokeLod" | "strokeGather" | "bands" | "follow" | "crossWait" | "singleWait" | "bays" | "stillThrottle" | "share" | "noise" | "firm" | "restart" | "alone" | "focus" | "muteThin" | "bandsSmooth" | "bandsOrder" | "bandsPlace" | "bandsHold" | "bandsAlign" | "bandGap" | "roads" | "selected" | "viewRound" | "lengths0" | "focusAhead" | "focusEnd" | "focusAux" | "carryWasm" | "overviewCache" | "fareHold" | "msaa" | "steps" | "wholeSteps" | "preview") => off.has(part);
+export const perfOff = (part: "labels" | "shadow" | "hover" | "clock" | "overlay" | "markers" | "clusters" | "periods" | "split" | "reach" | "chunks" | "farChunks" | "close" | "marks" | "fans" | "zoneZoom" | "moving" | "cap" | "grow" | "keepSlack" | "rough" | "cacheAhead" | "cacheCard" | "standIn" | "estimate" | "splitAhead" | "strokeCache" | "strokeCull" | "strokeLod" | "strokeGather" | "bands" | "follow" | "crossWait" | "singleWait" | "bays" | "stillThrottle" | "share" | "noise" | "firm" | "restart" | "alone" | "focus" | "muteThin" | "bandsSmooth" | "bandsOrder" | "bandsPlace" | "bandsHold" | "bandsAlign" | "bandGap" | "roads" | "selected" | "viewRound" | "lengths0" | "focusAhead" | "focusEnd" | "focusAux" | "carryWasm" | "overviewCache" | "fareHold" | "msaa" | "steps" | "wholeSteps" | "preview" | "localEnd" | "refresh" | "editAside" | "keepGl") => off.has(part);
 /** how lines side by side are worked out (map/lineBands.ts `setBandMode`) */
 export const bandTry = (): string => (perfOff("bandsSmooth") ? "" : (perfOff("bandsOrder") ? "smooth" : "smooth,order") + (perfOff("bandsPlace") ? "" : ",fit,snap") + (perfOff("bandsHold") ? "" : ",hold") + (perfOff("bandsAlign") ? "" : ",align"));

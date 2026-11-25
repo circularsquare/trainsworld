@@ -6,7 +6,7 @@
 //! period (a simple in-period shape, below), and each train of the line, in the order it reaches the
 //! stop, lets off the line's share alighting there and takes on whoever is waiting, up to its crush
 //! load. Whoever does not fit waits for the next train of the same line and direction, until full
-//! trains have kept them `GIVE_UP_S` or the platform holds `WAITING_CAP` (T-1067). Trains do
+//! trains have kept them `GIVE_UP_S` or the stop is full (`LineSvc::waiting_cap`, T-1067). Trains do
 //! not block each other (no signals, SPEC 2.1), so each direction of each line is one independent
 //! loop over its departures and stops.
 //!
@@ -40,6 +40,12 @@ pub const GIVE_UP_S: f64 = 5400.0;
 /// 300 m platform's side 5 m deep holds at 0.3 m² a rider; whoever comes when it is full goes
 /// another way. `WAITING_CAP` in app/src/game/boarding.ts.
 pub const WAITING_CAP: f64 = 5000.0;
+/// T-4052: the same at a bus stop, which has no platform: a bus's length of sidewalk (`BUS_LEN_M`) as deep,
+/// 200. A bus (80 at crush) never fills a platform's 5,000, so the stop would hold every rider the next
+/// 30 minutes' buses take, dozens of busloads on a frequent line.
+pub const BUS_STOP_WAITING: f64 = super::bus::BUS_LEN_M * 5.0 / 0.3;
+/// T-4052: the same at a BRT station, along its platform (`BRT_STATION_PLATFORM`), about 667.
+pub const BRT_STATION_WAITING: f64 = BRT_STATION_PLATFORM as f64 * 5.0 / 0.3;
 /// T-1255: a rider comes and waits for a train with room only when the riders ahead all get on
 /// within this long (DECISIONS 2026-10-25); demand's cap (`kernel::capacity_fit`) is the same queue.
 pub const WAIT_FOR_ROOM_S: f64 = 1800.0;
@@ -244,8 +250,9 @@ pub struct RunAccount {
     pub stop_dep: Vec<Vec<f64>>,
     /// `[trip * n + stop]`: riders aboard leaving the stop (0 at the last).
     pub load: Vec<f32>,
-    /// `[trip * n + stop]`: riders left on the platform as the train leaves (`q_after`), and riders who went another
-    /// way then (T-1067: `GIVE_UP_S`, `WAITING_CAP`), never boarding (`gone`).
+    /// `[trip * n + stop]`: riders left on the platform as the train leaves (`q_after`), riders who went another
+    /// way then (T-1067: `GIVE_UP_S`, `WAITING_CAP`), never boarding (`gone`), and of those left, the ones who came
+    /// since the train before (`left`, T-4052: each rider left behind counted once, at the first train they miss).
     pub queues: Queues,
     /// Per stop, the trips in the order they leave it in a day (`stop * trips + k`); `stop_times`
     /// gives the time of day each leaves it.
@@ -254,8 +261,9 @@ pub struct RunAccount {
     /// `stop_dep_of` the time it leaves each stop (`leaves`). T-3939: worked out where read rather
     /// than kept per trip and stop, a third of the account's memory.
     pub dep0: Vec<f64>,
-    /// Per stop and hour of the day (`stop * 24 + hour`): riders who could not get on the first
-    /// train to leave after they arrived, and the longest anyone waited for a train leaving then.
+    /// Per stop and hour of the day (`stop * 24 + hour`): riders who joined the queue and could not get on the
+    /// first train to leave after they arrived (`Queues::left`; those turned away by a full platform never joined),
+    /// and the longest anyone waited for a train leaving then.
     pub left_h: Vec<f32>,
     pub wait_h: Vec<f32>,
     pub arrivals: Vec<Arrivals>,
@@ -281,27 +289,27 @@ pub struct RunAccount {
     pub hour_load: Vec<f32>,
 }
 
-/// T-3939: `RunAccount::queues`, kept only where either number is not 0 (most trains of most lines leave nobody
-/// behind): a bit per trip and stop, the count of set bits before each word, and the pairs. Read back to the bit.
+/// T-3939: `RunAccount::queues`, kept only where a number is not 0 (most trains of most lines leave nobody behind): a
+/// bit per trip and stop, the count of set bits before each word, and the numbers. Read back to the bit.
 #[derive(Clone, Debug, Default)]
 pub struct Queues {
     bits: Vec<u64>,
     rank: Vec<u32>,
-    pairs: Vec<[f32; 2]>,
+    pairs: Vec<[f32; 3]>,
 }
 
 impl Queues {
-    pub fn new(q_after: &[f32], gone: &[f32]) -> Queues {
+    pub fn new(q_after: &[f32], gone: &[f32], left: &[f32]) -> Queues {
         let words = q_after.len().div_ceil(64);
         let (mut bits, mut rank, mut pairs) = (vec![0u64; words], Vec::with_capacity(words), vec![]);
         for (w, word) in bits.iter_mut().enumerate() {
             rank.push(pairs.len() as u32);
             for b in 0..64 {
                 let i = w * 64 + b;
-                let (Some(&q), Some(&g)) = (q_after.get(i), gone.get(i)) else { break };
-                if q.to_bits() != 0 || g.to_bits() != 0 {
+                let (Some(&q), Some(&g), Some(&l)) = (q_after.get(i), gone.get(i), left.get(i)) else { break };
+                if q.to_bits() != 0 || g.to_bits() != 0 || l.to_bits() != 0 {
                     *word |= 1 << b;
-                    pairs.push([q, g]);
+                    pairs.push([q, g, l]);
                 }
             }
         }
@@ -309,11 +317,11 @@ impl Queues {
         Queues { bits, rank, pairs }
     }
     #[inline]
-    fn pair(&self, i: usize) -> [f32; 2] {
+    fn pair(&self, i: usize) -> [f32; 3] {
         let (w, b) = (i / 64, i % 64);
         let word = self.bits.get(w).copied().unwrap_or(0);
         if word >> b & 1 == 0 {
-            return [0.0; 2];
+            return [0.0; 3];
         }
         self.pairs[self.rank[w] as usize + (word & ((1u64 << b) - 1)).count_ones() as usize]
     }
@@ -327,9 +335,14 @@ impl Queues {
     pub fn gone(&self, i: usize) -> f32 {
         self.pair(i)[1]
     }
+    /// Of `q_after`, the riders who came since the train before: the riders it is the first to leave behind.
+    #[inline]
+    pub fn left(&self, i: usize) -> f32 {
+        self.pair(i)[2]
+    }
     /// Heap bytes held.
     pub fn heap_bytes(&self) -> usize {
-        self.bits.capacity() * 8 + self.rank.capacity() * 4 + self.pairs.capacity() * 8
+        self.bits.capacity() * 8 + self.rank.capacity() * 4 + self.pairs.capacity() * 12
     }
     /// Trip-and-stop pairs kept (benches).
     pub fn kept(&self) -> usize {
@@ -464,6 +477,7 @@ impl StopTimes<'_> {
 struct Tally {
     stops: Vec<f64>,
     boarded: f64,
+    /// riders full trains left behind, each once (T-4052: `Queues::left`)
     left: f64,
     fullest: f64,
     full: Vec<f64>,
@@ -474,6 +488,9 @@ struct Tally {
 #[derive(Clone, Debug, Default)]
 pub struct LineAccount {
     key: u64,
+    /// T-4240: the line's service key alone (`Boarding::key`): the account is out of date for new riders only while it
+    /// matches
+    base: u64,
     /// T-4149: this account among every one this `Boarding` made (from 1), so a line's day read from it can be kept
     /// while it stands (`Boarding::window`)
     id: u64,
@@ -494,6 +511,10 @@ pub struct Boarding {
     /// per kind of day, per line id
     pub riders: [Vec<Option<LineRiders>>; DAY_KINDS],
     generation: [u64; DAY_KINDS],
+    /// T-4260: per kind of day and line, an account dropped because its line stopped being drawable (paused, track broken,
+    /// a stop added). `ensure_service_some` makes it again once the line is back (an undo, an unpause); an account never made
+    /// yet is left to `ensure_some`.
+    lost: [Vec<bool>; DAY_KINDS],
     pub accounts: [Vec<Option<LineAccount>>; DAY_KINDS],
     /// lines worked out again since `take_redone`
     redone: usize,
@@ -508,6 +529,8 @@ pub struct Boarding {
     periods_memo: RefCell<HashMap<(usize, usize), ([u64; 3], Vec<f64>)>>,
     /// where `ensure_some` goes on from: day kind times lines plus line
     cursor: usize,
+    /// T-4240: where `ensure_service_some` goes on from, likewise
+    svc_cursor: usize,
     /// T-2707: per line id, the service key (`key`) its arrival masks were made for, and per run
     /// the masks (`line_masks`), which every kind of day's account shares
     masks: Vec<Option<(u64, [RunMasks; 2])>>,
@@ -638,6 +661,7 @@ impl Boarding {
             self.generation[d] += 1;
             self.riders[d].clear();
             self.accounts[d].clear();
+            self.lost[d].clear();
         }
         self.masks.clear();
         self.xfer.clear();
@@ -775,10 +799,23 @@ impl Boarding {
     /// `ensure`, working out at most `max_lines` lines again; true if more are out of date. The
     /// clock worker calls it a few lines at a time after new riders, so it never blocks long.
     pub fn ensure_some(&mut self, net: &Network, svc: &Service, max_lines: usize) -> bool {
+        self.ensure_where(net, svc, max_lines, false)
+    }
+
+    /// T-4240: `ensure_some` for the accounts whose line's service changed since they were made (an edit's), none out of
+    /// date for new riders alone: those stand, read with the riders they were made from, until `ensure_some` reaches
+    /// them. A line with riders and no account yet is left to `ensure_some` too (new riders for a kind of day give
+    /// every line none). True if more are left.
+    pub fn ensure_service_some(&mut self, net: &Network, svc: &Service, max_lines: usize) -> bool {
+        self.ensure_where(net, svc, max_lines, true)
+    }
+
+    fn ensure_where(&mut self, net: &Network, svc: &Service, max_lines: usize, service_only: bool) -> bool {
         let nl = svc.lines.len();
         for day in 0..DAY_KINDS {
             self.accounts[day].resize(nl, None);
             self.accounts[day].truncate(nl);
+            self.lost[day].resize(nl, false);
         }
         // T-2699: the scan goes on from where the last call stopped, wrapping round, so a round of
         // steps hashes each line about once (from the start every call it hashed lines squared);
@@ -787,14 +824,17 @@ impl Boarding {
         let total = DAY_KINDS * nl;
         let mut svc_key: Vec<Option<u64>> = vec![None; nl];
         let mut done = 0;
+        let from = if service_only { self.svc_cursor } else { self.cursor };
         for i in 0..total {
-            let at = (self.cursor + i) % total;
+            let at = (from + i) % total;
             let (day, l) = (at / nl, at % nl);
             let ls = &svc.lines[l];
             let lr = self.riders[day].get(l).and_then(|r| r.as_ref());
             let ok = ls.running && l < net.line_count() && lr.map_or(false, |r| r.n == ls.stops.len() && r.n >= 2);
             if !ok {
-                self.accounts[day][l] = None;
+                if self.accounts[day][l].take().is_some() {
+                    self.lost[day][l] = true;
+                }
                 continue;
             }
             let base = *svc_key[l].get_or_insert_with(|| Self::key(net, svc, l));
@@ -803,11 +843,17 @@ impl Boarding {
                 h.add(self.generation[day]);
                 h.0
             };
-            if self.accounts[day][l].as_ref().map_or(false, |a| a.key == key) {
-                continue;
+            match &self.accounts[day][l] {
+                Some(a) if a.key == key || (service_only && a.base == base) => continue,
+                None if service_only && !self.lost[day][l] => continue,
+                _ => {}
             }
             if done == max_lines {
-                self.cursor = at;
+                if service_only {
+                    self.svc_cursor = at;
+                } else {
+                    self.cursor = at;
+                }
                 return true;
             }
             done += 1;
@@ -828,8 +874,12 @@ impl Boarding {
                 if a.leftover > 0.5 { simulate_with(net, svc, l, r, lr, &self.peak, true, m, row) } else { a }
             });
             self.made += 1;
-            self.accounts[day][l] = Some(LineAccount { key, id: self.made, shift: ls.shift, runs });
+            self.lost[day][l] = false;
+            self.accounts[day][l] = Some(LineAccount { key, base, id: self.made, shift: ls.shift, runs });
             self.redone += 1;
+        }
+        if service_only {
+            return false;
         }
         // every line seen: no masks kept for a line without an account
         self.masks.truncate(nl);
@@ -869,6 +919,19 @@ impl Boarding {
     /// Between two events, the crowd grows at the steady rate plus the pulses.
     pub fn hour(&mut self, net: &Network, svc: &Service, epoch: f64) -> Vec<f32> {
         self.ensure(net, svc);
+        self.hour_as_is(net, svc, epoch)
+    }
+
+    /// T-4240: `hour`, bringing up to date only the accounts whose line's service changed (`ensure_service_some`): a
+    /// line out of date for new riders alone gives the loads of the riders its account was made from, lined up with
+    /// its trips all the same (its service is the one they were worked out on).
+    pub fn hour_kept(&mut self, net: &Network, svc: &Service, epoch: f64) -> Vec<f32> {
+        self.ensure_service_some(net, svc, usize::MAX);
+        self.hour_as_is(net, svc, epoch)
+    }
+
+    /// `hour` from the accounts as they are.
+    fn hour_as_is(&mut self, net: &Network, svc: &Service, epoch: f64) -> Vec<f32> {
         let game = epoch;
         let mut pulses: Vec<(f32, f32, f32, f32)> = vec![];
         // the hour's kind of day (T-260) in each line's local time (T-309): every trip and
@@ -1524,15 +1587,14 @@ impl Boarding {
                 for j in lo..done {
                     let tj = ts.at(j);
                     let c_j = arr.cum(tj);
-                    let mut a = (c_j - c_prev).max(0.0);
                     if prev < open && open <= tj {
                         // whoever was waiting then never was: the platform starts empty
                         b -= q_prev + arr.cum(open) - c_prev;
-                        a = (c_j - arr.cum(open)).max(0.0);
                     }
-                    w.left += a.min(q(j));
+                    let i = ord.get(j) * n + k;
+                    w.left += ra.queues.left(i) as f64;
                     // T-1067: those who went another way never boarded
-                    b -= ra.queues.gone(ord.get(j) * n + k) as f64;
+                    b -= ra.queues.gone(i) as f64;
                     (prev, q_prev, c_prev) = (tj, q(j), c_j);
                 }
                 let b = b.max(0.0);
@@ -1874,7 +1936,7 @@ fn simulate_carry(net: &Network, svc: &Service, l: usize, r: usize, lr: &LineRid
         ride_km,
         hour_load: vec![],
     };
-    let (mut q_kept, mut gone_kept) = (vec![0.0f32; mk * n], vec![0.0f32; mk * n]);
+    let (mut q_kept, mut gone_kept, mut left_kept) = (vec![0.0f32; mk * n], vec![0.0f32; mk * n], vec![0.0f32; mk * n]);
     let mut carry = vec![0.0f64; m];
     let mut order: Vec<usize> = (0..m).collect();
     let mut hist: Vec<(f64, f64)> = Vec::with_capacity(m);
@@ -1890,6 +1952,7 @@ fn simulate_carry(net: &Network, svc: &Service, l: usize, r: usize, lr: &LineRid
         let arrs = &arrivals[k];
         let carried = |t: f64| if k > 0 { 0.0 } else { carry_in[..carry_in.partition_point(|x| x.0 <= t)].last().map_or(0.0, |x| x.1) };
         let arr = Cum(&|t| arrs.cum(t) + carried(t));
+        let most = ls.waiting_cap(net, r, k);
         let mut q = 0.0f64;
         let mut c_prev = f64::NAN;
         let mut t_prev = f64::NEG_INFINITY;
@@ -1924,12 +1987,12 @@ fn simulate_carry(net: &Network, svc: &Service, l: usize, r: usize, lr: &LineRid
             // T-1067: whoever was waiting when a train left more than GIVE_UP_S ago has been left
             // behind that long, and went (a second's slack: a train exactly GIVE_UP_S on is still
             // taken); then the platform holds whoever this train and the trains due in the next
-            // WAIT_FOR_ROOM_S take, each with this one's room (T-1255), at most WAITING_CAP: the
+            // WAIT_FOR_ROOM_S take, each with this one's room (T-1255), at most what the stop holds: the
             // latest arrivals are turned away
             let cut = hist.partition_point(|x| x.0 < t - GIVE_UP_S - 1.0);
             let gave = if cut > 0 { (hist[cut - 1].1 - (c_now - q - a)).clamp(0.0, q) } else { 0.0 };
             let gap = if t_prev.is_finite() { t - t_prev } else { trips[i].hw };
-            let hold = (room * (1.0 + (WAIT_FOR_ROOM_S / gap.max(1.0) + 1e-9).floor())).min(WAITING_CAP);
+            let hold = (room * (1.0 + (WAIT_FOR_ROOM_S / gap.max(1.0) + 1e-9).floor())).min(most);
             let over = (q - gave + a - hold).clamp(0.0, a);
             turned += over;
             c_now -= over;
@@ -1958,10 +2021,13 @@ fn simulate_carry(net: &Network, svc: &Service, l: usize, r: usize, lr: &LineRid
                 acc.load[j * n + k] = if k + 1 < n { load as f32 } else { 0.0 };
                 q_kept[j * n + k] = q_after as f32;
                 gone_kept[j * n + k] = (gave + over) as f32;
+                // the riders who joined the queue since the last train and did not get on this one (those waiting
+                // before them board first, so the queue left is the latest to join): this is the first train to
+                // leave them behind, so each rider left behind is counted once, however many trains they miss
+                let left = (a - over).min(q_after).max(0.0);
+                left_kept[j * n + k] = left as f32;
                 let h = ((t.rem_euclid(DAY) / 3600.0).floor() as usize).min(23);
-                // the riders who came since the last train and did not get on this one (those
-                // waiting before them board first)
-                acc.left_h[k * 24 + h] += (a - (b - (q - gave)).max(0.0)).max(0.0) as f32;
+                acc.left_h[k * 24 + h] += left as f32;
                 if b > 0.0 || q_before > 0.0 {
                     let w = (t - since).max(0.0) as f32;
                     if w > acc.wait_h[k * 24 + h] {
@@ -1987,7 +2053,7 @@ fn simulate_carry(net: &Network, svc: &Service, l: usize, r: usize, lr: &LineRid
         }
     }
     acc.arrivals = arrivals;
-    acc.queues = Queues::new(&q_kept, &gone_kept);
+    acc.queues = Queues::new(&q_kept, &gone_kept, &left_kept);
     acc
 }
 

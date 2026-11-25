@@ -262,7 +262,7 @@ export function StationsTab() {
       ]} />}
       <ul class={"rows pick stations" + (drag?.on ? " dragging" : "")}>
         {st.slice(0, limit).map((r) => (
-          <li class={(sel?.kind === "station" && r.members.includes(sel.station) ? "on" : "") + mark(r)} data-drop={r.members[0]} onPointerDown={(e) => pointerDown(e, r.members[0])}
+          <li key={r.members[0]} class={(sel?.kind === "station" && r.members.includes(sel.station) ? "on" : "") + mark(r)} data-drop={r.members[0]} onPointerDown={(e) => pointerDown(e, r.members[0])}
             onClick={() => { if (!dragged.current) selection.value = { kind: "station", station: r.lead.id }; }} onDblClick={() => locateStation(r.lead.lng, r.lead.lat)}>
             {renamingStation === r.lead.id ? (
               <input class="name-edit grow" value={r.name} aria-label={t("stationsTab.stationName")} ref={(el) => { if (el && document.activeElement !== el) { el.focus(); el.select(); } }}
@@ -286,7 +286,7 @@ export function StationsTab() {
       )}
       {st.length > 0 && (
         <div class="pane-foot">
-          <span class="muted">{t("stationsTab.footer", { scoped: !!sc.zone, shown: st.length, count: st.length, total: complexes.value.members.length, what: ridersWhat })}</span>
+          <span class="muted">{t("stationsTab.footer", { scoped: !!sc.zone, shown: st.length, count: st.length, total: complexes.value.members.size, what: ridersWhat })}</span>
         </div>
       )}
     </>

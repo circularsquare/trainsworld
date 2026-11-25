@@ -63,7 +63,9 @@ interface StoredDay { view: StoredView; cities: [CityId, CityFigures][]; interci
 export interface StoredDemand extends CacheKey { at: number; round: number; days: StoredDay[]; modes?: { city: CityId; data: Float32Array; day?: number }; ahead?: CacheAhead;
   /** T-2136: the corridor rows the page held of the result's market, one place each (the zone in view's
    * and the built zones'), so a cached result shows them before any worker holds the market */
-  rows?: { place: number; rows: CorridorRows }[] }
+  rows?: { place: number; rows: CorridorRows }[];
+  /** T-2188: the figures are a city edit's local results, not a whole solve's: a load schedules the quiet refresh */
+  local?: true }
 /** T-1539: the network a load of a save works out, when this result is that network's: `save` the
  * clock worker's key of the save's network inputs (`saveNetKey`), `snapshot` the network it sent */
 export interface CacheAhead { save: string; snapshot: NetworkSnapshot }
@@ -102,6 +104,7 @@ interface Svc {
   stations: { id: string; x: number; y: number; level?: number; complex?: number; upgrades?: number; fare?: number; street?: boolean }[];
   lines: { id: string; stops: string[]; back?: string[]; tph: unknown; hopS: unknown; hopKm?: unknown; fast?: boolean; ferry?: boolean; boat?: number; brt?: boolean; catches?: unknown; tram?: boolean; fareDist?: boolean; passFares?: unknown; dwellS: unknown; wrapS?: number; cars: number; span?: unknown }[];
   passages?: [string, string][];
+  apart?: [string, string][];
 }
 
 /** T-3542: five periods' values (morning, midday, afternoon, evening, night) as the three rows they
@@ -134,7 +137,9 @@ export function canonical(svc: Svc): { text: string; stationIds: string[]; lineI
   const lines = svc.lines.map((l) => ({ stops: l.stops.map((s) => place.get(s) ?? -1), ...(l.back ? { back: l.back.map((s) => place.get(s) ?? -1) } : {}), tph: asRows(l.tph), hopS: runsAsRows(l.hopS), hopKm: l.hopKm ?? null, ...(l.fast ? { fast: true } : {}), ...(l.ferry ? { ferry: true } : {}), ...(l.boat !== undefined ? { boat: l.boat } : {}), ...(l.brt ? { brt: true } : {}), ...(l.catches ? { catches: l.catches } : {}), ...(l.tram ? { tram: true } : {}), ...(l.fareDist ? { fareDist: true } : {}), ...(l.passFares ? { passFares: l.passFares } : {}), dwellS: runsAsRows(l.dwellS), ...(l.wrapS ? { wrapS: l.wrapS } : {}), cars: l.cars, ...(l.span ? { span: l.span } : {}) }));
   // passages (T-1281) only where there are any
   const passages = svc.passages?.length ? { passages: svc.passages.map(([a, b]) => [place.get(a) ?? -1, place.get(b) ?? -1]) } : {};
-  return { text: JSON.stringify({ frame: svc.frame, fare: svc.fare, stations, lines, ...passages }), stationIds: svc.stations.map((s) => s.id), lineIds: svc.lines.map((l) => l.id) };
+  // T-4048: the separated pairs alike
+  const apart = svc.apart?.length ? { apart: svc.apart.map(([a, b]) => [place.get(a) ?? -1, place.get(b) ?? -1]) } : {};
+  return { text: JSON.stringify({ frame: svc.frame, fare: svc.fare, stations, lines, ...passages, ...apart }), stationIds: svc.stations.map((s) => s.id), lineIds: svc.lines.map((l) => l.id) };
 }
 
 export async function sha256(data: BufferSource | string): Promise<string> {

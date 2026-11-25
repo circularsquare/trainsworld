@@ -27,6 +27,7 @@ impl TrackApi {
             return 1;
         }
         self.w.net.link(a, b);
+        self.kept.note_extras();
         self.cash -= price;
         self.link_charge = price;
         self.money_short = None;
@@ -39,11 +40,41 @@ impl TrackApi {
     }
     /// Undo a link between two stations. 0 done; 1 if they were not linked.
     pub fn unlink_stations(&mut self, a: u32, b: u32) -> u32 {
-        if self.w.net.unlink(a, b) { 0 } else { 1 }
+        if !self.w.net.unlink(a, b) {
+            return 1;
+        }
+        self.kept.note_extras();
+        0
     }
     /// The links whose two ends are stations now: node pairs, flat.
     pub fn station_links(&self) -> Vec<u32> {
         self.w.net.links_live().flatten().collect()
+    }
+    /// T-4048: the pairs the player separated whose two ends are stations now: node pairs, flat, in order (the
+    /// demand caches' keys take them as they come).
+    pub fn station_apart(&self) -> Vec<u32> {
+        let mut v: Vec<[u32; 2]> = self.w.net.apart_live().collect();
+        v.sort_unstable();
+        v.into_iter().flatten().collect()
+    }
+    /// T-4048: remove a connection, free, as one undoable edit: the passage between `a` and `b` if
+    /// there is one, and the distance rule kept from joining each pair of `apart` (node pairs, flat).
+    /// 0 done; 1 if it changes nothing.
+    pub fn separate(&mut self, a: u32, b: u32, apart: &[u32]) -> u32 {
+        let net = &self.w.net;
+        let mut ops = vec![];
+        if net.links.contains(&[a.min(b), a.max(b)]) {
+            ops.push(Op::Link { pair: [a, b], on: false });
+        }
+        for p in apart.chunks_exact(2) {
+            if p[0] != p[1] && net.is_station(p[0]) && net.is_station(p[1]) && !net.is_apart(p[0], p[1]) && !ops.contains(&Op::Apart { pair: [p[0], p[1]], on: true }) {
+                ops.push(Op::Apart { pair: [p[0], p[1]], on: true });
+            }
+        }
+        if ops.is_empty() {
+            return 1;
+        }
+        self.run(Op::Batch(ops))
     }
 
     /// Remove an edge, and nodes left with no track and no station. Lines using it reroute or
@@ -58,7 +89,7 @@ impl TrackApi {
         // a station the removal would leave at a bare end keeps its place (T-1161); where the
         // trimmed removal is refused, the whole edge goes as before
         if let Some((ops, nodes, edges)) = self.station_trim_ops(id) {
-            let r = self.run(Op::Batch(ops));
+            let r = self.run_answered(Op::Batch(ops));
             if r == 0 {
                 return 0;
             }
@@ -83,12 +114,12 @@ impl TrackApi {
         let kept = !keep.is_empty();
         let plain = ops.clone();
         ops.extend(keep);
-        let r = self.run(Op::Batch(ops));
+        let r = self.run_answered(Op::Batch(ops));
         if r != 0 {
             self.release(&nn, &ne);
             // T-1895: never refused for the track kept under a station; it goes without
             if kept {
-                return self.run(Op::Batch(plain));
+                return self.run_answered(Op::Batch(plain));
             }
         }
         r
@@ -401,6 +432,7 @@ impl TrackApi {
             let r = self.run(Op::Batch(ops));
             if r == 0 {
                 self.w.net.links.retain(|&[a, b]| st.binary_search(&a).is_err() && st.binary_search(&b).is_err());
+                self.kept.note_extras();
                 return 0;
             }
             self.release(&nn, &ne);
@@ -420,7 +452,9 @@ impl TrackApi {
         let lines: Vec<u32> = (0..net.line_count() as u32).filter(|&l| net.line_ok(l)).collect();
         let was: Vec<bool> = lines.iter().map(|&l| net.line_broken[l as usize]).collect();
         let stopping: Vec<bool> = lines.iter().map(|&l| net.line_stops(l).iter().any(|s| st.binary_search(s).is_ok())).collect();
-        let tried = self.w.trial_with(Op::Batch(ops), |w| lines.iter().map(|&l| w.net.line_broken[l as usize]).collect::<Vec<_>>());
+        // T-4214: the broken flags are the net's (`Network::derive`): the services are left as they are, which on her Asia
+        // save took 0.1-0.3 s before a station's delete was sent
+        let tried = self.w.trial_light(Op::Batch(ops), |w| lines.iter().map(|&l| w.net.line_broken[l as usize]).collect::<Vec<_>>());
         self.release(&nn, &ne);
         let Ok((_, after)) = tried else { return vec![] };
         let mut out = vec![];

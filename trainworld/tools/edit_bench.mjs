@@ -10,20 +10,26 @@
 //   The budget (trainworld/CLAUDE.md, T-4213; tools/bench_gate.mjs). Inside .tw-trees/<name>/: 2 invocations in all
 //   (counted in <tree>/.bench-runs.json), --runs 1 (the default there), the default save is nyc, the asia save (and
 //   any tokyo/belgrade file) needs --heavy "<reason>" (still counted), --compare is refused: the run is diffed against
-//   master's stored lines (editbench/baseline.json) by itself. --dry-run checks the gates and exits. On the main
-//   tree nothing is refused; the orchestrator writes the baseline with --baseline (replaces the file with this run's
-//   lines). A run with more than 4 other cores claimed at its start or end is stamped NOISY (n) on its lines.
+//   master's stored lines (editbench/baseline.json) by itself, a lone sample against the baseline's first (T-4293).
+//   --dry-run checks the gates and exits. On the main tree nothing is refused; the orchestrator writes the baseline
+//   with --baseline (replaces the file with this run's lines). A run with more than 4 other cores claimed at its start
+//   or end is stamped NOISY (n) on its lines.
 //
 //   (default)        paused clock, trips final first: the edits' own wait
 //   --calculating    also a second pass in a fresh game with the edits made while trips are calculating
 //   --compare <hash or run id> the change per action against one run: the run id (printed at the end of a run, in the ledger's `run`) or the newest run of that build hash; only that run's lines are read
 //   --show [hash or run id]    print one run's table from the ledger, no run (the newest run without an argument)
-//   --steps          each edit's steps, ms from the input: posted, word, drawn ahead, rows, network in, taken, drawn (T-4097)
+//   --steps          each edit's steps, ms from the input: posted, word, drawn ahead, rows, network in, taken, drawn (T-4097);
+//                    T-4240: also the worker's laps for the state and its trips (a DEV build's `timing`; `fromApply` counts from
+//                    the follow-up's first edit), trips in, the page's take and setNetwork, its long tasks, and a second
+//                    station's steps (logged, not counted)
 //
 // Actions (times in ms, median of --runs repeats; shows = the first frame that changes, built = the frame that
 // draws the edit as built): ghost trail (px the drawn ghost trails the pointer at a steady speed, and the answer
 // time of each move), a track piece, a station, Construct a line, a stop click (removed, added back), a stop
-// reorder, undo, deleting a line. The ledger is the main tree's notes/edit-ledger.jsonl, from any tree.
+// reorder, undo, deleting a line, and a click run (T-4267: four stations pressed 0.3 s apart on a line's track; each
+// click's confirm is its press to the worker's word or refusal in the page, the first click apart from the later ones,
+// which wait on the ones before). The ledger is the main tree's notes/edit-ledger.jsonl, from any tree.
 //
 // Steady numbers: it claims cores in the root ledger (cores.py) and pins the Chrome and its workers to them, holds
 // a lock so two benches never run together, and records how busy those cores were before it started (`loaded`).
@@ -112,20 +118,25 @@ function boost(profile) {
  * renamed one loses that mark and no more. */
 function INSTALL() {
   if (window.__eb) return;
-  const eb = window.__eb = { ev: [], ptr: null, ghost: null, ghostDrawn: null, answers: [], trail: [], trailOn: false, dirty: false };
+  const eb = window.__eb = { ev: [], long: [], ptr: null, ghost: null, ghostDrawn: null, answers: [], trail: [], trailOn: false, dirty: false };
+  // the page's long tasks (--steps), kept apart: they arrive after the fact
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) eb.long.push({ t: e.startTime, ms: e.duration }); }).observe({ type: 'longtask' }); } catch { /* none */ }
   const now = () => performance.now();
   const push = (k, o = {}) => { eb.ev.push({ t: now(), k, ...o }); eb.dirty = true; };
   const tw = window.tw, c = tw.client, r = tw.renderer;
   if (typeof c.post === 'function') {
     const post = c.post.bind(c);
-    c.post = (msg, tr) => { if (msg.kind !== 'epoch') push('post', { kind: msg.kind, op: msg.op?.op, seq: msg.seq }); return post(msg, tr); };
+    c.post = (msg, tr) => { if (msg.kind !== 'epoch') push('post', { kind: msg.kind, op: msg.op?.op, seq: msg.seq, q: msg.q?.what }); return post(msg, tr); };
   }
   if (typeof c.arrive === 'function') {
     const arrive = c.arrive.bind(c);
     c.arrive = (msg) => {
       if (msg.kind === 'edited') push('arrive', { kind: 'edited', seq: msg.seq, ok: msg.ok, ms: msg.ms });
       else if (msg.kind === 'applied') push('arrive', { kind: 'applied', seq: msg.seq });
-      else if (msg.kind === 'state') { const s = msg.state; push('arrive', { kind: 'state', rows: !!s.rows, net: !!s.net, service: !!s.service }); }
+      else if (msg.kind === 'state') { const s = msg.state; push('arrive', { kind: 'state', rows: !!s.rows, net: !!s.net, service: !!s.service, ms: s.ms, timing: msg.timing }); }
+      // (--steps: no frame is owed for these)
+      else if (msg.kind === 'trips') eb.ev.push({ t: now(), k: 'trips', boardMs: msg.boardMs, timing: msg.timing });
+      else if (msg.kind === 'snapshot') eb.ev.push({ t: now(), k: 'snapshot' });
       return arrive(msg);
     };
   }
@@ -201,8 +212,8 @@ function INSTALL() {
 
 // ------------------------------------------------------------------------------------------ reading the events
 
-/** one record per edit message: input to the frames that show it */
-function editsOf(ev) {
+/** one record per edit message: input to the frames that show it; `long`: the page's long tasks, for --steps */
+function editsOf(ev, long = []) {
   const out = [];
   const r0 = (x) => (x == null ? null : Math.round(x));
   for (const [i, p] of ev.entries()) {
@@ -227,9 +238,30 @@ function editsOf(ev) {
     out.push({ op: p.op, seq: p.seq, post: r0(p.t - t0), answer: ans >= 0 ? r0(ev[ans].t - t0) : null, ok: ans >= 0 ? ev[ans].ok : null,
       standIn: Number.isFinite(standIn) ? r0(standIn) : null, rows: r0(rows), built: r0(built), shows: shows.length ? r0(Math.min(...shows)) : null, work: ans >= 0 ? ev[ans].ms ?? null : null,
       // the steps between (T-4097): the edit's word in, the drawn-ahead frame, the network's state in and taken
-      word: word >= 0 ? r0(ev[word].t - t0) : null, ahead: r0(drawnAhead), netIn: netIn >= 0 ? r0(ev[netIn].t - t0) : null, netTake: netTake >= 0 ? r0(ev[netTake].t + (ev[netTake].ms ?? 0) - t0) : null });
+      word: word >= 0 ? r0(ev[word].t - t0) : null, ahead: r0(drawnAhead), netIn: netIn >= 0 ? r0(ev[netIn].t - t0) : null, netTake: netTake >= 0 ? r0(ev[netTake].t + (ev[netTake].ms ?? 0) - t0) : null,
+      ...(STEPS ? stepDetail(ev, long, i, t0, netIn, netTake, built) : {}) });
   }
   return out;
+}
+
+const STEPS = !!opt('steps', false);
+/** --steps: what the worker's state and trips say of their own time (DEV builds), the page's take and network, and the
+ * page's long tasks between the input and the built frame */
+function stepDetail(ev, long, i, t0, netIn, netTake, built) {
+  const r0 = (x) => (x == null ? null : Math.round(x));
+  const after = (j, pred) => { for (let k = Math.max(0, j); k < ev.length; k++) if (pred(ev[k])) return k; return -1; };
+  const trips = after(netIn, (e) => e.k === 'trips');
+  const setNet = after(netTake >= 0 ? netTake - 3 : -1, (e) => e.k === 'r.setNetwork');
+  const snap = after(i, (e) => e.k === 'snapshot');
+  const end = t0 + (built ?? 0);
+  const round = (o) => o && Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'number' ? Math.round(v * 10) / 10 : v]));
+  return {
+    stateMs: netIn >= 0 ? ev[netIn].ms ?? null : null, stateTiming: netIn >= 0 ? round(ev[netIn].timing) : null,
+    tripsIn: trips >= 0 ? r0(ev[trips].t - t0) : null, tripsTiming: trips >= 0 ? round({ ...(ev[trips].timing ?? {}), boardMs: ev[trips].boardMs }) : null,
+    takeMs: netTake >= 0 ? r0(ev[netTake].ms) : null, setNetMs: setNet >= 0 ? r0(ev[setNet].ms) : null,
+    snapIn: snap >= 0 ? r0(ev[snap].t - t0) : null,
+    long: long.filter((x) => x.t + x.ms >= t0 && x.t <= end).map((x) => [r0(x.t - t0), r0(x.ms)]),
+  };
 }
 
 // ------------------------------------------------------------------------------------------ the game and its places
@@ -262,6 +294,64 @@ function PLACES() {
   return { line: { num: L.num, name: L.name, n, id: L.id }, sites, ghost: at(at(e0, u, 2.0), perp, -1.6), mid: pick(n >> 1), swaps: Array.from({ length: 8 }, (_, k) => Math.min((n >> 1) + 2 * k, n - 3)) };
 }
 
+/** T-4267: up to `n` built edges 3-8 km long on running rail lines other than `skip` (the line the stop actions use),
+ * those on the most lines first, for the click run */
+function CLICK_EDGES([n, skip]) {
+  const w = window.tw.world.value, s = w.save, edges = new Map(w.edges.map((e) => [e.id, e])), on = new Map();
+  for (const l of s.lines) for (const p of w.lineStats[l.id]?.path ?? []) on.set(p >> 1, (on.get(p >> 1) ?? new Set()).add(l.id));
+  const out = [];
+  for (const l of s.lines) {
+    const st = w.lineStats[l.id];
+    if (l.id === skip || st?.status !== 'running' || st.bus) continue;
+    for (const p of st.path ?? []) {
+      const e = edges.get(p >> 1), a = e && w.nodes.get(e.a), b = e && w.nodes.get(e.b);
+      if (!e || !a || !b || !e.built || e.crossover || e.lengthM < 3000 || e.lengthM > 8000 || out.some((x) => x.id === e.id)) continue;
+      out.push({ id: e.id, lines: on.get(e.id)?.size ?? 1, mid: [(a.lng + b.lng) / 2, (a.lat + b.lat) / 2] });
+    }
+  }
+  return out.sort((x, y) => y.lines - x.lines || x.id - y.id).slice(0, n);
+}
+/** T-4267: page px and lon/lat of the point a fraction `f` along edge `id`'s drawn track, for the camera as it is */
+function EDGE_AT([id, f]) {
+  const tk = window.tw.tools, pts = tk.pickNet?.edgePts.get(id);
+  if (!pts || pts.length < 6) return null;
+  const seg = [];
+  let all = 0;
+  for (let k = 3; k < pts.length; k += 3) { const d = Math.hypot(pts[k] - pts[k - 3], pts[k + 1] - pts[k - 2]); seg.push(d); all += d; }
+  let want = all * f, k = 0;
+  while (k < seg.length - 1 && want > seg[k]) { want -= seg[k]; k++; }
+  const q = seg[k] ? want / seg[k] : 0;
+  const [sx, sy] = tk.screen(pts[3 * k] + (pts[3 * k + 3] - pts[3 * k]) * q, pts[3 * k + 1] + (pts[3 * k + 4] - pts[3 * k + 1]) * q);
+  const rect = window.tw.map.getCanvas().getBoundingClientRect();
+  return { x: rect.left + sx, y: rect.top + sy, ll: window.tw.map.unproject([sx, sy]).toArray() };
+}
+/** T-4294: what Edit stops holds at page px (x, y): the line its markers are for, the station a press there picks and its
+ * tier, and station `mid`'s tier and marker (its distance from the point, CSS px) */
+function STOP_WHY([x, y, mid]) {
+  const k = window.tw.tools.stops, r = window.tw.map.getContainer().getBoundingClientRect();
+  if (!k) return null;
+  const px = x - r.left, py = y - r.top, at = k.pick(px, py), m = k.marks.get(String(mid));
+  const st = (id) => id === null ? null : { id, name: k.names.get(id) ?? null, tier: k.tiers.get(id) ?? 'none' };
+  return { line: k.line ? { num: k.line.num, name: k.line.name } : null, picked: st(at), mid: { ...st(String(mid)), shown: !!m?.shown, px: m?.shown ? Math.round(Math.hypot(m.x - px, m.y - py)) : null } };
+}
+/** T-4267: each pressed station's times from its press (the presses in order, as the station tool keeps them): its
+ * edit posted, the worker's word or refusal in (confirm), and its answer */
+function clickRunOf(ev, presses) {
+  const posts = ev.filter((e) => e.k === 'post' && e.kind === 'edit' && (e.op === 'addStation' || e.op === 'addBrtStation'));
+  return presses.map((t0, i) => {
+    const p = posts[i];
+    if (!p) return null;
+    const ans = ev.find((e) => e.k === 'arrive' && e.kind === 'edited' && e.seq === p.seq);
+    const word = ev.find((e) => e.k === 'arrive' && e.kind === 'applied' && e.seq === p.seq);
+    const confirm = word ?? ans;
+    // T-4281: the follow-ups the worker ran whole in one block since the edit before (what ran each, ms), and the questions
+    // the page asked since the press before
+    const forced = Object.fromEntries(Object.entries(ans?.ms ?? {}).filter(([k]) => k.startsWith('forced:')).map(([k, v]) => [k.slice(7), Math.round(v)]));
+    const asked = ev.filter((e) => e.k === 'post' && e.kind === 'query' && e.t >= (i ? presses[i - 1] : t0 - 1000) && e.t <= p.t).map((e) => e.q);
+    return { post: p.t - t0, confirm: confirm ? confirm.t - t0 : null, answer: ans ? ans.t - t0 : null, ok: ans?.ok ?? null, forced, asked };
+  });
+}
+
 /** pacing: `fn(i)` every 16.7 ms on an absolute clock */
 async function paced(n, fn) {
   const t0 = performance.now();
@@ -284,17 +374,21 @@ async function play(g, runs, only, acc, note) {
   note('places: line ' + C.line.name + ' (' + C.line.n + ' stops), ' + Math.min(runs, C.sites.length) + ' sites');
   const quiet = (ms = 25000, q = 1500) => page.evaluate(([a, b]) => window.__eb.quiet(a, b), [ms, q]);
   const mark = () => page.evaluate(() => window.__eb.ev.length);
-  const since = async (m) => editsOf(await page.evaluate((m) => window.__eb.ev.slice(m), m));
+  const since = async (m) => { const x = await page.evaluate((m) => ({ ev: window.__eb.ev.slice(m), long: window.__eb.long ?? [] }), m); return editsOf(x.ev, x.long); };
   const sample = async (fn, ops, keys, label) => {
     await quiet(20000, 1000);
     const m = await mark();
     let err = null;
     try { await fn(); } catch (e) { err = e.message.split('\n')[0]; }
     await quiet(40000, 1500);
-    const seen = await page.evaluate((m) => window.__eb.ev.slice(m).filter((x) => x.k === 'post' || x.k === 'input').map((x) => x.k === 'post' ? x.kind + ':' + (x.op ?? '') : 'input:' + x.typ), m);
+    const seen = await page.evaluate((m) => window.__eb.ev.slice(m).filter((x) => x.k === 'post' || x.k === 'input').map((x) => x.k === 'post' ? x.kind + ':' + (x.op ?? x.q ?? '') : 'input:' + x.typ), m);
     const edits = (await since(m)).filter((e) => !ops || ops.includes(e.op));
     const e = edits[0];
-    if (!e || err) { note('  ' + label + ': no sample' + (err ? ' (' + err + ')' : ' (no edit message; saw ' + (seen.join(', ') || 'nothing') + ')')); return null; }
+    if (!e || err) {
+      const v = await page.evaluate(() => { const m = window.tw.map, c = m.getCenter(), s = window.tw.selection.value; return JSON.stringify({ center: [+c.lng.toFixed(4), +c.lat.toFixed(4)], zoom: +m.getZoom().toFixed(2), pitch: m.getPitch(), bearing: m.getBearing(), selection: s ? s.kind : null }); }).catch(() => '?');
+      note('  ' + label + ': no sample' + (err ? ' (' + err + ')' : ' (no edit message; saw ' + (seen.join(', ') || 'nothing') + ')') + ' view ' + v);
+      return null;
+    }
     if (e.ok === false) note('  ' + label + ': refused');
     if (opt('steps', false)) note('  ' + label + ': ' + JSON.stringify(e));
     for (const [k, name] of Object.entries(keys)) add(name, e[k]);
@@ -352,7 +446,9 @@ async function play(g, runs, only, acc, note) {
       await g.act.tool('station');
       await sample(() => g.act.placeStation(site.st[0]), ['addStation', 'addBrtStation'], { shows: 'station: shows', built: 'station: built' }, 'station ' + (k + 1));
       await quiet(20000, 1000);
-      await g.act.placeStation(site.st[1]);
+      // (--steps: the second station's steps are logged too, not counted)
+      if (STEPS) await sample(() => g.act.placeStation(site.st[1]), ['addStation', 'addBrtStation'], {}, 'station ' + (k + 1) + 'b');
+      else await g.act.placeStation(site.st[1]);
       await quiet(20000, 1000);
       await g.act.key('Escape');
       const name = 'EB' + (k + 1);
@@ -423,14 +519,31 @@ async function play(g, runs, only, acc, note) {
   // stops, reorder, undo on the save's biggest line
   if (want('stop') || want('reorder') || want('undo')) {
     await g.act.key('Escape');
-    await g.act.openLine(C.line.name);
+    const opened = await g.act.openLine(C.line.name);
+    if (opened.again) note('  stop: the Lines tab opened another line ' + opened.again + 'x before ' + C.line.name + ' (the list sorted again under the press)');
     await g.act.click('Edit stops', { exact: false });
+    // T-4294: the stops edited are the line's (openLine checks its panel; Edit stops goes in its turn after clicks waiting)
+    const editing = await page.waitForFunction((num) => window.tw.tools.stops?.line?.num === num, C.line.num, { timeout: 10000 }).then(() => true, () => false);
+    if (!editing && want('stop')) note('  stop: Edit stops is not on line ' + C.line.name + ' (' + JSON.stringify(await page.evaluate(STOP_WHY, [0, 0, C.mid.id])) + '): its stop clicks are not sampled');
     await g.act.camera([C.mid.lng, C.mid.lat], 15);
     await sleep(1500);
     const stopOps = ['toggleStop', 'insertStop', 'dropStop', 'setStops', 'stopPassed'];
-    for (let k = 0; k < runs && want('stop'); k++) {
-      await sample(() => g.act.press([C.mid.lng, C.mid.lat]), stopOps, { shows: 'stop click, removed: shows', rows: 'stop click, removed: panel rows', built: 'stop click, removed: line path' }, 'stop remove ' + (k + 1));
-      await sample(() => g.act.press([C.mid.lng, C.mid.lat]), stopOps, { shows: 'stop click, added: shows', rows: 'stop click, added: panel rows', built: 'stop click, added: line path' }, 'stop add ' + (k + 1));
+    // T-4234: every click brings its station to the middle of the map first, as a player pans to a stop before clicking
+    // it. The camera was left where the line's stops had put it (Edit stops, the earlier lines' panels, a click's own
+    // selection) and the station sat outside the view for the second press.
+    // T-4294: what the markers held at the press, said when a press sends no edit
+    let why = null;
+    const pressStop = async () => {
+      await g.act.camera([C.mid.lng, C.mid.lat], 15);
+      await sleep(300);
+      const [s] = await g.toScreen([[C.mid.lng, C.mid.lat]]);
+      why = await page.evaluate(STOP_WHY, [s.x, s.y, C.mid.id]);
+      return g.act.press([C.mid.lng, C.mid.lat]);
+    };
+    const stopSample = async (keys, label) => { if (!(await sample(() => pressStop(), stopOps, keys, label))) note('    the press, as the markers stood: ' + JSON.stringify(why)); };
+    for (let k = 0; k < runs && want('stop') && editing; k++) {
+      await stopSample({ shows: 'stop click, removed: shows', rows: 'stop click, removed: panel rows', built: 'stop click, removed: line path' }, 'stop remove ' + (k + 1));
+      await stopSample({ shows: 'stop click, added: shows', rows: 'stop click, added: panel rows', built: 'stop click, added: line path' }, 'stop add ' + (k + 1));
     }
     await g.act.click('Stop editing', { exact: false }).catch(() => {});
     await g.act.key('Escape');
@@ -524,6 +637,49 @@ async function play(g, runs, only, acc, note) {
     }
   }
 
+  // T-4267: the click run, four stations pressed 0.3 s apart on a line's track, the clicks not waiting for each other
+  if (want('clickrun')) {
+    const spots = await page.evaluate(CLICK_EDGES, [runs, C.line.id]);
+    if (!spots.length) note('  click run: no built edge 3-8 km long on a running line');
+    for (const [k, sp] of spots.entries()) {
+      await g.act.key('Escape');
+      await g.act.camera(sp.mid, 12);
+      await sleep(800);
+      const m = await page.evaluate(EDGE_AT, [sp.id, 0.5]);
+      if (!m) { note('  click run ' + (k + 1) + ': edge ' + sp.id + ' not drawn'); continue; }
+      await g.act.camera(m.ll, 13.5);
+      await g.act.tool('station');
+      await sleep(1200);
+      const pts = [];
+      for (const f of [0.2, 0.4, 0.6, 0.8]) pts.push(await page.evaluate(EDGE_AT, [sp.id, f]));
+      if (pts.some((p) => !p || p.x < 0 || p.y < 0 || p.x > 1400 || p.y > 900)) { note('  click run ' + (k + 1) + ': a point off the screen'); continue; }
+      await quiet(20000, 1000);
+      const m0 = await mark();
+      await g.driver.move(pts[0].x, pts[0].y, { steps: 4 });
+      await sleep(700);
+      // each click's mouse events sent at its own time, none waiting for the page to take the click before (a player's
+      // clicks queue in the browser while the page is busy; awaited presses would space them out by the page's work)
+      const cdp = await page.context().newCDPSession(page);
+      const fire = (p) => { const b = { x: Math.round(p.x), y: Math.round(p.y), button: 'left', clickCount: 1 }; return Promise.all(['mouseMoved', 'mousePressed', 'mouseReleased'].map((type) => cdp.send('Input.dispatchMouseEvent', type === 'mouseMoved' ? { type, x: b.x, y: b.y } : { type, ...b }))); };
+      await Promise.all(pts.map((p, i) => new Promise((res) => setTimeout(() => res(fire(p)), i * 300))));
+      await cdp.detach().catch(() => {});
+      await quiet(40000, 2000);
+      const x = await page.evaluate((m) => window.__eb.ev.slice(m), m0);
+      const presses = x.filter((e) => e.k === 'input' && e.typ === 'pointerdown').map((e) => e.t).slice(0, 4);
+      if (presses.length < 4) { note('  click run ' + (k + 1) + ': ' + presses.length + ' of 4 presses reached the page'); continue; }
+      const clicks = clickRunOf(x, presses);
+      if (STEPS) note('  click run ' + (k + 1) + ' (edge ' + sp.id + ', ' + sp.lines + ' lines): ' + JSON.stringify(clicks.map((c) => c && Object.fromEntries(Object.entries(c).map(([a, b]) => [a, typeof b === 'number' ? Math.round(b) : b])))));
+      const refused = clicks.filter((c) => c && c.ok === false).length;
+      if (refused) note('  click run ' + (k + 1) + ': ' + refused + ' of 4 refused');
+      for (const [i, c] of clicks.entries()) {
+        if (!c) { note('  click run ' + (k + 1) + ': click ' + (i + 1) + ' sent no edit'); continue; }
+        add(i ? 'click run: confirm, later clicks' : 'click run: confirm, first click', c.confirm);
+        if (i) add('click run: answer, later clicks', c.answer);
+      }
+      await g.act.key('Escape');
+    }
+  }
+
   // delete the lines made above
   if (want('delete')) for (const name of names) {
     await g.act.key('Escape');
@@ -564,9 +720,14 @@ function compare(rows, cur, base) {
   const out = [];
   for (const r of cur) {
     const o = b.get(r.save + '|' + r.pass + '|' + r.action);
-    if (!o || !o.median || !r.median) { out.push(r.save + ' ' + r.pass + ' ' + r.action + ': no line for ' + base); continue; }
-    const ch = Math.round((100 * (r.median - o.median)) / o.median);
-    out.push(r.save + ' ' + r.pass.padEnd(5) + ' ' + r.action + ': ' + o.median + ' -> ' + r.median + ' (' + (ch > 0 ? '+' : '') + ch + '%)');
+    // T-4293: a lone sample is the action's first in its game (a cold build, often 1.5-3x the later ones), so it is set
+    // against the base's first sample, never its median, and the base's spread is shown beside it
+    const first = r.n === 1 && o?.all?.length > 1;
+    const ref = first ? o.all[0] : o?.median;
+    if (!o || !ref || !r.median) { out.push(r.save + ' ' + r.pass + ' ' + r.action + ': no line for ' + base); continue; }
+    const ch = Math.round((100 * (r.median - ref)) / ref);
+    const spread = o.all?.length > 1 ? ', its ' + o.all.length + ' samples ' + Math.round(Math.min(...o.all)) + '-' + Math.round(Math.max(...o.all)) : '';
+    out.push(r.save + ' ' + r.pass.padEnd(5) + ' ' + r.action + ': ' + (first ? 'first ' : '') + ref + ' -> ' + r.median + ' (' + (ch > 0 ? '+' : '') + ch + '%' + spread + ')');
   }
   return out;
 }

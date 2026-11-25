@@ -301,8 +301,13 @@ export interface DayDemand {
   intercity: IntercityDemand | null;
 }
 const noDay = (): DayDemand => ({ view: null, cities: new Map(), intercity: null });
-/** The newest finished solve for each day, `DemandDay` order: weekday, Saturday, Sunday, average. */
-export const demandByDay = signal<DayDemand[]>(DEMAND_DAYS.map(noDay));
+const firstDays = DEMAND_DAYS.map(noDay);
+/** The newest finished solve for each day, `DemandDay` order: weekday, Saturday, Sunday, average: the figures shown,
+ * with an edit's quick figures from a side job over the main pool's while it lasts (T-4220). */
+export const demandByDay = signal<DayDemand[]>(firstDays);
+/** T-4307: the main pool's figures alone, `demandByDay` without a side job's over them. Whatever is kept (money, the
+ * boarding account's riders, points, achievements, stars) reads these, so quick figures never feed a save. */
+export const mainDemandByDay = signal<DayDemand[]>(firstDays);
 
 /** The newest finished solve on the day shown (`shownDay`); null until the first lands. */
 export const demandView = computed<DemandView | null>(() => demandByDay.value[shownDay.value]?.view ?? null);
@@ -375,7 +380,7 @@ export const demandStep = signal({ done: 0, of: 4 });
  * other solves) */
 export type WorkPart = { stage: 0 | 1; busy: boolean; done: [number, number]; of: [number, number]; unitMs: [number, number]; at: number;
   /** T-3599 (demandProtocol.ts `work`) */
-  left: [number, number]; blind: [number, number]; cur: number | null; curSize: number; sizeMs: [number, number]; ran: [number, number]; ranExp: [number, number]; ranN: [number, number]; viewLeft: [number, number]; viewBlind: [number, number]; curView: boolean; leftQ: number[]; ranQ: number[]; expQ: number[]; nQ: number[]; curQ: number };
+  left: [number, number]; blind: [number, number]; cur: number | null; curSize: number; sizeMs: [number, number]; blindLate?: [number, number]; viewBlindLate?: [number, number]; curLate?: boolean; sizeMsLate?: [number, number]; ran: [number, number]; ranExp: [number, number]; ranN: [number, number]; viewLeft: [number, number]; viewBlind: [number, number]; curView: boolean; leftQ: number[]; ranQ: number[]; expQ: number[]; nQ: number[]; curQ: number };
 export const demandWork = signal<WorkPart[] | null>(null);
 /** T-3599: a newer network waits for the running edit's solve to end (T-1734), and that solve was sent at
  * `sentAt` (performance.now()); null otherwise */

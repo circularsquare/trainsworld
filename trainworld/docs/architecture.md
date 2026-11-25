@@ -73,9 +73,39 @@ Web first, so it can be shared as a link.
   stroke runs found by identity of the reused pieces, arrays as last posted left out; each stroke set
   is posted whole, as the last network's with no arrays, or as only its new segments, which the page
   writes over the ones they replace in the arrays it has (a segment that moves, because one was
-  inserted or removed before it, makes the set whole again; `map/strokePost.ts`, T-1381); the renderer
-  copies the unchanged runs on the GPU and keeps textures whose data is the same (T-1028), and the
-  pick and snap grids are carried over through the same runs instead of built again (T-1030).
+  inserted or removed before it, makes the set whole again; `map/strokePost.ts`, T-1381). The renderer
+  keeps each network stroke set in its own buffers, its segments in draw order with a quarter more slots
+  spread between and after them (`map/strokeSlots.ts`, T-4262): the runs kept stay in their slots, an
+  edit's new segments are written into the room where they belong and the slots they free are marked as
+  holes, which the stroke shader skips; where the room there is too small a nearby stretch is laid out
+  again, and only when that stretch would pass 64 times the new segments is the set laid out afresh
+  (in its buffers while they have room, else in larger ones). A set's zoomed-out simplified copies are
+  carried through an edit (T-4274, `carryLod`): the significance of the runs it kept is copied from a run
+  start of both sets to the last one inside them and worked out only between; the copy the view shows
+  takes its merged segments over those ranges from the last copy, makes the rest and writes them into
+  its own slots (a sixteenth of room); the other copies are made again from the carried significance
+  when drawn. An edit that made more than a quarter of a set (and 20,000 segments) has its copies made
+  afresh between frames, as a new set's.
+  The trains' tables sit in slots of their own (`map/trainSlots.ts`, T-4274): each line's run holds a
+  slot in the per-sample tables (samples, bend codes, stretches, lanes, fill, levels) and one in the bend
+  points, each line one in the phase tables (with an eighth of room: a stop more changes a line's phase
+  count). A slot keeps its place while its line fits, a deleted line's goes to the next line it fits best,
+  and a line that outgrows its slot moves to the free room that fits it best or past the last; only the
+  index tables (a line row's first sample, a profile's first phase, a sample's first bend point) are
+  rewritten, so an edit writes only the lines it moved and those the clock worker names as changed (T-4280):
+  `ClockState.touched.paths` for samples and bends (named where a line is sampled again into other values),
+  `touched.phases` for the phase tables (since the last state that carried them, a network's or a train
+  count's), `NetPatch.stretches` and `lanes` for stretches and lanes (named where the build made a line's samples
+  again to other values, or moved its passing places). The renderer compares nothing then; a table last written
+  from other arrays than a list is about (the Traffic view's bands, the demand views' fill, hidden levels)
+  is compared line by line with them instead. The tables keep an eighth of room past the last slot, and
+  at least the largest line's; past that, or 2^19 bend points, they are laid out afresh. The network's
+  arrays stay packed for every reader on the CPU.
+  Other network textures are kept, written only in the rows whose data changed (T-4262); the pick grids are
+  carried over through the same runs instead of built again (T-1030), their old items renumbered by the runs
+  themselves, so a carry costs the runs, never a pass over every segment. The snap grids (`map/snapIndex.ts`) are the
+  last ones with the edges and nodes an edit changed laid over them, found from the network's changed edges
+  (`mergeNet`'s `edgeStep`, a patch's edges) and the worlds' diffs; past 4096 laid over, built whole [T-4284].
   Anything that cannot be taken as changes (a load, a new draw anchor, a mismatch) goes whole;
   `?patch=0` posts everything whole, `?patch=check` compares the changes with whole builds
   (notes/T-1029.md). Trains are instanced and positioned on the GPU from keyframes
@@ -96,16 +126,24 @@ Web first, so it can be shared as a link.
   worker answers the track previews and station checks asked meanwhile, then builds and posts its
   state, trips and boarding hour and answers it (`later` in the clock worker). **A service edit's loads
   can follow** [T-3655]: a count or headway edit takes one step of the boarding account (3 lines)
-  first; with lines still to redo, its state, its trips without loads and its answer go, the steps go
+  first; with lines it changed still to redo (T-4240: lines out of date for new riders alone never hold an edit), its state, its trips without loads and its answer go, the steps go
   on (8 ms of them a task), and the last sends the hour's trips with loads, which the page waits for
   before drawing the staged state (`loadsFollow`; a state a newer one replaced goes in with that one;
   past 2 s it is drawn without loads until they come). A full state is built
   a piece a task outside the message queue, about 0.1 s each on the biggest saves (`stateSteps`,
   `networkSteps`: the rows, the network in a few pieces, then its post with the trips, never split),
-  previews answered between them; any other message, trips sent from a timer, or a full state sent
-  when fetched ground or streets reprice the blueprint, runs what is left first (for that state, begun
-  again on the new model; a held one stays held), so nothing else sees the model ahead of its state and
-  an edit's answer comes with the first world holding it (the page splits a paid edit's charge by it). **An edit goes ahead** [T-3803]: one of
+  previews answered between them; any other message, or a full state sent when fetched ground or streets reprice the
+  blueprint, runs what is left first (for that state, begun again on the new model; a held one stays held), so nothing
+  else sees the model ahead of its state and an edit's answer comes with the first world holding it (the page splits a
+  paid edit's charge by it). **Every message kind has its answer to a waiting follow-up** [T-4272, T-4281]: the page's
+  money figures (income, points, region shares, a charge's split) and the clock pass it; demand's riders and transfers,
+  and every question but the previews' and the delete question's (a panel's figures, a quote: the page reads them
+  against the world it holds), wait, in order, until no follow-up waits (`keepUntilState`; a question from a game no
+  longer in hand is answered empty, riders are dropped); trips from a timer (the boarding account's last step, the
+  next hour) go after its state (`whenNoneWaits`); a held follow-up keeps its own passes and the rest end it; anything
+  else runs it first, as above (the page's `epoch` each game hour while the clock runs, a state sent from outside, an edit
+  5 s after the follow-up's first, a question that is no pass under a hold). Each edit's answer names the blocks run
+  whole since the edit before it and what ran each (`ms["forced:…"]`). **An edit goes ahead** [T-3803]: one of
   the main path that changes no service, coming before or between the pieces of a follow-up that
   builds the network (`goesAhead`, `standAside`). An edit in that follow-up still waiting for a world
   holding it (its answer, or the page's split of an early answer's money) gets the rows built so far,
@@ -125,8 +163,8 @@ Web first, so it can be shared as a link.
   the edges the early answer carries (`held`) when no ghost of it was answered
   (`Renderer.addPlaced`). The tool asks for the state at once (`release`) when the run ends and
   when the pointer comes within 24 px of a held segment away from the start, since the snap sees a
-  segment only once its state lands; a click there waits for that state (at most 3 s) before it
-  snaps. The client takes the state after the next paint (`ghostFirst`). **A stop click's rows go
+  segment only once its state lands; a click there waits for that state as a waiting click does
+  (below) before it snaps. The client takes the state after the next paint (`ghostFirst`). **A stop click's rows go
   first** [T-2766]: the line tool's stop clicks ask `rows`; the worker applies the edit, posts a state
   of the rows alone (`rows`: world and money, no network, no trips; the renderer keeps its network)
   and then answers, so a refusal for money comes at its click. The rows go a task after the edit through the message
@@ -150,19 +188,70 @@ Web first, so it can be shared as a link.
   posted after a word was built after that edit (`later` starts again behind an edit; a stop click's rows go before the
   next apply), so an entry's map part goes with the first network taken that *arrived* after its word, its panel part
   with the first rows or state, its cost with the first money, cash or state (a state held for its trips keeps its
-  arrival place). **Clicks wait for the map** [T-4214]: a click on the map with a tool (a tap, the touch bar's confirm)
-  made while an edit sent before it is not yet in the network the tools pick on waits, the tool's tag showing the
-  spinner after 0.3 s, and is carried out at the same map spot once every such edit's network is set (the same message
-  order; game/pending.ts `editsOut`, map/toolWait.ts); waiting clicks go in order, each after the edits the one before
-  sent. Every edit sent arms it (panels, drags and keys too, which never wait themselves); a click counts from the moment
-  it is made until its tool has sent (a station's name, a delete's question); a refusal ends the wait, and so does a
+  arrival place). **The map the tools click on is patched right after each edit** [T-4214 stage C]: with an edit's word the worker
+  sends the records the edits since its last state read touched (`peek_touched`), read as that state will read them:
+  edge and node rows, each live edge's points and the ids gone, and any other station whose shown name they moved (a complex
+  joined, split or named after another station; T-4271) (workers/clockPatch.ts; a few ms, at most `PATCH_MAX`
+  2,000 records). The page lays them on the map the tools pick on, which only the tools read: a world of
+  its own (map/clickMap.ts `clickWorld`: the last state's rows with the patch in, its lines, money and marks as they
+  were; workers/clockClient.ts `takePatch`) and the drawn network's edge points with their snap grid (`clickNet`; its
+  strokes, stations and marks stay the drawn ones). `world`, which the panels, layers and money follow, waits for the
+  state: setting it for a patch ran all of them twice per edit (79 ms for a station on New York's save). Whatever reads
+  `clickNet` reads `clickWorld`; whatever reads the renderer's network reads `world`. A state taken drops the patches that arrived before it and lays later ones on it again; a network set
+  does the same for the points. A line whose path the edits moved with its stops as they were (a station on its track,
+  track it runs over gone) comes with its paths, laid on its row so the edges say what runs on them [T-4214 stage A].
+  None is sent when a line is new, gone, starts or stops running or stops elsewhere, for a service edit or a rename, when
+  everything was touched (a load), past the cap, or with the draw anchor moving.
+  A station or delete clicked on the map (`edit`'s "click") whose edit was patched and cost nothing is answered right
+  after its word; any other edit once `world` holds it, as before; a paid one after its state, whose world its money's
+  split is read off. **A station or a track delete is applied from what it touches** [T-4272]: the track model applies
+  and checks it where it lands (the edit, its geometry, crossings and platforms) and charges it no construction (it
+  builds nothing: a split's re-pricing is no purchase); where it can move no running line's trains (no running line
+  uses the track, nodes or stations it touched, nor a bus line or way back it reached, and it made no crossing:
+  `TrackWorld::moves_no_train`), and that set no line's trains, rates, rows or twin (a twin made or let go goes the
+  whole way: `sets_rates`), the trains needed are those needed already, so it goes on the undo history and is
+  answered at once, its services owed (`commit_local`). The follow-up's first piece works them out for every such
+  edit since (`settle_owed`), as one edit making all their changes, before the state reads them (`?patch=check` names a
+  state built while any are owed), and drops the drawn
+  lines they moved; any other commit, an undo or redo and a trial with services work them out first (a refused one
+  leaves what they touched for that piece), a save does, and autosave waits for them. Rows sent to answer an edit
+  before its state hold them. An undo puts back exactly
+  what the services moved for the first edit of such a run; a later one's undo settles as an edit does. A station on
+  a running line's track, or a delete of track a running line uses, goes the whole way before its answer: the trains
+  it makes headway lines need are paid at the click, and only the settle over every line sharing that track says how
+  many. The client's rows the worker's changes are posted against are never patched. **Clicks wait for the
+  map** [T-4214]: a click on the map with a tool (a tap, the touch bar's confirm) made while an edit sent before it is not
+  yet in the map the tools pick on waits, the tool's tag showing the spinner after 0.3 s, and is carried out at the same
+  map spot once every such edit's patch is laid on or its network set (the same message order; game/pending.ts
+  `editsOut`, map/toolWait.ts); waiting clicks go in order, each after the edits the one before sent. Every edit sent arms it (panels, drags and keys too, which never wait themselves); a click counts from the moment
+  it is made until its tool has sent (a delete's question); a refusal ends the wait, and so does a
   word saying no network follows (a service edit, a rename, a fare or loan edit). A waiting click asks the worker for a
-  network held for the pointer's rest. A track run's next segment waits only for the answer to the one before (it starts
-  from the node the worker answered), and stop clicks never count. A tool switch the player makes meanwhile (the
-  toolbar, its keys, a panel's tool button, leaving a tool) waits its turn behind the waiting clicks, so each click goes
-  with the tool it was made with (game/ui.ts `inClickOrder`). A waiting click is dropped when its spot has left the
+  network held for the pointer's rest. **A track run's next segment never waits** [T-4214 stage D]: it is sent at its
+  own click from the end of the one before, named by that edit (`RouteEnd` "endOf"), which the worker reads at the apply
+  as the node that edit's route ended at (workers/clockRunEnds.ts; edits apply in arrival order); a segment from the end
+  of an edit refused or never applied is refused with nothing to say, and the page draws the run on from the refused
+  segment's start. A click (a tap, the touch bar's confirm) on the run's own track the map lacks yet, a segment still
+  unanswered or a held one (above), waits as any other [T-4311] (`Tools.ownTrackOut`). An undo or redo the run did not
+  send (Backspace's is its own) ends the run at its send, since it may take away the node the run goes on from, and so
+  does a panic's rebuild (game/pending.ts `breakRun`). Stop clicks never count. A tool switch the player makes
+  meanwhile (the toolbar, its keys, a panel's tool button, leaving a tool) waits its turn behind the waiting clicks, as
+  do Enter and the touch bar's stop ending a run, so each click goes with the tool it was made with (game/ui.ts
+  `inClickOrder`). A waiting click is dropped when its spot has left the
   screen, on Escape or a load, and carried out on the map as it is after 5 s. Undo and redo wait for it as
-  for stop clicks. Every edit carries the game stamp, so one made before a load or a restart is refused. The renderer draws the list (map/lineAhead.ts): a line drawn ahead on its own segments it keeps and
+  for stop clicks. Every edit carries the game stamp, so one made before a load or a restart is refused. **A station is
+  sent at its click** [T-4214 stage A]: with no name and a ticket, its name (the page's lookup, after the next paint) as
+  "stationName" once found; the worker gives it to the station edit if that is still queued, else names the stations
+  that edit placed outside the undo history, in the state its follow-up sends (workers/clockNames.ts). Undo and redo
+  wait for names still being looked up. The station tool's check and the delete question's trial of a removal leave
+  the services as they are (`trial_light`), and the removal's trial goes ahead of a follow-up as previews do.
+  **What is drawn ahead is the tools' map's** [T-4214 stage E]: at its word (its patch laid first) a track segment's
+  stand-in becomes the patch's new edges, by id, drawn with the look their rows give (`Show.pieces`), and a station's box
+  is laid on its node in that map as its ghost's is (map/stationTool.ts `placedBox`; a station clicked before its ghost's
+  verdict shows the ghost's box until then). An edge hidden ahead that the drawn network, or a piece drawn ahead, holds
+  only as part of an edge since cut (the far half of an edge a station just split, a piece trimmed or joined) hides that
+  whole edge and draws the tools' map's edges lying on it that stay (map/clickMap.ts `openUnder`: within 1.5 m and 3 m
+  of height of it; a piece gone from that map is opened the same way). The lines on an edge so opened are not drawn
+  until the network. The renderer draws the list (map/lineAhead.ts): a line drawn ahead on its own segments it keeps and
   the track's in its colour on the edges it gained, its network strokes off by a per-line texture; edges off by a
   per-edge texture, or redrawn with their new look; station boxes by a second draw of the station shader; a deleted
   line's colour transparent (a new line's colour drawn opaque past the network's ones). **Pieces** [T-4148]: a track type
@@ -194,6 +283,19 @@ Web first, so it can be shared as a link.
   stops by station and visit and resolving them against the list the one before left [T-3732]. A state carries only the edges,
   nodes and lines that differ from the last one posted, with the ids in order when they changed
   (`delta`, T-1029); the client rebuilds the full lists from its last ones before anything reads it.
+  `toWorld` keeps each record's view (station, line, line figures, edge, node) the same object while its row is (a row
+  posted again whole that equals the one held keeps the held object), so the page reads what an edit changed off identity:
+  `game/worldDiff.ts` `worldDiff` gives the records that differ between any two worlds. Each world the page builds notes
+  the edges and nodes its states' deltas named (and the edges whose lines changed); between a world and one built from it
+  within 32 states, the diff looks up only those ids, and between any other two it walks both lists. A per-line reader
+  redoes only the lines the diff `reading` names (lines whose row or figures changed, and lines stopping at a station that
+  changed: `PerLine`, or `lineGeo`'s kept geos); `PerRecord` keeps a value per record while its inputs are the same
+  objects. A reader of `world` that works per record or patches a total goes through these and checks against a whole
+  build under `?patch=check` [T-4150]. `toWorld` lays a world's stations and nodes on the last kept world's by the node
+  ids its rows changed, and the tools' click world (`clickMap.ts`) is noted as built from its state's world with the
+  patches' ids (`noteSide`), so its diff and grids go by those ids too. The demand layers keep each line's numbers per
+  demand view, and the trains' fill per line table row from the last layers where its line's numbers and samples'
+  stretches are the same; only the changed rows are written to the GPU [T-4284].
   The money record goes with each state and "money" message the same way, as its changes from the last one posted
   (`moneyPatch`, `workers/valuePatch.ts`: key by key, entry by entry; a patch made against a record the page does not
   hold asks for a whole state), since whole it was about 2 MB on the biggest saves, nearly all of it the regions'
@@ -203,15 +305,48 @@ Web first, so it can be shared as a link.
   The worker itself reads from the track model only the rows an edit changed: it keeps the last
   rows, the track model lists the lines whose service or net was touched and the stations whose name
   was set since the last read, and a station's name is kept by node (`stateRows.ts`, T-1382). Edges and
-  nodes are looked at only where an edit touched them (`take_touched`), at the ends of track whose lines
-  moved, and in the regions those lie in: the world split into regions of at most 64 stations
-  (`workers/regions.ts`, a quadtree that is a function of the station set). A rows state with many regions
-  dirty does those of the edit and the view first and leaves the rest for the next read. A noted line
-  whose stamp (everything the worker reads of it) is unchanged is left off the list (T-4113). A repricing
-  for water or terrain still looks at every record. The
+  nodes are read (`edges_info_of`, `nodes_info_of`) only where an edit touched them (`take_touched`, which lists every
+  record whose numbers an edit or the model's own working out moved: an edge's ends, a run of single track's ways and their
+  ends), at the ends of track whose lines moved (a path entry, or a move on through a node, that came or went; a line that
+  starts or stops counting, running, or running back), where a list the rows read whole changed (one way, joins, limits and
+  the like), and in the regions those lie in: the world split into regions of at most 64 stations
+  (`workers/regions.ts`, a quadtree that is a function of the station set). No other record is visited [T-4291]. A rows
+  state with many regions dirty does those of the edit and the view first and leaves the rest for the next read. A noted
+  line whose stamp (everything the worker reads of it) is unchanged is left off the list (T-4113). A load, a repricing for
+  water or terrain and `?patch=walk` still look at every record. Each read goes in a numbered log of the ids whose rows
+  changed or went (`workers/rowLog.ts`): the post sends the rows the reads since the page's last state changed, and the
+  lists, the platforms' tracks and line counts (`platformLines.ts`), the line ends and each edge's drawn points kept beside
+  the edges' list are patched by those ids; a whole read among them, or a state built before a later read, compares every
+  row [T-4291]. The station complexes go by the same ids [T-4300]: a complex is numbered by its first station's node
+  number, so one no change touched keeps its number, and `game/complexBuilder.ts` is told the stations that changed (a
+  read's rows, a patch's touched nodes, the page's `worldDiff`), works out again only the complexes they were or are in
+  and patches its maps with a new handle and a numbered log of what changed (`complexChanges`). The names folded by them
+  (`stateRows.ts`), each node's complex for the drawn network and line links (`complexOfNodes`, a new array laid on the
+  last), and the page's complexes and dot groups redo only those; the snapshot numbers its complexes 0, 1, ... for
+  demand as before. A line's drawn runs are sampled again only where the
+  model says they lie anywhere new on the track (`take_moved_lines`: their entries, offsets or length
+  moved, or an edge under either run was touched); a settle's new timing, or a rebuild onto the same track, keeps
+  them, ways back included. Where a line's run 0 moved only in a stretch (`take_moved_spans`: the entries from the first unlike one to the
+  last before the alike end, the edges an edit touched counted unlike), only the samples and bends there are taken
+  again (`run_polyline_range`, `run_bends_range`) and the rest kept, after the stretch moved along the track by the
+  run's length change (a few mm for a station on its track); a line's runs are sampled whole once those changes add up
+  past 5 cm (`DRIFT_MAX_M`), when the count of samples changes, or with no stretch known [T-4281]. Each state names what it holds that the last one posted did not (`ClockState.touched`: the rows
+  changed or gone, the lines whose run samples or bends differ from the last network's, compared only for
+  the lines sampled again, and those whose phase tables differ from the last posted, T-4280), the one list a
+  reader patches by (T-4149). The
   run profiles' phase tables are kept per line the same way and laid end to end only when a line's
   differ; what the track model prices (the cost sums, the construct-all quote) asks the water mask
-  once for a node while the node and the mask stay as they are (T-1540). The construct-all quote and
+  once for a node while the node and the mask stay as they are (T-1540). The money and the lists a state reads whole
+  (upkeep, the cost sums, fleet needs, running cost, each line's upkeep share, the station upgrades' upkeep, the junction
+  conflicts, crossings, busy stations, `profile_meta` and the 15 flag lists) are kept per record in the track model
+  (`wasm/kept.rs`): a record's old part comes off and its new one goes on, summed exactly (steps of 2^-64), so a
+  fresh build gives the same bits and the old float sums agree to a part in 1e9. Parts move for the records an edit names (applied edits, the ends of
+  their edges, re-priced edges, the lines the service noted), the lines whose price factor the app moved and the
+  passages and buildings (set outside an edit); a load, a reload or a water mask change builds them whole. Each state's
+  first read also compares every line's money key and the passages and buildings, a net for a namer missing. The worker patches its flag lists from the
+  model's log of records whose flags moved (`take_flag_changes`). The track limits, markers, full track and turn limits
+  are still worked out whole, once per change. `?patch=check` compares all of it, as the reads between states read it,
+  with a whole build (`kept_check`), and reports anything that net caught [T-4299]. The construct-all quote and
   a planned line's price each run a trial construction, so they are no part of a state: the Build
   tab and the line panel ask for them (T-1171).
 - **Staying in step with the basemap** [T-075; notes/T-015.md, notes/T-075.md]: an empty MapLibre
@@ -333,8 +468,9 @@ Web first, so it can be shared as a link.
   about 0.2 s on the biggest saves (the 2,647-station save in notes/T-3801.md), or split so edits can come between
   its parts. The hour turning sends only what is new, the next hour's slice, its trips and its boarding hour a task
   each, and never works out the boarding account there: an account out of date goes on in its steps (T-3804). Known to
-  miss it there: one `today` answer, one boarding step of three big lines (up to 0.3 s), and for any message but an
-  edit the rest of an edit's full state (edits come between its pieces, T-3803).
+  miss it there: one `today` answer while the clock runs (every line's past day read again, up to 0.45 s on her Asia
+  save), one boarding step of three big lines (up to 0.3 s), and for a message that is neither an edit nor a question
+  the rest of an edit's full state (edits come between its pieces, T-3803; questions wait for it, T-4281).
 - **The demand pool** [T-149, T-173, `workers/demandClient.ts`][T-381]: 3 solving workers on 12 or more
   logical threads, 2 on 6 to 11, 1 on fewer; then a phone or tablet (by its user agent), or a device
   of 4 GB or less, gets 1 (T-2794 adds the same check's lean ways: pixel ratio at most 2, coarse outlines held only near the view; notes/T-2794.md; T-2802: the WASM memories grow 8 MB at a time, not 32, notes/T-2802.md; a phone or tablet by user agent, not a 4 GB desktop, also has no demand cache; no device opens market packs (trips between zones) while "Calculate intercity trips" is off, which is its default on a phone or tablet only, T-2833, T-2838, T-3630; a device reporting 4 GB or less gets a note at the bottom of the map, T-2839, `ui/DeviceNote.tsx`) (`workers/deviceMemory.ts` `smallDevice`, T-2122: a phone's tab holds far
@@ -431,7 +567,8 @@ Web first, so it can be shared as a link.
   before its first game (its init throws and posts `failed`, or its script errors) stops the pool
   too, as does an uncaught error in main.ts's setup before `setupDone()`; the loading gate's
   watchdog (ui/LoadingScreen.tsx, `markAlive` in game/loading.ts) stops a card quiet for 3 minutes,
-  10 with a bar.
+  10 with a bar; while a demand worker is inside a period (it says nothing until the period ends), 4 times the
+  longest period timed on the page, or 30 minutes before one of this solve's has ended [T-4343].
   `checks/every-pack-opens.mjs --broken` serves a broken city pack and market pack.
   `game/loading.ts`; timings in notes/T-172.md, frame times in notes/T-180.md.
 - **Freeze diagnostics** [T-3385]: `?diagnostics=1` opts this browser into a local recorder, kept on
@@ -495,10 +632,13 @@ Web first, so it can be shared as a link.
   together (need plus 0.15 GB each) would pass 17.5% of that budget (`SOLVING_SHARE`, T-3373: 1.4 GB on a
   reported 8, so New York's real save runs 2 and all of China 1; memory over speed, Anita 2026-11-16; not with
   Settings' "Use more cores" on, whose player chose speed). The
-  same test runs whenever a zone opens in a solving worker while no solve is out, and a loading save's pool is
-  cut before its packs open, by `memoryCheck`'s estimate of a worker for the zones its stations reach
-  (`capAhead`). The periods are dealt again (`periods`, taken up between solves) and every worker composes
-  afresh; no figure changes. The pool grows back (T-1366) once it is quiet, as for a restart: up to its size at
+  same test runs whenever a zone opens in a solving worker while no solve is out and once the pool is quiet after a
+  final (T-3757), and a loading save's pool is cut before its packs open by the same test on `memoryCheck`'s
+  estimates of a solving worker and of the aux worker for the zones its stations reach (`capAhead`; with the aux
+  worker counted, T-4263, the pool a load runs on is the one the test keeps after its first final). The periods are
+  dealt again (`periods`, taken up between solves) and every worker composes afresh; no figure changes. A pool cut
+  after a solve holds periods it never solved, so the network is solved once more and questions wait for that final
+  (4-6 minutes on a 160-zone Asia save on one worker). The pool grows back (T-1366) once it is quiet, as for a restart: up to its size at
   the start, to the most solving workers that fit 95% of both limits, each counted at the most any of them holds
   or needs, and never within 2 minutes of its last change (doubled by each cut after a growth, so zones opening
   and closing near the line cannot start and stop workers in turn). A new worker opens what the pool holds as a
@@ -534,7 +674,8 @@ Web first, so it can be shared as a link.
 A save is the player's inputs only: track, stations, lines, schedules, fares, each line's station
 note [T-706], money (cash, cars owned of each kind, the ledgers' every day [T-2143] and last 48 hours, for the network and for each region, which are the
 Money tab's history charts: fares, costs, net and train rides; T-447, T-531, T-565, T-567), clock,
-empty line drafts, custom badge symbols, the line-name counter, and the player's station links. Population, jobs and travel come from versioned packs;
+empty line drafts, custom badge symbols, the line-name counter, the player's station links, and the kept bus stops
+(named or connected bus stops' places, T-4080). Population, jobs and travel come from versioned packs;
 all results are recomputed. Sizes: notes/T-040.md, notes/T-567.md.
 
 ### Format and compatibility

@@ -8,7 +8,7 @@
 // model's frame); what the renderer draws comes back in local units (map/geo.ts). Money in
 // messages is US$M, as in the track model.
 
-import type { BuildingInput, EdgeId, Level, NodeId, OuterGroup } from "../game/types";
+import type { BuildingInput, EdgeId, KeepInput, Level, NodeId, OuterGroup } from "../game/types";
 import type { FrameSpec } from "../game/frame";
 import type { LineShape } from "../game/lineShape";
 import type { Loan } from "../game/loan";
@@ -34,11 +34,13 @@ export interface PiInput {
   radius?: number;
 }
 
-/** Where a drawn route starts or ends: a new node, an existing node, or splitting an edge. */
+/** Where a drawn route starts or ends: a new node, an existing node, splitting an edge, or (T-4214 stage D) the node route
+ * edit `seq` ended at, for a track run's next segment sent before that edit's answer (workers/clockRunEnds.ts). */
 export type RouteEnd =
   | { kind: "free"; x: number; y: number; level: Level }
   | { kind: "node"; node: NodeId }
-  | { kind: "edge"; edge: EdgeId; x: number; y: number };
+  | { kind: "edge"; edge: EdgeId; x: number; y: number }
+  | { kind: "endOf"; seq: number };
 
 /** Where a station goes: on a node, splitting an edge near a point, or on open ground with a
  * straight piece of new track from (x0, y0) to (x1, y1) under it (T-794). */
@@ -95,11 +97,12 @@ export type EditOp =
   | { op: "removePieces"; edges: EdgeId[]; stations: NodeId[] }
   | { op: "flying"; node: NodeId; flying: boolean }
   | { op: "stationUpgrade"; nodes: NodeId[]; bit: number; on: boolean }
-  | { op: "addStation"; at: StationAt; platform: number; name: string }
+  /** T-4214: `ticket`, a station sent at its click: `name` is "" and the name follows as "stationName" (workers/clockNames.ts) */
+  | { op: "addStation"; at: StationAt; platform: number; name: string; ticket?: number }
   /** T-3378: a blueprint BRT station at x, y (world metres) on no track, its platform along a road on `heading` (radians) */
-  | { op: "addBrtStation"; x: number; y: number; heading: number; name: string }
+  | { op: "addBrtStation"; x: number; y: number; heading: number; name: string; ticket?: number }
   /** T-3999: a blueprint port on no ferry line, its landing at x, y and its berth at bx, by (world metres) */
-  | { op: "addPort"; x: number; y: number; bx: number; by: number; name: string }
+  | { op: "addPort"; x: number; y: number; bx: number; by: number; name: string; ticket?: number }
   /** a crossover on track `edge` near x, y and the track running beside it (T-338) */
   | { op: "crossover"; edge: EdgeId; x: number; y: number }
   /** an express pair beside double track `edge` and the run it is on, as blueprint (T-708) */
@@ -113,6 +116,11 @@ export type EditOp =
   | { op: "stationProps"; node: NodeId; platform: number; name: string }
   /** T-3759: rename a station: an unbound one alone, a bound one renames its complex */
   | { op: "renameStation"; node: NodeId; name: string }
+  /** the line panel's Rename stations: each of `nodes` renamed to `names[i]` as `renameStation` does, one undo */
+  | { op: "renameStations"; nodes: NodeId[]; names: string[] }
+  /** T-4080: name a bus stop (empty: clear it). `stops` are its place's plain stops, its own first; the name goes to the first
+   * one with a kept stop, else to a new one at (x, y), the first stop's place. */
+  | { op: "renameBusStop"; stops: number[]; x: number; y: number; name: string }
   /** T-3759: rename the complex station `node` is in (its unbound stations keep their names) */
   | { op: "renameComplex"; node: NodeId; name: string }
   /** T-3759: bind a station to its complex's name, or unbind it */
@@ -256,6 +264,9 @@ export type EditOp =
   | { op: "repay" }
   /** link two stations into one complex, or undo a link (T-197): node ids; not undoable, a setting */
   | { op: "link"; a: NodeId; b: NodeId; on: boolean }
+  /** T-4048: remove a connection, one undoable edit, free: the passage between `a` and `b` if any, and the
+   * complex distance rule kept from joining each pair of `apart` (node ids, flat) */
+  | { op: "separate"; a: NodeId; b: NodeId; apart: NodeId[] }
   /** T-2218: station buildings (game/buildings.ts), paid at once and not undoable, as passages are;
    * corners are pack x, y pairs, flat; a name "" takes the first built member's */
   | { op: "addBuilding"; corners: number[]; name: string }
@@ -327,7 +338,7 @@ export type ToClock =
    * network, trips and boarding once no stop click has come for a moment; a stop click before then joins them */
   /** `game` (T-3734): the game the edit was made in, `loaded`'s `game` when it was made; one of another game is refused
    * unapplied. Only edits queued behind others carry it (stop edits); an edit without one is the game in hand's. */
-  | { kind: "edit"; seq: number; op: EditOp; early?: boolean; rows?: boolean; game?: number }
+  | { kind: "edit"; seq: number; op: EditOp; early?: boolean; rows?: boolean; click?: boolean; game?: number }
   /** what a route would cost and whether it can be built; answered with "preview" */
   | ({ kind: "preview"; seq: number } & RouteAsk)
   /** what giving blueprint track new PIs would do (T-064); answered with "preview" */
@@ -340,6 +351,8 @@ export type ToClock =
    * started, or waiting for water masks, is answered `stale` at once (T-1039); handled outside
    * the queue */
   | { kind: "previewStale"; seq: number }
+  /** T-4214: the name for the stations sent with `ticket` (workers/clockNames.ts), made in game `game` (`gameStamp`) */
+  | { kind: "stationName"; ticket: number; name: string; game: number }
   /** T-2404: the track tool's segments placed early, their state held while the pointer moves, are
    * wanted now (the run ended, or the pointer came near them) */
   | { kind: "release" }
@@ -364,13 +377,17 @@ export type ToClock =
   /** fare income in force, US$M per game hour for each of the five periods (from demand riders,
    * game/money.ts), one table per kind of day (T-260, game/days.ts `DayKind` order); `lines` the
    * same per line (T-293: each line's fares taken today) */
-  | { kind: "income"; perHour: number[][]; rides: number[][]; lines?: { line: number; perHour: number[][]; rides: number[][] }[] }
+  | { kind: "income"; perHour: number[][]; rides: number[][]; lines?: { line: number; perHour: number[][]; rides: number[][] }[];
+    /** T-4284: every line's number in order, `lines` holding only those whose entries changed since the last posted */
+    order?: number[] }
   /** T-531: each running line's fares, train rides and running cost by region, [region, share] pairs
    * (game/regionMoney.ts) */
   | { kind: "regionShares"; lines: { line: number; fare: [string, number][]; ride: [string, number][]; run: [string, number][] }[]; upkeep: [string, number][] }
   /** T-684: each running line's points per game hour by region, `[region, perHour[dayKind][period]]`
    * (game/points.ts) */
-  | { kind: "points"; lines: { line: number; regions: [string, number[][]][] }[] }
+  | { kind: "points"; lines: { line: number; regions: [string, number[][]][] }[];
+    /** T-4284: every line's number in order, `lines` holding only those whose entries changed since the last posted */
+    order?: number[] }
   /** T-685: region `zone`'s rail share has reached the star's mark, or with `share` (T-1437) that
    * higher goal; kept from the first time */
   | { kind: "star"; zone: string; share?: number }
@@ -871,6 +888,18 @@ export interface RowsDelta<T> {
   rows: T[];
 }
 
+/** T-4149: `ClockState.touched` */
+export interface EditTouched {
+  all?: true;
+  edges: number[];
+  nodes: number[];
+  lines: number[];
+  paths: number[];
+  /** T-4280: the lines whose phase tables may differ from those of the last state posted that carried them (a network's or
+   * a train count's) */
+  phases: number[];
+}
+
 /** T-3803: the money record (the last one posted is `base`) as its changes (workers/valuePatch.ts), null when none */
 export interface MoneyPatch {
   base: number;
@@ -906,10 +935,21 @@ export interface ClockState {
   delta?: { edges: RowsDelta<ClockEdge>; nodes: RowsDelta<ClockNode>; lines: RowsDelta<ClockLine> };
   /** `?patch=check`: the rows in full, for the client to compare its rebuilt ones with */
   checkRows?: { edges: ClockEdge[]; nodes: ClockNode[]; lines: ClockLine[] };
+  /** the clock worker only (T-4291): the number of the rows read its edges, nodes and lines are (workers/rowLog.ts) */
+  rowsRead?: number;
+  /** T-4149: what the edits since the last state posted touched, the one list a reader patches by: the ids of the edges,
+   * nodes and lines whose rows changed or are gone, the lines whose drawn run samples or bends differ from the last network
+   * posted's (`paths`), and those whose phase tables may (`phases`). `all`: everything may have changed, the state or its
+   * network posted whole (a load, an anchor move, `?patch=0`). */
+  touched?: EditTouched;
   /** stations the player linked into one complex (T-197): node id pairs, flat */
   links: number[];
+  /** T-4048: stations the player separated: node id pairs, flat */
+  apart?: number[];
   /** the station buildings (T-2217, game/buildings.ts) */
   buildings?: BuildingInput[];
+  /** T-4080: the named bus stops (`namedKeeps`); absent when none */
+  keeps?: KeepInput[];
   /** the clock worker only: each node's station complex (0xffffffff none), for drawing one waiting
    * room and car park per complex (T-1528) */
   complexOf?: Uint32Array;
@@ -981,6 +1021,12 @@ export interface EdgeLook {
 /** T-4148: a new piece of track the edit made, drawn as blueprint until the network holds it: the edge's points in local
  * units (x, y, z each) */
 export interface NewPiece { edge: number; pts: Float32Array; tracks: 1 | 2; kind: number }
+/** T-4214 stage C: the records the edits since the last state read touched, as the model has them right after an edit
+ * (workers/clockPatch.ts): rows as the next state's, each live edge's points in local units at draw anchor `anchor`
+ * (its version), and the ids gone. The page patches the map its tools click on with it until the next state. */
+/** `lines`: the paths of lines whose path the edits moved (a station on their track splits an edge), as their rows have them */
+export interface MapPatch { edges: ClockEdge[]; nodes: ClockNode[]; goneEdges: number[]; goneNodes: number[]; pts: Float32Array[]; anchor: number; lines?: PatchLine[] }
+export interface PatchLine { id: number; path: number[]; planPath?: number[]; back?: number[] }
 /** T-4145: what an applied edit changed, as the page draws it (ids are the ones drawn now unless said); every part optional */
 export interface EditWord {
   /** a rail line's strokes now draw these edges (its plan's path and its return run's); null: the line is gone */
@@ -1008,7 +1054,9 @@ export type FromClock =
    * `ms`: the worker's time on the edit by step (T-229, for `?debug=1`); `node` after addBuilding: the building's id */
   /** T-4145: an edit applied, sent before anything else it sends (rows, state, answer): what the map and panels can
    * show of it until the first network (or rows) after this message (notes/T-4145.md) */
-  | { kind: "applied"; seq: number; word: EditWord; /** T-4170: no network follows (a service edit, a rename, a fare or loan edit) */ noNet?: true }
+  /** T-4214: stations named after their edit (`stationName`), with the clickable map's patch when it can be patched */
+  | { kind: "named"; patch?: MapPatch }
+  | { kind: "applied"; seq: number; word: EditWord; /** T-4170: no network follows (a service edit, a rename, a fare or loan edit) */ noNet?: true; /** T-4214: the clickable map's patch, when the edit can be patched */ patch?: MapPatch }
   | { kind: "edited"; seq: number; ok: boolean; issues: string[]; charge: number; line?: number; node?: number; paid?: PaidFor; skipped?: number; ms?: Record<string, number>; early?: boolean; held?: Float32Array[] }
   | {
       kind: "preview";
@@ -1058,14 +1106,15 @@ export type FromClock =
        * junction, or for a crossing its tram tracks as `packCross(0, trams)` (0, 0.1 or 0.2; T-3535), per mark */
       marks?: Float32Array;
     }
-  | { kind: "state"; state: ClockState }
+  /** `timing`: DEV builds, the worker's laps for this state since its edit (workers/clockState.ts `timing`; edit_bench --steps) */
+  | { kind: "state"; state: ClockState; timing?: Record<string, number> }
   /** trips drawn in [epoch, epoch + 3600): profile index, departure - epoch (notes/T-040.md);
    * `ends`, per trip, when it stops being drawn - epoch (its train takes its next departure from
    * the terminal or leaves service, T-206); `nexts`, per trip, the departure - epoch its train
    * takes next (the other run's trip drawn from then), NaN when it leaves service (T-245); `board`, once demand's riders are known: that hour of the boarding account, lined up with
-   * `trips` (`TrackApi.boarding_hour`, game/boarding.ts reads it; T-164), the ms it took, the
+   * `trips` (`TrackApi.boarding_hour_kept`, game/boarding.ts reads it; T-164), the ms it took, the
    * lines worked out again since the last, and the ms spent stepping through them (all, longest) */
-  | { kind: "trips"; version: number; epoch: number; trips: Float32Array; ends?: Float32Array; nexts?: Float32Array; bays?: Float32Array; board?: Float32Array; boardMs?: number; redone?: number; prepMs?: number; prepMax?: number }
+  | { kind: "trips"; version: number; epoch: number; trips: Float32Array; ends?: Float32Array; nexts?: Float32Array; bays?: Float32Array; board?: Float32Array; boardMs?: number; redone?: number; prepMs?: number; prepMax?: number; timing?: Record<string, number> }
   | { kind: "snapshot"; snapshot: NetworkSnapshot }
   /** T-2159: the network diagram's graph, after a network state while the diagram is shown */
   /** one graph per region of the network (T-3448), each in a frame of its own */
@@ -1189,6 +1238,8 @@ export interface NetworkSnapshot {
   fare?: { base: number; perKm: number; nodes?: [number, number][]; scales?: Record<string, number>; byCity?: boolean; cityScales?: Record<string, number>; zones?: FareArea[] };
   /** station pairs joined by a passage (T-1281), node ids; absent when there are none */
   passages?: [number, number][];
+  /** T-4048: station pairs the player separated, node ids; absent when there are none */
+  apart?: [number, number][];
 }
 
 export interface SnapshotStation {

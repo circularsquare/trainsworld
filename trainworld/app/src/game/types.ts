@@ -181,8 +181,21 @@ export interface Save {
   lines: LineInput[];
   /** stations the player linked into one complex (T-197), each pair once */
   links: [StationId, StationId][];
+  /** T-4048: stations the player separated, which the complex distance rule does not join; absent when none */
+  apart?: [StationId, StationId][];
   /** the station buildings (T-2217, game/buildings.ts) */
   buildings?: BuildingInput[];
+  /** T-4080: the bus stops the player named (kept stops with a name), absent when none */
+  keeps?: KeepInput[];
+}
+
+/** A kept bus stop with a name (T-4080, `TrackApi.keeps`): the spot the name belongs to, world metres. The bus stops within
+ * `KEEP_M` of it take the name. */
+export interface KeepInput {
+  id: number;
+  x: number;
+  y: number;
+  name: string;
 }
 
 /** A station building as the track model lists it (T-2217, `TrackApi.buildings_info`). */
@@ -408,6 +421,8 @@ export type Selection =
    * again on every edit, so the panel finds it again by place) */
   | { kind: "busStop"; stop: string; at: [number, number] }
   | { kind: "station"; station: StationId }
+  /** T-4341: a station building with no station inside, picked on its floor (one with stations picks their complex) */
+  | { kind: "building"; id: number }
   | { kind: "track"; edge: EdgeId }
   | { kind: "junction"; node: NodeId }
   /** a train: its profile (line, run, demand level) and departure, absolute game seconds */

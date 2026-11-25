@@ -13,6 +13,8 @@
 import type { FeatureCollection } from "geojson";
 import type { GeoJSONSource, Map as MlMap } from "maplibre-gl";
 import { complexes } from "../game/complexView";
+import { complexChanges } from "../game/complexBuilder";
+import { ascendingBy, worldDiff } from "../game/worldDiff";
 import { PATCH_MODE } from "../game/patchMode";
 import type { StationId, StationInput, WorldView } from "../game/types";
 import { NameIndex, labelGroups, linesAt, type NameGroup, type NameOp } from "./labelNames";
@@ -20,7 +22,7 @@ import { anchor, toLocal } from "./geo";
 import type { Overlay } from "./overlay";
 import { PlaceThrottle } from "./moving";
 import { perfOff } from "../perfFlags";
-import { BoxGrid, MIN_LABEL_ZOOM, labelFont, type LabelFont, TRAM_NAME_ZOOM, labelPadding } from "./labelLayout";
+import { BoxGrid, MIN_LABEL_ZOOM, BUS_NAME_ZOOM, labelFont, type LabelFont, TRAM_NAME_ZOOM, labelPadding } from "./labelLayout";
 import { styleUp } from "./styleReady";
 import { plainBoxHalfPx } from "./stationGeometry";
 import { afterPaint } from "../game/busy";
@@ -28,7 +30,7 @@ import { buildingMembersById } from "../game/buildingView";
 import { buildingFrame } from "../game/buildingLayout";
 import { insideOutline } from "../game/buildings";
 import { groundScale, packToLngLat } from "../game/coords";
-import { listedLines, stationsById, world } from "../game/world";
+import { busStopsById, listedLines, namedBusStops, stationsById, world } from "../game/world";
 import { FLOOR_ZOOM } from "./buildingFloors";
 import { complexTitle } from "../game/complexLead";
 
@@ -57,6 +59,7 @@ interface Label {
 }
 
 const GAP = 10; // px from the station centre
+const BUS_GAP = 7; // px from a bus stop's dot
 /** more stations than this named unlike every label drawn wait for the paint (T-1357) */
 const DEFER_NAMES = 200;
 /** side of the screen grid the collision pass files placed names in, CSS px */
@@ -113,6 +116,7 @@ export class StationLabels {
     // widths measured before the web font arrived are wrong: measure again once it has
     const remeasure = () => {
       for (const l of this.labels) l.w = 0;
+      for (const l of this.busLabels) l.w = 0;
       this.needsPlacement = true;
       this.place();
     };
@@ -149,7 +153,41 @@ export class StationLabels {
     });
   }
 
+  /** T-4150 stage 2: the world whose stations the names hold */
+  private heldW: WorldView | null = null;
+
+  /** T-4080: the names players gave bus stops, drawn small after every station's name */
+  private busLabels: Label[] = [];
+  private busKey = "";
+
+  private setBusNames(w: WorldView) {
+    // no kept stop, no name: the common game never works out its bus stops' names here
+    const named = w.save.keeps?.length ? namedBusStops(w) : null;
+    if (!named?.size && !this.busLabels.length) return;
+    const stops = busStopsById(w);
+    const key = named?.size ? [...named].map(([id, name]) => { const s = stops.get(id); return `${id}:${name}:${s?.lng}:${s?.lat}`; }).join("|") + `@${anchor().version}` : "";
+    if (key === this.busKey) return;
+    this.busKey = key;
+    const spare = new Map(this.busLabels.map((l) => [l.name + "~" + l.x + "," + l.y, l]));
+    this.busLabels = [];
+    for (const [id, name] of named ?? []) {
+      const s = stops.get(id);
+      if (!s) continue;
+      const [x, y] = toLocal(s.lng, s.lat), k = name + "~" + x + "," + y;
+      const old = spare.get(k);
+      if (old) { spare.delete(k); this.busLabels.push(old); continue; }
+      const el = document.createElement("div");
+      el.className = "stn-label bus";
+      el.textContent = name;
+      this.plane.appendChild(el);
+      this.busLabels.push({ el, name, x, y, below: false, w: 0, h: 0 });
+    }
+    for (const l of spare.values()) l.el.remove();
+    this.needsPlacement = true;
+  }
+
   set(w: WorldView, painted = false) {
+    this.setBusNames(w);
     // the build waiting for the paint takes the latest world
     if (this.deferred) { this.deferred = w; return; }
     const stations = w.save.stations;
@@ -159,7 +197,16 @@ export class StationLabels {
     // user of this world) and the player's links count (T-209); so do the draw anchor, since the
     // names' positions are in its local units (T-307).
     const cx = complexes.peek();
-    const plan = this.names.plan(stations, listedLines(w), cx, anchor().version);
+    // T-4150 stage 2: what changed since the world whose stations the names hold, when the complexes say which of theirs
+    const held = this.names.held, base = this.heldW;
+    const roots = base && held.stations === base.save.stations && held.cx && PATCH_MODE !== "0" && ascendingBy(stations, (s) => s.num) ? complexChanges(held.cx, cx) : null;
+    const hint = roots ? { from: held.stations!, fromCx: held.cx!, stations: worldDiff(base, w)!.stations, roots } : null;
+    const plan = this.names.plan(stations, listedLines(w), cx, anchor().version, hint);
+    try { this.take(w, plan, cx, painted); } finally { if (this.names.held.stations === stations) this.heldW = w; }
+  }
+
+  private take(w: WorldView, plan: ReturnType<NameIndex["plan"]>, cx: ReturnType<typeof complexes.peek>, painted: boolean) {
+    const stations = w.save.stations;
     // a station building's name and outline (T-2219)
     const bk = (w.save.buildings ?? []).map((b) => `${b.id}:${b.name}:${b.corners.join(",")}`).join("|");
     if (bk !== this.bldSeen && !plan) {
@@ -391,6 +438,24 @@ export class StationLabels {
       l.hidden = false;
       const rx = Math.round(x), ry = Math.round(y);
       const transform = `translate(${rx}px, ${ry}px)`;
+      if (l.transform !== transform) l.el.style.transform = l.transform = transform;
+      this.shownLabels.push(l);
+      l.ox = rx - sx;
+      l.oy = ry - sy;
+    }
+    // T-4080: a bus stop's name comes after every station's, so a station's name wins a collision
+    for (const l of this.busLabels) {
+      if (zoom < BUS_NAME_ZOOM) { hide(l); continue; }
+      if (!l.w) { l.w = l.el.offsetWidth; l.h = l.el.offsetHeight; }
+      const [sx, sy] = this.overlay.toScreen(l.x, l.y);
+      const x = sx + BUS_GAP, y = sy - l.h / 2;
+      const collision: [number, number, number, number] = [x - padX, y - padY, x + l.w + padX, y + l.h + padY];
+      const off = !Number.isFinite(sx + sy) || x + l.w < -margin || x > W + margin || y + l.h < -margin || y > H + margin;
+      if (off || placedBoxes.hits(collision)) { hide(l); continue; }
+      placedBoxes.add(collision);
+      if (l.hidden !== false) l.el.style.visibility = "";
+      l.hidden = false;
+      const rx = Math.round(x), ry = Math.round(y), transform = `translate(${rx}px, ${ry}px)`;
       if (l.transform !== transform) l.el.style.transform = l.transform = transform;
       this.shownLabels.push(l);
       l.ox = rx - sx;

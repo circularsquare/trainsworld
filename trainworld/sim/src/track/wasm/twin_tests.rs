@@ -11,6 +11,7 @@ fn track_at(a: &TrackApi, x: f64, y: f64) -> u32 {
 }
 fn station(a: &mut TrackApi, x: f64, y: f64, name: &str) -> u32 {
     assert_eq!(a.add_station(2, track_at(a, x, y), x, y, 200, name.into()), 0, "{}", a.issues());
+    a.settle_owed(); // T-4272: its services after its answer
     (0..a.w.net.node_count() as u32)
         .filter(|&k| a.w.net.node_ok(k) && a.w.net.node_platform[k as usize] > 0)
         .min_by(|&p, &q| {
@@ -185,6 +186,104 @@ fn t3356_stations_beside_are_the_complex_on_the_other_pair() {
     let on = station(&mut b, 2000.0 + 230.0, 0.0, "x");
     assert!(b.w.net.complex_of(s2[1]).contains(&on));
     assert_eq!(b.w.net.station_beside(s2[1]), None);
+}
+
+/// T-4048: separating two stations of one complex keeps the distance rule from joining them, one
+/// undoable edit; removing one of them takes the pair with it and its undo brings it back; a save keeps it.
+#[test]
+fn t4048_separated_stations_stay_apart() {
+    let (mut a, _, stops) = quad_line();
+    let mid = station(&mut a, 2000.0, QUAD_SPACING, "x");
+    let pair = vec![mid.min(stops[1]), mid.max(stops[1])];
+    assert!(a.w.net.complex_of(mid).contains(&stops[1]));
+    assert_eq!(a.separate(mid, stops[1], &[mid, stops[1]]), 0, "{}", a.issues());
+    assert!(!a.w.net.complex_of(mid).contains(&stops[1]), "kept apart");
+    assert_eq!(a.station_apart(), pair);
+    assert_eq!(a.separate(mid, stops[1], &[stops[1], mid]), 1, "nothing more to do");
+    assert_eq!(a.undo(), 0);
+    assert!(a.w.net.complex_of(mid).contains(&stops[1]), "the undo joins them again");
+    assert_eq!(a.redo(), 0);
+    assert_eq!(a.station_apart(), pair);
+    assert_eq!(a.remove_station(mid), 0, "{}", a.issues());
+    assert!(a.w.net.apart.is_empty(), "the pair goes with the station");
+    assert_eq!(a.undo(), 0);
+    assert_eq!(a.station_apart(), pair, "and comes back with it");
+    // a link between them is removed the same way, the distance rule kept off too
+    assert_eq!(a.link_stations(mid, stops[1]), 0, "{}", a.issues());
+    let bytes = a.save();
+    assert!(a.load(&bytes));
+    let kept = a.station_apart();
+    assert_eq!(kept.len(), 2, "the save keeps it");
+    assert_eq!(a.station_links(), kept, "and the link");
+    assert_eq!(a.separate(kept[0], kept[1], &[]), 0, "{}", a.issues());
+    assert!(a.station_links().is_empty() && !a.w.net.complex_of(kept[0]).contains(&kept[1]));
+    assert_eq!(a.undo(), 0);
+    assert_eq!(a.station_links(), kept, "the undo puts the passage back");
+}
+
+/// T-4048: a passage removed and then paid for again (off the history) leaves that removal's undo nothing to do,
+/// so the undo takes the edit before it, and the redo makes that edit again.
+#[test]
+fn t4048_an_undo_passes_a_removal_a_new_passage_undid() {
+    let (mut a, _, stops) = quad_line();
+    let far = station(&mut a, 2400.0, QUAD_SPACING, "x");
+    assert!(!a.w.net.complex_of(far).contains(&stops[1]), "400 m on: no complex by distance");
+    assert_eq!(a.link_stations(stops[1], far), 0, "{}", a.issues());
+    let z = station(&mut a, 3000.0, QUAD_SPACING, "z");
+    assert_eq!(a.separate(stops[1], far, &[]), 0, "{}", a.issues());
+    assert!(a.station_links().is_empty());
+    assert_eq!(a.link_stations(stops[1], far), 0, "{}", a.issues());
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert!(!a.w.net.is_station(z), "the undo takes the station placed before the removal");
+    assert_eq!(a.station_links().len(), 2, "and leaves the passage");
+    assert_eq!(a.redo(), 0, "{}", a.issues());
+    assert!(a.w.net.is_station(z), "the redo places it again");
+    assert_eq!(a.station_links().len(), 2);
+}
+
+/// T-4260: with only that removal on the history, there is nothing to undo once its passage is paid for again.
+#[test]
+fn t4260_no_undo_is_offered_for_a_removal_a_new_passage_undid() {
+    let (mut a, _, stops) = quad_line();
+    let far = station(&mut a, 2400.0, QUAD_SPACING, "x");
+    assert_eq!(a.link_stations(stops[1], far), 0, "{}", a.issues());
+    // a load starts with no history
+    let bytes = a.save();
+    let mut a = TrackApi::new(-73.985, 40.758, true);
+    assert!(a.load(&bytes));
+    assert!(!a.w.can_undo());
+    assert_eq!(a.separate(stops[1], far, &[]), 0, "{}", a.issues());
+    assert!(a.w.can_undo(), "the removal can be undone");
+    assert_eq!(a.link_stations(stops[1], far), 0, "{}", a.issues());
+    assert!(!a.w.can_undo(), "its passage is back: nothing to undo");
+}
+
+/// T-4048: a separated pair that a move takes out of joining range is let go in that move (its undo keeps the
+/// pair); brought near again, the two join as any two stations do. A move that keeps them near keeps them apart.
+#[test]
+fn t4048_a_move_out_of_range_lets_a_separated_pair_go() {
+    let mut a = TrackApi::new(-73.985, 40.758, true);
+    for y in [0.0, 30.0] {
+        assert_eq!(a.add_route(&[0.0, 0.0, 0.0, y, 0.0, 0.0, 0.0, 1000.0, y, 0.0], &[], 2, false), 0, "{}", a.issues());
+    }
+    let (s, t) = (station(&mut a, 500.0, 0.0, "S"), station(&mut a, 500.0, 30.0, "T"));
+    assert!(a.w.net.complex_of(s).contains(&t), "30 m apart: one complex");
+    assert_eq!(a.separate(s, t, &[s, t]), 0, "{}", a.issues());
+    assert!(!a.w.net.complex_of(s).contains(&t));
+    // T's whole stretch: its two ends and its station
+    let net = &a.w.net;
+    let stretch: Vec<u32> = (0..net.node_count() as u32).filter(|&n| net.node_ok(n) && (net.node_y[n as usize] - 30.0).abs() < 1.0).collect();
+    assert_eq!(stretch.len(), 3, "{stretch:?}");
+    assert_eq!(a.move_nodes(&stretch, 20.0, 0.0), 0, "{}", a.issues());
+    assert_eq!(a.station_apart().len(), 2, "still near: still apart");
+    assert_eq!(a.move_nodes(&stretch, 0.0, 2000.0), 0, "{}", a.issues());
+    assert!(a.station_apart().is_empty(), "2 km off: let go");
+    assert_eq!(a.undo(), 0, "{}", a.issues());
+    assert_eq!(a.station_apart().len(), 2, "the undo keeps the pair");
+    assert_eq!(a.redo(), 0, "{}", a.issues());
+    assert!(a.station_apart().is_empty());
+    assert_eq!(a.move_nodes(&stretch, 0.0, -2000.0), 0, "{}", a.issues());
+    assert!(a.w.net.complex_of(s).contains(&t), "near again: one complex");
 }
 
 /// T-3521: weekend counts are the whole line's as the player sets them, so a line split onto

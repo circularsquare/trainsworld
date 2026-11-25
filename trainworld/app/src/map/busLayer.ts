@@ -32,7 +32,7 @@ import { render } from "preact";
 import { Icon } from "../ui/widgets";
 import { speedColour, profitColour, rgb, rgbf, LEVEL_COLOURS } from "../game/palette";
 import type { ShadeColours } from "../game/shadeTable";
-import type { WorldView } from "../game/types";
+import type { LineInput, LineStats, WorldView } from "../game/types";
 import { anchor, kAtY, pxPerUnitAt, toLocal, type Anchor } from "./geo";
 import { compile, PROJECT_GLSL, PROJECT_UNIFORMS, setCamera, uniforms, type LocalCamera } from "./gl";
 import type { Overlay } from "./overlay";
@@ -40,12 +40,13 @@ import { SPEED_LEVEL, speedAt } from "./network";
 import { topSeg } from "./pick";
 import { hidden } from "./visibility";
 import { headingAtPlane } from "./halfDot";
-import { rightHand } from "../game/world";
+import { namedBusStops, rightHand, stationsById } from "../game/world";
 import { factRow, headingChevron, lineBullet } from "./trackTagRows";
 import type { TipLine } from "./networkTips";
 import { ARROW_SPREAD, ARROW_ZOOM, ONE_WAY_STEP_M, oneWayEvery } from "./oneWayMarks";
 import { brtJoins, busPlaceOf, busPlaces, busStopLinks } from "../game/busLinks";
 import { dotGroups } from "../game/complexView";
+import { checkPatches, worldDiff } from "../game/worldDiff";
 import { ROW_SLOT, profileOf } from "./profiles";
 import type { BusAhead } from "./busAhead";
 
@@ -58,7 +59,7 @@ const WIDTH_SHARE = 0.45;
 const BRT_WIDTH = 1.4;
 const CASING_SHARE = 0.6;
 /** Ground metres each side of the route that its riders walk from (demand's corridor, sim `BUS_REACH_M`). */
-export const CORRIDOR_M = 600;
+export const CORRIDOR_M = 500;
 /** The selected line's corridor outline: opacity of the line's colour, and thickness in CSS px (T-1490). */
 const OUTLINE_ALPHA = 0.75;
 const OUTLINE_PX = 1;
@@ -491,9 +492,39 @@ export interface BusStyle {
   phases: Float32Array;
   meta: Float32Array;
   trackRgb: Float32Array;
+  /** T-4262: the target drawn into has a stencil buffer; absent: asked of GL (a getParameter waits for the GPU) */
+  stencil?: boolean;
 }
 
 export type BusPaintKind = "speed" | "profit" | "level" | null;
+
+const sameSet = (a: ReadonlySet<number>, b: ReadonlySet<number>) => a === b || (a.size === b.size && [...a].every((x) => b.has(x)));
+/** T-4150: `busStopLinks` again only when a bus line's stops are other objects */
+let stopLinksLast: { lines: { line: number; stops: readonly unknown[] }[]; out: number[] } | null = null;
+function stopLinksOf(lines: Parameters<typeof busStopLinks>[0]): number[] {
+  const was = stopLinksLast;
+  if (was && !checkPatches() && was.lines.length === lines.length && was.lines.every((x, i) => x.line === lines[i].line && x.stops === lines[i].stops)) return was.out;
+  const out = busStopLinks(lines);
+  stopLinksLast = { lines: lines.map((x) => ({ line: x.line, stops: x.stops })), out };
+  return out;
+}
+
+/** T-4150 stage 2: each bus line's source as last made, by its figures (its row with it) */
+const sourceOf = new WeakMap<LineStats, { l: LineInput; src: BusSource }>();
+function busSource(l: LineInput, st: LineStats, b: NonNullable<LineStats["bus"]>): BusSource {
+  const stops: number[] = [], spurs: number[] = [], stopIds: number[] = [], transfers: number[] = [];
+  // a ferry's stops are its ports, drawn as the stations they are
+  if (!b.ferry) for (const s of b.stops) {
+    stops.push(s.lng, s.lat, s.kind);
+    stopIds.push(s.id);
+    if (s.at && (s.at[0] !== s.lng || s.at[1] !== s.lat)) transfers.push(s.lng, s.lat, s.at[0], s.at[1]);
+  }
+  for (const p of b.ferry?.ports ?? []) spurs.push(...p.landing, ...p.berth);
+  const marks = b.ferry ? b.ferry.ports.flatMap((p) => p.berth) : b.stops.flatMap((s) => [s.lng, s.lat]);
+  const n = marks.length / 2;
+  const runs = st.status === "running" && Math.max(l.tph.high, l.tph.medium, l.tph.low) > 0 && st.stopS.length === 2 && st.stopS.every((s) => s.length === n);
+  return { id: l.num, colour: l.colour, built: b.built, route: b.routeLL, street: b.streetLL, stops, stopIds, transfers, ferry: !!b.ferry, brt: !!b.brt, lanes: b.lanes ?? [], spurs, marks, stopS: runs ? st.stopS : null, oneWay: !!st.loop && st.oneWay, ways: st.oneWayAt ?? {} };
+}
 
 export class BusLayer {
   private gl: WebGL2RenderingContext | null = null;
@@ -569,26 +600,50 @@ export class BusLayer {
 
   /** Take the world's bus lines; true when what is drawn changed. */
   set(w: WorldView | null, hide: ReadonlySet<number> = new Set()): boolean {
+    const was = this.lastW, wasHide = this.lastHide, groups = dotGroups.peek();
     this.lastW = w;
     this.lastHide = hide;
+    // T-4150: an edit that changed no bus line, no BRT station and no passage, the places and the groups as they were
+    if (w && was && w !== was && !this.over && groups === this.lastGroups && sameSet(hide, wasHide) && busPlaces(w) === busPlaces(was) && !this.drawnChanged(was, w)) {
+      if (checkPatches() && this.rebuilt(w, hide)) console.error("T-4150 check: the bus layer kept differs from a whole build");
+      return false;
+    }
+    this.lastGroups = groups;
+    return this.rebuilt(w, hide);
+  }
+
+  /** the distance groups last drawn from */
+  private lastGroups: unknown = null;
+
+  /** Whether an edit from `a` to `b` changed a bus line, a BRT station or the passages (all the layer reads but the places). */
+  private drawnChanged(a: WorldView, b: WorldView): boolean {
+    const d = worldDiff(a, b);
+    if (!d || d.links) return true;
+    for (const id of d.lines) if (a.lineStats[id]?.bus || b.lineStats[id]?.bus) return true;
+    // (a BRT station's dashed joins read every station of its group: where they are and whether they are built)
+    const groups = dotGroups.peek();
+    for (const [x, y] of d.stations.values()) {
+      if (x?.brt || y?.brt) return true;
+      const g = groups?.of.get((y ?? x)!.id), members = g !== undefined ? groups!.members.get(g) : undefined;
+      // (T-4150 stage 2: the world's stations by id only for a group of more than the station itself)
+      if (members && members.length > 1 && members.some((id) => stationsById(b).get(id)?.brt)) return true;
+    }
+    return false;
+  }
+
+  /** The layer's lines from the world; true when what is drawn changed. */
+  private rebuilt(w: WorldView | null, hide: ReadonlySet<number>): boolean {
     const next: BusSource[] = [], nextLinks: LinkSource[] = [];
     if (w) {
       for (const l of w.save.lines) {
-        const b = w.lineStats[l.id]?.bus;
+        const st = w.lineStats[l.id], b = st?.bus;
         // T-3420: a line the player hid is not drawn
         if (!b || b.routeLL.length < 4 || hide.has(l.num)) continue;
-        const stops: number[] = [], spurs: number[] = [], stopIds: number[] = [], transfers: number[] = [];
-        // a ferry's stops are its ports, drawn as the stations they are
-        if (!b.ferry) for (const s of b.stops) {
-          stops.push(s.lng, s.lat, s.kind);
-          stopIds.push(s.id);
-          if (s.at && (s.at[0] !== s.lng || s.at[1] !== s.lat)) transfers.push(s.lng, s.lat, s.at[0], s.at[1]);
-        }
-        for (const p of b.ferry?.ports ?? []) spurs.push(...p.landing, ...p.berth);
-        const marks = b.ferry ? b.ferry.ports.flatMap((p) => p.berth) : b.stops.flatMap((s) => [s.lng, s.lat]);
-        const st = w.lineStats[l.id], n = marks.length / 2;
-        const runs = st.status === "running" && Math.max(l.tph.high, l.tph.medium, l.tph.low) > 0 && st.stopS.length === 2 && st.stopS.every((s) => s.length === n);
-        next.push({ id: l.num, colour: l.colour, built: b.built, route: b.routeLL, street: b.streetLL, stops, stopIds, transfers, ferry: !!b.ferry, brt: !!b.brt, lanes: b.lanes ?? [], spurs, marks, stopS: runs ? st.stopS : null, oneWay: !!st.loop && st.oneWay, ways: st.oneWayAt ?? {} });
+        // T-4150 stage 2: a line's source is made again only when its row or figures are other objects (`transfers` gets
+        // the stop links' dashes below, so each draw has its own copy)
+        let k = sourceOf.get(st);
+        if (!k || k.l !== l || checkPatches()) sourceOf.set(st, (k = { l, src: busSource(l, st, b) }));
+        next.push({ ...k.src, transfers: k.src.transfers.slice() });
       }
       // T-4147: a route drawn ahead replaces the line's, with no stops (the sim places them) until the world holds it
       for (const [num, o] of this.over ?? []) {
@@ -599,7 +654,7 @@ export class BusLayer {
         else next.push(line);
       }
       // T-2992: a plain stop within demand's merge of another line's stop at a train station
-      const links = busStopLinks(w.save.lines.flatMap((l) => { const b = w.lineStats[l.id]?.bus; return b && !b.ferry ? [{ line: l.num, stops: b.stops }] : []; }));
+      const links = stopLinksOf(w.save.lines.flatMap((l) => { const b = w.lineStats[l.id]?.bus; return b && !b.ferry ? [{ line: l.num, stops: b.stops }] : []; }));
       const byNum = new Map(next.map((x) => [x.id, x]));
       for (let i = 0; i + 4 < links.length; i += 5) byNum.get(links[i])?.transfers.push(links[i + 1], links[i + 2], links[i + 3], links[i + 4]);
       // T-3890: the connectors between stops that connect, both lines drawn
@@ -608,14 +663,14 @@ export class BusLayer {
         if (la && lb) nextLinks.push({ at: [k.a.lng, k.a.lat, k.b.lng, k.b.lat], lines: [k.a.line, k.b.line], stops: [k.a.id, k.b.id], bp: !la.built || !lb.built, walk: k.walk });
       }
       // T-4079: a BRT station's joins with no passage, lit with the station's stop (its id the station's node)
-      for (const [a, b] of brtJoins(w, dotGroups.peek()?.members ?? [])) nextLinks.push({ at: [a.lng, a.lat, b.lng, b.lat], lines: [-2, -2], stops: [a.num, b.num], bp: !a.built || !b.built, walk: true });
+      for (const [a, b] of brtJoins(w, dotGroups.peek()?.members.values() ?? [])) nextLinks.push({ at: [a.lng, a.lat, b.lng, b.lat], lines: [-2, -2], stops: [a.num, b.num], bp: !a.built || !b.built, walk: true });
     }
     const was = this.lines;
     const sameS = (a: number[][] | null, b: number[][] | null) => a === b || (!!a && !!b && a.length === b.length && a.every((s, k) => sameNums(s, b[k])));
     const sameLinks = this.linkSrc.length === nextLinks.length && this.linkSrc.every((x, i) => sameNums(x.at, nextLinks[i].at) && sameNums(x.stops, nextLinks[i].stops) && x.bp === nextLinks[i].bp);
     if (sameLinks && was.length === next.length && was.every((x, i) => {
       const y = next[i];
-      return x.id === y.id && x.colour === y.colour && x.built === y.built && x.brt === y.brt && x.oneWay === y.oneWay && sameNums(x.lanes, y.lanes) && sameNums(x.route, y.route) && sameNums(x.street, y.street) && sameNums(x.stops, y.stops) && sameNums(x.transfers, y.transfers) && sameNums(x.spurs, y.spurs) && sameNums(x.marks, y.marks) && sameS(x.stopS, y.stopS);
+      return x.id === y.id && x.route === y.route && x.stopS === y.stopS && x.lanes === y.lanes && x.street === y.street && x.stops === y.stops && x.marks === y.marks && x.spurs === y.spurs && x.colour === y.colour && x.built === y.built && x.brt === y.brt && x.oneWay === y.oneWay && sameNums(x.transfers, y.transfers) || x.id === y.id && x.colour === y.colour && x.built === y.built && x.brt === y.brt && x.oneWay === y.oneWay && sameNums(x.lanes, y.lanes) && sameNums(x.route, y.route) && sameNums(x.street, y.street) && sameNums(x.stops, y.stops) && sameNums(x.transfers, y.transfers) && sameNums(x.spurs, y.spurs) && sameNums(x.marks, y.marks) && sameS(x.stopS, y.stopS);
     })) return false;
     this.lines = next;
     this.linkSrc = nextLinks;
@@ -887,7 +942,7 @@ export class BusLayer {
     // corridor widened by half the outline and 0 inside it narrowed by half, so what stays 1 is a ring
     // along the edge, however the segments and caps overlap; the colour pass then draws the ring once
     // (the stencil goes to 0 where it draws).
-    if (this.byId.has(s.sel) && s.sel !== this.muted && !this.byId.get(s.sel)!.ferry && (gl.getParameter(gl.STENCIL_BITS) ?? 0) > 0) {
+    if (this.byId.has(s.sel) && s.sel !== this.muted && !this.byId.get(s.sel)!.ferry && (s.stencil ?? (gl.getParameter(gl.STENCIL_BITS) ?? 0) > 0)) {
       const edge = 2 * CORRIDOR_M * (b.k.get(s.sel) ?? 1) * pxPerUnitAt(zoom) * dpr, half = 0.5 * OUTLINE_PX * dpr;
       gl.uniform1i(u.u_pass, 2);
       gl.uniform1i(u.u_only, s.sel);
@@ -976,7 +1031,7 @@ export class BusLayer {
    * stencil a segment's band is cut out of its own middle only. */
   private drawLanes(b: Built, s: BusStyle, bus: number, dpr: number, zoom: number) {
     const gl = this.gl!, u = this.su;
-    const stencil = (gl.getParameter(gl.STENCIL_BITS) ?? 0) > 0;
+    const stencil = s.stencil ?? (gl.getParameter(gl.STENCIL_BITS) ?? 0) > 0;
     gl.uniform1i(u.u_pass, 5);
     gl.uniform1i(u.u_only, -1);
     gl.uniform1f(u.u_width, bus);
@@ -1302,5 +1357,7 @@ export function busStopTip(w: WorldView, line: number, end: boolean, stop?: numb
   const way = l && stop !== undefined && stop >= 0 ? w.lineStats[l.id]?.oneWayAt[String(stop)] : undefined;
   const at = way !== undefined && ov ? l && w.lineStats[l.id]?.bus?.stops.find((x) => x.id === stop) : undefined;
   const others = stop !== undefined && stop >= 0 ? [...new Set(busPlaceOf(w, stop)?.stops.map((s) => s.line) ?? [])].filter((n) => n !== line) : [];
-  return [end ? t("busLayer.endOfLine") : t("busLayer.busStop"), nameRow(w, line, at && ov && way !== undefined ? headingAtPlane(ov, at.x, at.y, way) : null), ...others.map((n) => nameRow(w, n))];
+  // T-4080: a stop the player named shows its name where the tag says "Bus stop"
+  const own = !end && stop !== undefined && stop >= 0 ? namedBusStops(w).get(String(stop)) : undefined;
+  return [end ? t("busLayer.endOfLine") : own ?? t("busLayer.busStop"), nameRow(w, line, at && ov && way !== undefined ? headingAtPlane(ov, at.x, at.y, way) : null), ...others.map((n) => nameRow(w, n))];
 }

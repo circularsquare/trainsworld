@@ -45,6 +45,7 @@ impl TrackApi {
         }
         let id = self.w.net.buildings.len() as u32;
         self.w.net.buildings.push(Some(Building { name: name.trim().to_string(), corners: c }));
+        self.kept.note_extras();
         self.building_last = (id, price);
         0
     }
@@ -63,6 +64,7 @@ impl TrackApi {
             return 1;
         }
         self.w.net.buildings[id as usize].as_mut().unwrap().corners = c;
+        self.kept.note_extras();
         self.building_last = (u32::MAX, price);
         0
     }
@@ -84,6 +86,7 @@ impl TrackApi {
             return self.refuse(Issue::NoSuchBuilding { building: id });
         }
         self.w.net.buildings[id as usize] = None;
+        self.kept.note_extras();
         self.issues.clear();
         self.money_short = None;
         0
@@ -426,6 +429,29 @@ mod tests {
         assert_eq!(c.adopt_old_names(&[st[0]]), 0);
         assert_eq!(c.station_own(st[0]), "Central / Main");
         assert!(!c.can_undo(), "not on undo");
+    }
+
+    /// The line panel's Rename stations: each station takes its name the way its kind says, all as one
+    /// undo; a node met twice keeps both changes; empty names are skipped.
+    #[test]
+    fn stations_rename_together() {
+        let (mut a, st) = net();
+        assert_eq!(a.set_station_bound(st[1], false), 0, "{}", a.issues());
+        let names = ["Hub", "East Gate", "Westside", "", "Low Hall"].map(String::from).to_vec();
+        assert_eq!(a.rename_stations(&[st[0], st[1], st[2], st[3], st[1]], names, &[2, 0, 1, 2, 0]), 0, "{}", a.issues());
+        assert_eq!(a.node_name(st[0]), "Hub");
+        assert_eq!((a.station_own(st[1]), a.node_name(st[1])), ("Low Hall".to_string(), "East".to_string()), "the later name, the stored one kept");
+        assert_eq!((a.station_own(st[2]), a.node_name(st[2])), ("Westside".to_string(), "Westside".to_string()));
+        assert_eq!(a.node_name(st[3]), "Low", "an empty name is skipped");
+        assert_eq!(a.named_stations(), vec![st[0], st[2]]);
+        // a node met twice in one call: its own name and its typed name both change
+        assert_eq!(a.rename_stations(&[st[1], st[1]], vec!["Gate".into(), "East Hall".into()], &[0, 2]), 0);
+        assert_eq!((a.station_own(st[1]), a.node_name(st[1])), ("Gate".to_string(), "East Hall".to_string()));
+        a.undo();
+        a.undo();
+        assert_eq!((a.node_name(st[0]), a.node_name(st[2])), ("Central / Main".to_string(), "West".to_string()), "one undo each");
+        assert_eq!((a.station_own(st[1]), a.station_own(st[2])), ("East".to_string(), String::new()));
+        assert_eq!(a.rename_stations(&[st[0]], vec![String::new()], &[2]), 0, "nothing to do");
     }
 
     /// After T-2193: a save with ferries and buildings writes LFR3 then BLD1 and loads both; the

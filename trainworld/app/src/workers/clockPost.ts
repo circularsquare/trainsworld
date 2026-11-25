@@ -4,17 +4,18 @@ import { TrackApi } from "../wasm/track/sim"; // the track model only (T-051)
 import { anchor, EARTH_C, makeAnchor, toMerc01, type Anchor } from "../map/geo";
 import { type NetworkBuffers } from "../map/network";
 import { besideSamples } from "../map/corridors";
+import { sameCorridor } from "../map/lineBands";
 import { bandEdges, diagramGraph, type DiagramGraph } from "../diagram/graph";
 import { nodeLngLat, regionGroups } from "../diagram/regions";
 import { busGraph, stopsIn } from "../diagram/busGraph";
 import { cutLines } from "../diagram/cut";
 import { StrokeSender, strokesOfPieces, type StrokeKind, type StrokeMode } from "../map/strokePost";
 import { NO_CITIES } from "./saveFile";
-import { StateRows } from "./stateRows";
-import type { ClockEdge, ClockLine, ClockNode, ClockState, MoneyPatch, MoneyState } from "./protocol";
+import { StateRows, weekendsOf } from "./stateRows";
+import type { ClockEdge, ClockLine, ClockNode, ClockState, EditTouched, MoneyPatch, MoneyState } from "./protocol";
 import { diffValue } from "./valuePatch";
 import { complexOfNodes } from "./clockDemand";
-import { diagramIn, edgeMerc, rowEnv } from "./clockMain";
+import { diagramIn, drawnAllMoved, edgeMerc, pathsAllMoved, pathsMoved, pathsPosted, rowEnv, stateRows } from "./clockMain";
 import { diagramCities, diagramInside, frame, send, timing } from "./clockState";
 
 // ---------------------------------------------------------------- the network diagram's graph (T-2159)
@@ -166,6 +167,8 @@ export const posted = {
   arrays: new Map<string, ArrayBufferView>(),
   edges: new Map<number, ClockEdge>(), nodes: new Map<number, ClockNode>(), lines: new Map<number, ClockLine>(),
   edgeIds: [] as number[], nodeIds: [] as number[], lineIds: [] as number[],
+  /** T-4291: the first rows read (workers/rowLog.ts) the client has not had, once a state was posted */
+  read: undefined as number | undefined,
 };
 export const sender = new StrokeSender();
 export function postWhole() {
@@ -174,6 +177,7 @@ export function postWhole() {
   posted.arrays.clear();
   posted.edges.clear(); posted.nodes.clear(); posted.lines.clear();
   posted.edgeIds = []; posted.nodeIds = []; posted.lineIds = [];
+  posted.read = undefined;
   moneyHeld = null;
 }
 
@@ -221,12 +225,14 @@ export function sameBytes(a: ArrayBufferView | undefined, b: ArrayBufferView): b
 export function keepPosted(k: string, v: ArrayBufferView) {
   posted.arrays.set(k, (v as Float32Array).slice());
 }
-/** the phase tables of the rows (`StateRows.phases`) are kept by reference, since the rows never
- * change that array, and a copy is posted */
+/** arrays kept by reference and posted as a copy: their makers keep them as they are, never changed in place, and hand
+ * out the same array while unchanged: the rows' phase tables (`StateRows.phases`) and the bands' Traffic table (T-4187,
+ * `LineBands.corridor`, which the bands read again) */
+const BY_REFERENCE: ReadonlySet<SameField> = new Set(["phases", "corridor"]);
 function keepPostedField(out: NetworkBuffers, k: SameField, v: ArrayBufferView) {
-  if (k !== "phases") return keepPosted(k, v);
+  if (!BY_REFERENCE.has(k)) return keepPosted(k, v);
   posted.arrays.set(k, v);
-  out.phases = (v as Float32Array).slice();
+  (out as Record<SameField, unknown>)[k] = (v as Float32Array).slice();
 }
 /** the phase tables of a state that does not use them (the network's are posted as changes) */
 export const NO_PHASES = new Float32Array(0);
@@ -279,6 +285,8 @@ export function netForPost(n: NetworkBuffers, scratch?: NetworkBuffers): Network
       if (k === "phases" ? posted.arrays.get(k) === v : sameBytes(posted.arrays.get(k), v)) {
         patch.same.push(k);
         (out as Record<SameField, unknown>)[k] = undefined;
+        // (T-4187: the maker's new array alike, held in place of the last, which it no longer keeps)
+        if (BY_REFERENCE.has(k)) posted.arrays.set(k, v);
       } else keepPostedField(out, k, v);
     }
     timing.pSame = performance.now() - ts0;
@@ -325,6 +333,11 @@ function checkNet(n: NetworkBuffers, full: NetworkBuffers) {
   for (const k of Object.keys(full) as (keyof NetworkBuffers & string)[]) {
     if (k === "serial" || k === "patch" || k === "anchor") continue;
     const a = n[k], b = full[k];
+    // (T-4153: the Traffic table numbers its ribbons and recipes as they came, a build from scratch as the lines use them)
+    if (k === "corridor") {
+      if (!(a instanceof Float32Array) || !(b instanceof Float32Array) || !sameCorridor(a, b)) bad.push(k);
+      continue;
+    }
     if (k === "edgePts") {
       const x = a as Map<number, Float32Array>, y = b as Map<number, Float32Array>;
       if (x.size !== y.size || [...x.keys()].join() !== [...y.keys()].join() || [...y].some(([id, p]) => !sameBytes(x.get(id), p))) bad.push(k);
@@ -340,11 +353,19 @@ function checkNet(n: NetworkBuffers, full: NetworkBuffers) {
  * line not running) runs a trial that moves headway lines a little, so with one the lines are not
  * compared here; checks/t1382-rows.mjs compares them with two models. */
 export function checkRows(got: { edges: ClockEdge[]; nodes: ClockNode[]; lines: ClockLine[] }, a: TrackApi, ups: Map<number, number>) {
-  const full = new StateRows().read(a, rowEnv, frame, ups);
+  const fresh = new StateRows(), full = fresh.read(a, rowEnv, frame, ups);
   const planned = got.lines.some((l) => l.ok && !l.running);
   const keys: ("edges" | "nodes" | "lines")[] = planned ? ["edges", "nodes"] : ["edges", "nodes", "lines"];
   const bad = keys.filter((k) => !sameValue(got[k], full[k]));
   if (bad.length) console.error(`T-1382 check: the ${bad.join(", ")} read from changes differ from a full read`);
+  // T-4300: the complexes the names were folded by, and what renames read of them, against the whole read's
+  const cx = stateRows.complexesDiffer(a, rowEnv), names = stateRows.namesDiffer(fresh);
+  if (cx) console.error(`T-4300 check: the station rows' complexes kept from changes differ from a whole build (${cx})`);
+  if (names) console.error(`T-4300 check: the complexes' names kept from changes differ from a full read's (${names})`);
+  // T-4149: the weekends read for many lines at once, the track limits shared, against each line's own reads
+  const ids = got.lines.map((l) => l.id), many = weekendsOf(a, ids);
+  const off = ids.filter((id) => { const [w, r] = many.get(id)!; return !sameBytes(w, a.line_weekend(id)) || !sameBytes(r, a.line_row_weekend(id)); });
+  if (off.length) console.error(`T-4149 check: the weekends of lines ${off.slice(0, 8).join(", ")} read together differ from each line's own`);
 }
 
 /** Rows field for field, arrays and typed arrays by value. */
@@ -365,8 +386,8 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /** The rows that differ from those last posted, with every row's id in order (null when the ids
- * are as last posted); `posted` takes the new rows. */
-function rowsDelta<T extends { id: number }>(rows: T[], by: Map<number, T>, ids: number[]): { ids: number[] | null; rows: T[] } {
+ * are as last posted), and the ids of those gone; `posted` takes the new rows. */
+function rowsDelta<T extends { id: number }>(rows: T[], by: Map<number, T>, ids: number[]): { ids: number[] | null; rows: T[]; gone: number[] } {
   const changed: T[] = [];
   let sameIds = rows.length === ids.length;
   for (let i = 0; i < rows.length; i++) {
@@ -380,36 +401,97 @@ function rowsDelta<T extends { id: number }>(rows: T[], by: Map<number, T>, ids:
     by.set(r.id, r);
   }
   // `by` holds every row now, and only those gone besides: there are some exactly when it holds more
+  const gone: number[] = [];
   if (by.size > rows.length) {
     const now = new Set<number>();
     for (const r of rows) now.add(r.id);
-    for (const id of by.keys()) if (!now.has(id)) by.delete(id);
+    for (const id of by.keys()) if (!now.has(id)) { by.delete(id); gone.push(id); }
   }
-  return { ids: sameIds ? null : rows.map((r) => r.id), rows: changed };
+  return { ids: sameIds ? null : rows.map((r) => r.id), rows: changed, gone };
+}
+
+/** T-4291: `rowsDelta` from the rows reads since the client's last (`RowLog.since`): only the rows they changed are looked at
+ * (`now`: a row as the last read handed it out), and the ids in order are sent only where some came, went or moved */
+function loggedDelta<T extends { id: number }>(rows: T[], by: Map<number, T>, ids: ReadonlySet<number>, order: boolean, now: (id: number) => T | undefined): { ids: number[] | null; rows: T[]; gone: number[] } {
+  const changed: T[] = [], gone: number[] = [];
+  for (const id of ids) {
+    const r = now(id), was = by.get(id);
+    if (r) {
+      if (r === was) continue;
+      if (!sameValue(was, r)) changed.push(r);
+      by.set(id, r);
+    } else if (was) { by.delete(id); gone.push(id); }
+  }
+  return { ids: order ? rows.map((r) => r.id) : null, rows: changed, gone };
+}
+
+/** T-4291's check (`?patch=check`): after a delta from the log, what the client holds (`posted`) is the state's rows */
+function checkLogged(s: ClockState, d: { ids: number[] | null }[]) {
+  const bad: string[] = [];
+  (["edges", "nodes", "lines"] as const).forEach((k, j) => {
+    const rows = s[k] as { id: number }[], by = posted[k] as Map<number, unknown>, ids = d[j].ids ?? posted[k === "edges" ? "edgeIds" : k === "nodes" ? "nodeIds" : "lineIds"];
+    if (by.size !== rows.length || ids.length !== rows.length || rows.some((r, i) => by.get(r.id) !== r || ids[i] !== r.id)) bad.push(k);
+  });
+  if (bad.length) console.error(`T-4291 check: the ${bad.join(", ")} posted from the rows' log differ from the state's`);
+}
+
+/** T-4149: a state's `touched` from its rows' deltas and the lines whose runs moved; the drawn runs' list starts again
+ * once a network is posted, the phase tables' (T-4280) once a state carrying them is */
+function touchedOf(s: ClockState, ...d: { rows: { id: number }[]; gone: number[] }[]): EditTouched {
+  // (a line whose row is gone has no drawn runs)
+  for (const id of d[2].gone) pathsMoved.add(id);
+  const [edges, nodes, lines] = d.map((x) => [...x.rows.map((r) => r.id), ...x.gone]);
+  const every = (kept: Set<number>) => [...new Set([...kept, ...s.lines.map((l) => l.id)])];
+  const paths = pathsAllMoved ? every(pathsMoved) : [...pathsMoved];
+  const phases = stateRows.phasesAll ? every(stateRows.phasesMoved) : [...stateRows.phasesMoved];
+  const t: EditTouched = drawnAllMoved ? touchedAll() : { edges, nodes, lines, paths, phases };
+  listsPosted(s);
+  return t;
+}
+const touchedAll = (): EditTouched => ({ all: true, edges: [], nodes: [], lines: [], paths: [], phases: [] });
+/** the lists `touched` is made from start again with what state `s` posts */
+function listsPosted(s: ClockState) {
+  if (s.net) pathsPosted();
+  if (s.net || s.service) stateRows.phasesPosted();
 }
 
 /** Post a state, its edges, nodes and lines as only those that changed since the last state posted
  * (T-648, T-1029: copying them to the main thread and back into objects was most of a state's time
  * there on a big network). */
 export function postState(s: ClockState, transfer: Transferable[]) {
+  const read = s.rowsRead;
+  delete s.rowsRead;
   if (patchMode === "0" || !posted.edgeIds.length && !posted.nodeIds.length && !posted.lineIds.length) {
     rowsDelta(s.edges, posted.edges, posted.edgeIds);
     rowsDelta(s.nodes, posted.nodes, posted.nodeIds);
     rowsDelta(s.lines, posted.lines, posted.lineIds);
     posted.edgeIds = s.edges.map((e) => e.id); posted.nodeIds = s.nodes.map((n) => n.id); posted.lineIds = s.lines.map((l) => l.id);
-    send({ kind: "state", state: { ...s, ...moneyPost(s.money!) } }, transfer);
+    posted.read = read === undefined ? undefined : read + 1;
+    listsPosted(s);
+    send({ kind: "state", state: { ...s, ...moneyPost(s.money!), touched: touchedAll() } }, transfer);
     return;
   }
   const t0 = performance.now();
-  const de = rowsDelta(s.edges, posted.edges, posted.edgeIds), dn = rowsDelta(s.nodes, posted.nodes, posted.nodeIds), dl = rowsDelta(s.lines, posted.lines, posted.lineIds);
+  // T-4291: the rows the reads since the client's last changed, when this state holds the last read's lists; else every row
+  // compared (a state built before a later read, a whole read among them, `?patch=walk`)
+  const since = read !== undefined && read === stateRows.lastRead && posted.read !== undefined && patchMode !== "walk" ? stateRows.log.since(posted.read) : null;
+  const [de, dn, dl] = since
+    ? [loggedDelta(s.edges, posted.edges, since.ids[0], since.order[0], (id) => stateRows.edgeNow(id)), loggedDelta(s.nodes, posted.nodes, since.ids[1], since.order[1], (id) => stateRows.nodeNow(id)),
+      loggedDelta(s.lines, posted.lines, since.ids[2], since.order[2], (id) => stateRows.lineNow(id))]
+    : [rowsDelta(s.edges, posted.edges, posted.edgeIds), rowsDelta(s.nodes, posted.nodes, posted.nodeIds), rowsDelta(s.lines, posted.lines, posted.lineIds)];
+  if (patchMode === "check" && since) checkLogged(s, [de, dn, dl]);
+  posted.read = read === undefined ? undefined : read + 1;
   if (de.ids) posted.edgeIds = de.ids;
   if (dn.ids) posted.nodeIds = dn.ids;
   if (dl.ids) posted.lineIds = dl.ids;
   const full = patchMode === "check" ? { edges: s.edges, nodes: s.nodes, lines: s.lines } : undefined;
+  const touched = touchedOf(s, de, dn, dl);
   const t1 = performance.now(), money = moneyPost(s.money!), t2 = performance.now();
-  send({ kind: "state", state: { ...s, ...money, edges: [], nodes: [], lines: [], delta: { edges: de, nodes: dn, lines: dl }, ...(full ? { checkRows: full } : {}) } }, transfer);
   // T-4149: the post's parts, for the edit's answer
-  timing.pRows = t1 - t0; timing.pMoney = t2 - t1; timing.pSend = performance.now() - t2;
+  timing.pRows = t1 - t0; timing.pMoney = t2 - t1;
+  const delta = { edges: { ids: de.ids, rows: de.rows }, nodes: { ids: dn.ids, rows: dn.rows }, lines: { ids: dl.ids, rows: dl.rows } };
+  send({ kind: "state", state: { ...s, ...money, edges: [], nodes: [], lines: [], delta, touched, ...(full ? { checkRows: full } : {}) }, ...(import.meta.env.DEV ? { timing: { ...timing } } : {}) }, transfer);
+  timing.pSend = performance.now() - t2;
 }
 export function putDiagramOn(v: typeof diagramOn) { diagramOn = v; }
 export function putDiagramWhole(v: typeof diagramWhole) { diagramWhole = v; }

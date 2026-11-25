@@ -25,7 +25,9 @@ city's everyday purposes (timings: notes/demand-measurements.md). A zone's **mar
 solving workers once the zone is reached, a built station lies within 30 km of its box (T-396's
 rule, per zone), or the zone is selected (a zone selection, or a bubble selection in it); never for
 viewing alone (T-801: tens of MB in every solving worker); before that no solve waits for it or covers it,
-and a solve sent without a market pack open since is sent again. The workers compose the market
+and a solve sent without a market pack open since is sent again. While a game load's network is on its way no solve
+is sent (T-4199): the network in hand is the last game's, and a solve of it with the packs opened ahead ended the
+load's focus pool at its final; the load's own solve covers them. The workers compose the market
 from the packs they hold (`MarketPacks.market`) whenever packs open or close: since T-1204 a
 composition is 15-90 ms natively for one to seven packs (the first a worker composes 0.3 s more),
 and the page still sends the
@@ -144,7 +146,7 @@ reports nothing counts as 4 GB, `deviceGB`). A game's first fine set is
 the save's (`demandFine` in its header, kept current by the page), else every zone that fits the
 budget, the zone in view first, then the zones on screen, then the nearest. A level change is a
 close and reopen: the pack downloads again (the browser's cache) and each solving worker opens it at
-its new level, one whose solve in hand covers the zone once that solve ends; the shown figures stay
+its new level (the aux worker keeps its copy, so the zone's cells are kept and asked of it meanwhile, T-4265), one whose solve in hand covers the zone once that solve ends; the shown figures stay
 until a solve covers it at its new level (`flush` sends one as for a zone newly opened), the zone
 counting as open for the loading bar meanwhile. Zones changed in one check reopen together, so one
 solve covers them. That solve is a **local refine** (T-1609, notes/T-1609.md):
@@ -223,10 +225,10 @@ periods had that round and ahead of its last result for it; the client adds them
 round is published. Before a solve's last round only the zones on screen's go (`view`; T-2596: all 82
 of a big save's took each worker about 4 s a round), at the last round every zone's, so a zone panned
 into view mid-solve gets its bubbles a round later (`?perfOff=allSums`: every zone each round). They
-are a weekday's; for the zone in view and the nearby zones (`view`, sent
-by the page whenever they or the day shown change) the day shown's too (`sub_sums_day`, T-1904),
-since the average day is the default and without them its bubbles waited a round behind the
-figures (notes/T-1904.md). The commuters by mode per cell (`cell_modes`) read only those sums and the
+are the day shown's (`sub_sums_day`, the average day by default, T-1904, notes/T-1904.md), and for the
+zone in view and the nearby zones (`view`, sent by the page whenever they or the day shown change)
+the weekday's too. The page keeps each zone's sums of the final it shows until a newer final of
+that zone is shown (T-4265, `keepShownSums`), the solve's own rounds beside them. The commuters by mode per cell (`cell_modes`) read only those sums and the
 network's subzones, so the worker with no periods answers them whatever round the others are in.
 Stations, selections, transfers, trips and longer-trip queries read a period's state, so a worker
 answers them only at a round all its periods hold; a selection's far end spread (`flows`) reads
@@ -248,6 +250,14 @@ asked for at once, so each publish finds its answer waiting, and the final repla
 A worker already past the round asked about answers nothing and the question goes to the newer
 round. After an edit questions about a zone being solved wait for its final (the workers hold a
 network the map does not show yet); others are answered at once ("Clusters" below). T-327, notes/T-327.md.
+Its bubbles do not wait (T-4265, notes/T-4265.md): they are drawn from the sums the page kept of the
+final it shows, and the aux worker maps those onto cells while the zone's network has the subzones of
+that final (every network it was set on since its layout last changed, `layoutSpan`, Rust
+`layout_kept`; else the bubbles wait as before). Their trips with other places, the airports' across the zone line
+included, are the last answered for the zone and day (`lastReg`, `lastAir`, T-4277), none for a zone not drawn
+since the game loaded, since the workers' market no longer holds that final either (the solving workers are not
+asked: an answer would wait behind a pass and come back empty). A
+station's riders, a bubble selection, a zone's trips by length and one purpose's bubbles still wait.
 
 ## Clusters
 
@@ -376,7 +386,7 @@ zone in view's first (T-393), then the city view's zone's (T-2453), each to its 
 period after period, each through all its rounds (T-2624, `?perfOff=wholeSteps` off: round after round; periods
 share no rider, so the figures are the same), each period's final sent as it lands (`cluster.step`); where no local
 result of the solve was shown (none solved, or a solve restarted by T-3925) the page shows them as the local
-result's steps (below). Each cluster but the last is sent as soon as it is
+result's steps (below), a line priced at other fares than shown (a fare edit) keeping its shown figures until the final (T-3303). Each cluster but the last is sent as soon as it is
 done, as one result per period with that cluster's figures alone (`result.cluster`), and the page
 puts its lines, their stations, its zones' views and, if the market is in it, the regional market's
 into the shown result at once. The network-wide totals wait for the solve's final: once every
@@ -396,13 +406,13 @@ untouched cities still hold what they last solved: only the city populations who
 station or stop of theirs added, removed or moved, their lines' trains changed; run times within 1%,
 trains an hour within 5% and a stop's service span (the share of riders with a train due) within 0.06,
 one train a day more or less, count as unchanged), through their rounds and the capacity fit. A
-period every population of the cluster holds from its last whole solve on the same inputs (setUp's
-test, T-124) is not solved locally: it keeps its figures and its `trail`, and the whole solve after
-keeps it too, so a train change at one level costs that level's periods twice at most, not all five
-(T-3512). A worker whose touched populations took 35% or more of its changed periods' passes in the
-cluster's last whole solve (`passMs`, `LOCAL_SHARE_MAX`) skips the local solve and goes straight to
-the whole one: a one-city game's city is most of its cluster, and the local solve then only put the
-final later (`?perfOff=localSkip`, `?perfOff=localKeep` off). The page then sends `whole` at once, and
+period every population of the cluster holds from its last solve on the same inputs (setUp's test, T-124, or held
+from a local solve, T-2188) is not solved locally: it keeps its figures and its `trail`, and the whole solve after
+keeps it too when it was a whole solve's, so a train change at one level costs that level's periods twice at most, not all five
+(T-3512). For an intercity edit (below, T-2188), a worker whose touched populations took 35% or more of its changed
+periods' passes in the cluster's last whole solve (`passMs`, `LOCAL_SHARE_MAX`) skips the local solve and goes straight
+to the whole one: a one-city game's city is most of its cluster, and the local solve then only put the final later; a
+city edit keeps its local solve, which is its final (`?perfOff=localSkip`, `?perfOff=localKeep` off). The page then sends `whole` at once, and
 a worker still solving locally stops at its next pass, since its local result can no longer be shown
 (dev `?localShare=a,b` sets each solving worker's share, to make two disagree). A population opened
 again at another level has no timed passes until its next whole solve, so the edit after a re-level
@@ -427,6 +437,27 @@ summed from the periods and the lines' stations move by their change. Zones, pur
 label wait for the last step, which is the local result above to the bit. A worker then waits for the page's `whole`, sent 8 s after the
 local results are shown, or at once when a worker solves nothing locally, so an edit following
 within that time is solved locally too; the whole solves follow as above and replace everything.
+**A city edit ends at its local result** (T-2188, notes/T-2188.md, `?perfOff=localEnd` off): an edit is an
+intercity one when, against the network the market part last solved on, it changes what the market's trips pay (the
+fares, a line's own multiple or distance fare, a station's fare zone), switches a line on or off at some level, adds or
+drops a stop on a run of 20 minutes or more, or moves a line's run time end to end by 3 minutes or more in some period (`RUN_SHIFT_MIN`; a train-count edit's dwell
+and shared-track changes stay under it); any other edit is a city edit. One that touches no population past the views' tolerance (more trains on a line at its most trains
+an hour) ends at once with nothing solved. A worker whose edited clusters are all a city edit's says so in its
+`plan` (`final`), and its local solve opens no window (below: the market stays frozen). Once every solving worker has
+said so, the page sends `endLocal` instead of `whole`: each edited cluster keeps its local result as solved on the new
+network (every population's periods solved locally marked `LOCAL`, the market read through the route nodes it last
+solved on), the solve's final goes at once, and the zones it did not touch keep their bubbles' sums. A worker that
+solves nothing locally makes it `whole` as before. So a city edit's "calculating trips" ends with its local result. The lie: until a whole solve, the zones
+the edit did not touch and the market keep the loads they last solved, so they do not react to the edit's crowding,
+and the market keeps its routes. A later local solve takes a period held from a local solve as it is when its inputs
+are unchanged (`keptOf`); the whole solve's period keeping (T-124) never does.
+**The idle refresh** (T-2188, `?perfOff=refresh` off): 2 minutes after the last edit (`REFRESH_IDLE_MS`), with a city
+edit's result shown since the last solve that left no local result anywhere, nothing waiting and the game running (or
+"Recalculate trips while paused" on), the page solves the same network again (`refresh`): each cluster holding a
+period from a local solve (a city edit's, a T-1609 refine) is solved whole in those periods. It is quiet: no status, no
+clock cap, its figures replacing the shown ones when it lands. An edit during it goes as during an edit's whole solve
+(T-3925 below: under 40% done it stops it, and its own solve is then whole, with no local stage; past that it waits
+for the refresh, which then shows as a whole solve does).
 **Stations on no line** (T-2410, `?perfOff=alone` off) are left out of the network demand solves
 (`serviceFromSnapshot`; passages with an end among them too), so building stations ahead of their
 line changes no key and starts no solve; their positions still reach zones, whose packs open ahead
@@ -449,7 +480,7 @@ in one pass a period at the crowding the touched cities' last round ended on, th
 trains' room with them; the old market part gives the same pairs' old loads in one pass at its last
 crowding (`window_loads`), and the result's loads are the frozen market's less those plus the
 window's, each purpose to its own. A shorter edit (a city line, a train count) leaves the whole
-market frozen. The
+market frozen, and so does a city edit (above), whose result is final. The
 window's pairs are taken from the market part's own tables when the new network serves the same
 zones and joins them by track the same way (`set_network_ll_beside`, T-2878), else dealt from
 nothing.
@@ -462,8 +493,8 @@ result too while the first edit since a whole solve last started was sent at mos
 (`LOCAL_CHAIN_MS`, T-3616, notes/T-3616.md, `?perfOff=heldLocal` off), and waits for the final after
 that, so edits coming faster than a slow local solve (all of Japan's, about 2 minutes) never keep a
 whole solve from starting. For the first 10 s of the local solve (`HOLD_QUIET_MS`) a network held
-behind it is taken to go at its local result: no zone is refined aside and the time left counts no
-second solve; after that both as for any hold. A worker replaced meanwhile still re-solves at
+behind it is taken to go at its local result: no zone is refined aside, no edit is solved aside (T-4220) and the time
+left counts no second solve; after that both as for any hold. A worker replaced meanwhile still re-solves at
 once. **A newer edit stops a whole solve under 40% done** (T-3925, notes/T-3925.md, `?perfOff=restart`
 off): once an edit's whole solve has started (`whole` sent, or no worker has a local stage), a network that differs
 from its own (an edit; not a zone opened or at another level) is sent at once, cutting it short, while under 40% of
@@ -472,13 +503,51 @@ waits) and the edits solved one after another without a final (`restartFrom`) be
 ago. So building steadily a final still lands within about two solves of the first edit. Past 40% the held edit's
 local result on top of that final shows its lines sooner than a restarted solve would: the workers stop between
 population passes, as for any newer network, and the cut solve has already put the edited cluster on its network,
-so the restarted solve has no local stage and its lines and zones wait for its final (the zone in view gets no
-aside meanwhile). Its figures equal one solve of the newer network to the bit (`checks/t3925-restart-solve.mjs`).
+so the restarted solve has no local stage and its lines and zones wait for its final (worked out aside meanwhile,
+T-4220, below). Its figures equal one solve of the newer network to the bit (`checks/t3925-restart-solve.mjs`).
 The status tag's bar starts from 0 with each restarted solve (`solveRestarted`). So building steadily, a whole solve lands about every local solve plus whole
 solve (a line a minute on 2 workers: all of China every 60-90 s, all of Japan every 19-26 minutes), and an edit made
-during one past that point shows its figures when it has landed and the local solve on top is done (the zone in
-view's sooner, from a worker aside: "The zone in view aside" below). A solve with the barrier (a load, a zone just
-opened) is still cut short by any newer network.
+during one past that point shows its figures when it has landed and the local solve on top is done (worked out
+sooner aside, T-4220, below). A solve with the barrier (a load, a zone just opened) is still cut short by any newer
+network.
+**An edit solved aside** (T-4220, notes/T-4220.md, `?perfOff=editAside` off). A whole solve without the barrier first
+sends what each solving worker holds of the figures on screen (`shown`, each worker its own periods; the page keeps it
+in `ShownStore`, merged by population and period with one copy of each view, until a final). With several solving
+workers a local stage first copies its touched populations, and sends that copy in their place when `whole` came as the
+plans did (one worker solves nothing locally, so no local result shows). An edit made during it, held behind it (`firm`,
+not one taken to go at its local result) or its own network when it shows no local result (after a T-3925 cut, an edit
+solved whole at once, or a worker with no local stage sending all to the whole solve), is solved in a pool of its own
+(`apool`, one worker however many solve in the main pool, up to `ASIDE_MAX_ZONES` 5 zones): its touched zones, every
+period they need, against stand-ins of the rest made from that snapshot, the main pool's solves untouched.
+It starts `ASIDE_QUIET_MS` (1 s) after the last edit, once the running solve's snapshot is in from every solving worker
+and its time left is known; one at a time, for the newest network, so edits arriving together, or during one, share the
+next. Refused, the wait staying as before: a small or
+address-limited device, `?split=1`, fares changed since the figures on screen, an intercity edit, more than 5 zones
+fresh, a fresh zone held at another level now, an edit that joins or splits clusters, memory (the pool's worker, the
+snapshot and the fresh zones' `zoneGB` past 95% of the budget, as `memShort` counts), and an expected time (the
+snapshot's pass times of the periods it solves, plus opening its zones) not under 0.7 (`ASIDE_GAIN`) of the main
+pool's to the edit's lines (the solve's time left, and for a held edit its local stage after). The pool stays across
+edits while a whole solve runs and it holds a zone; a final shown, or a side job ending, with no whole solve running
+ends it, as do a game load, the main pool showing a final of the side job in hand's network or a newer one (with none in
+hand, the last one's: its figures could no longer be shown, so a hung or slow side job ends there too), and T-2605's
+refine wanted while no side job is in hand or about to be decided. It answers no question. After the pool fails, none
+starts until the next whole solve's snapshot; after `ASIDE_FAILS` (2) failures, none until another game.
+**Its figures** go on screen at its end over the main pool's, which the page keeps apart (`mainDays`: every publish
+of the main pool merges there and goes under them): in each of its clusters the lines a fresh zone's population sees
+(its `reachView`) and any the figures on screen have none for on their stops, trains and cars, with their stations
+and purpose entries, and the fresh zones' own views; lines its network removed go. The totals, the market's figures,
+the other zones and lines, the bubbles, questions (a station's panel, the trip planner: still the main pool's) and
+"Calculating trips" stay as they are; its lines read as worked out. Not shown when a newer network came meanwhile (an
+undo or another edit: the next side job covers it), another game came, or the main pool has already shown a final of
+its network or a newer one in that cluster. They stay over the main pool's results of older networks (the running
+solve's final included) and go, cluster by cluster, once the main pool shows a final of their network or a newer one
+there; a later side job's replace them whole, and a newer network's plan that finds one of their fresh zones as on
+screen (the edit there undone) takes that cluster's away at once. Once a newer network's side job is decided and shows
+nothing (refused, failed, or not shown with that network still the newest), they all go: they may be of an edit since
+undone or changed again, and nothing else would replace them before the main pool's result (T-4307). They go too when
+the kinds of day made change (a superholiday near or gone). What is kept reads the main pool's figures alone
+(`mainDemandByDay`): money, the boarding account's riders, points, achievements and stars. So while a side job's figures
+show, a line's riders are the side job's, and its income and the score the main pool's.
 With the barrier
 (startup, a zone just opened) the clusters to solve go in two groups when there are two or more and
 the first ranked zone's is one of them (T-402; the zone in view's, else the city view's, "The zone
@@ -583,18 +652,19 @@ out the regional market's longer trips and the riders other zones put on shared 
 solve's final moves them a little (notes/T-2045.md); that solve itself is untouched and its figures
 are the same to the bit.
 **The zone in view aside** (T-2605, `refineAside`, `?perfOff=refineAside` off). Outside a load, while a whole
-solve without the barrier runs (`firm`), anything newer for the zone in view waits for that solve's final: the
-zone gone fine (it covers the zone coarse) or an edit that touches the zone (held, T-1734). On a big game that is
-a minute or more. So a focus pool of one worker is started for that zone alone, solving it as during a load with
+solve without the barrier runs (`firm`), the zone in view gone fine waits for that solve's final, which covers it
+coarse. On a big game that is a minute or more (an edit held meanwhile is solved aside by T-4220, above; an edit of the
+zone in view whose side job shows nothing is refined here, as before T-4220). So a focus pool of one worker is started for that zone alone, solving it as during a load with
 the newest network (fine), each round shown as the zone's figures and bubbles, and as the figures of lines
 the shown result has none at all for (T-2793: new ones only; a line whose stops changed keeps its shown figures,
 carried onto the new stops). Every other line and station keeps the shown figures (`withZone`, `aside`):
 from the zone alone their riders read lower than the shown ones (on Anita's day-383 save, Salt Lake City's two
 lines 50,400 a day against 67,800; a 1,068 km Hikari 36,600 a day against 589,000, fares 98% down, T-2793),
-however the edit moved them.
+whatever an edit held meanwhile did to them.
 Those figures stay over any solve that covers the zone coarse or is of an older network, its final included,
-and the pool ends when a solve of the main pool of that network shows the zone (its local result or final), or
-at a newer edit. They carry the same lie as during a load; the main pool's solves are untouched.
+and the pool ends when a solve of the main pool of that network shows the zone (its local result or final), at a
+newer edit, or as an edit's side pool starts (T-4220); it waits while a side job is in hand or about to be decided, and
+ends a side pool kept for a later edit. They carry the same lie as during a load; the main pool's solves are untouched.
 **One period first** (T-1538, `?perfOff=estimate` off). A worker holds two or three of the five
 periods (the pool is at most 3), and on a big network each period's free flow takes seconds. So
 in a rough solve, and in that free-flow round after an edit, a worker solves its first period

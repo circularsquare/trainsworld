@@ -159,7 +159,11 @@ impl Network {
             stops: Pool::default(),
             paths: Pool::default(),
             links: vec![],
+            apart: vec![],
             buildings: vec![],
+            keeps: vec![],
+            keep_free: vec![],
+            keep_epoch: 0,
             crossings: vec![],
             grid: Grid::default(),
             edge_lines_off: vec![0],
@@ -173,6 +177,7 @@ impl Network {
             names_changed: vec![],
             names_all: true,
             repriced: false,
+            priced: vec![],
             node_wet: Default::default(),
             mask_epoch: 0,
             wet_cache: true,
@@ -260,6 +265,20 @@ impl Network {
         self.repriced
     }
 
+    /// T-4299: the edges whose price moved outside an edit since the last call (a road tile's crossings, water,
+    /// terrain), ascending: the only edge numbers that move with no edit's `Dirty` naming them.
+    pub fn take_priced(&mut self) -> Vec<u32> {
+        let mut v = std::mem::take(&mut self.priced);
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// T-4299: counts the water masks installed (a node's water, under its station's and junction's price).
+    pub fn mask_epoch(&self) -> u32 {
+        self.mask_epoch
+    }
+
     /// The nodes whose station name was set (or cleared) since the last call, ascending; `[u32::MAX]`
     /// when every name is new to the caller (a network not asked before).
     pub fn take_name_changes(&mut self) -> Vec<u32> {
@@ -318,6 +337,36 @@ impl Network {
         let n = self.links.len();
         self.links.retain(|&q| q != p);
         self.links.len() != n
+    }
+    /// T-4048: the separated pairs (`apart`) whose two ends are both stations now.
+    pub fn apart_live(&self) -> impl Iterator<Item = [u32; 2]> + '_ {
+        self.apart.iter().copied().filter(|&[a, b]| self.is_station(a) && self.is_station(b))
+    }
+    /// T-4048: whether the distance rule is kept from joining stations `a` and `b`.
+    pub fn is_apart(&self, a: u32, b: u32) -> bool {
+        !self.apart.is_empty() && self.apart.contains(&[a.min(b), a.max(b)])
+    }
+    /// T-4048: set whether `pair` is a link (`apart` false) or a separated pair (true); what it was.
+    pub fn set_pair(&mut self, apart: bool, pair: [u32; 2], on: bool) -> bool {
+        let p = [pair[0].min(pair[1]), pair[0].max(pair[1])];
+        let list = if apart { &mut self.apart } else { &mut self.links };
+        let was = list.contains(&p);
+        if on && !was && p[0] != p[1] {
+            list.push(p);
+        } else if !on && was {
+            list.retain(|&q| q != p);
+        }
+        was
+    }
+    /// T-4048: the links and separated pairs naming station `n`, taken off (a station removed takes
+    /// them with it inside its edit, so its undo brings them back and a node id used again starts clean).
+    pub fn take_pairs(&mut self, n: u32) -> (Vec<[u32; 2]>, Vec<[u32; 2]>) {
+        let named = |p: &[u32; 2]| p[0] == n || p[1] == n;
+        let links: Vec<[u32; 2]> = self.links.iter().copied().filter(named).collect();
+        let apart: Vec<[u32; 2]> = self.apart.iter().copied().filter(named).collect();
+        if !links.is_empty() { self.links.retain(|p| !named(p)); }
+        if !apart.is_empty() { self.apart.retain(|p| !named(p)); }
+        (links, apart)
     }
 
     /// A free node id for a new node (claimed when the op adding it is applied).
@@ -616,9 +665,14 @@ impl Network {
     /// Build cost of every bus route, US$M: all of them, or the constructed ones. T-3378: lanes two BRT lines
     /// share are counted once (`brt_lane_m`).
     pub(super) fn bus_cost(&self, built: bool) -> f64 {
+        self.bus_cost_by(built, &|l| self.bus_road_m(l))
+    }
+
+    /// `bus_cost` with each bus line's road metres from `road` (T-4299: the kept money's, `bus_road_m` as last read).
+    pub(super) fn bus_cost_by(&self, built: bool, road: &dyn Fn(u32) -> f64) -> f64 {
         let road: f64 = (0..self.line_count() as u32)
             .filter(|&l| self.line_bus.get(l as usize).and_then(|b| b.as_ref()).is_some_and(|r| self.line_ok(l) && (!built || r.built)))
-            .map(|l| self.bus_road_m(l) / 1000.0 * BUS_ROUTE_COST_PER_KM)
+            .map(|l| road(l) / 1000.0 * BUS_ROUTE_COST_PER_KM)
             .sum();
         road + self.brt_lane_m(built) / 1000.0 * BRT_COST_PER_KM
     }

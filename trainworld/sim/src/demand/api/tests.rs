@@ -84,6 +84,22 @@ fn the_service_span_prices_stops_with_no_train_due() {
     assert_eq!(api.same, (1 << PERIODS) - 1 - 2);
 }
 
+/// T-4048: stations within the merge distance are one demand station, unless the player separated them.
+#[test]
+fn separated_stations_are_never_merged() {
+    let xy = [0.0, 0.0, 50.0, 0.0, 90.0, 0.0];
+    let (_, _, map) = merge_stations(&xy, &[0], &[], 100.0, &[]);
+    assert_eq!(map, vec![0, 0, 0]);
+    let (_, _, map) = merge_stations(&xy, &[0], &[], 100.0, &[1, 0, 2, 0]);
+    assert_eq!(map, vec![0, 1, 1], "0 kept from both; 1 and 2 still one");
+    // a third station within the merge distance of both (a bus stop between them, say) takes one of them, not both
+    let xy = [0.0, 0.0, 80.0, 0.0, 40.0, 0.0];
+    let (_, _, map) = merge_stations(&xy, &[0], &[], 100.0, &[]);
+    assert_eq!(map, vec![0, 0, 0]);
+    let (_, _, map) = merge_stations(&xy, &[0], &[], 100.0, &[0, 1]);
+    assert_eq!(map, vec![0, 1, 0], "the station between goes with the first, the other stays apart");
+}
+
 /// T-161: snapshot complexes carried to demand stations; a demand station in two complexes
 /// joins them; a list of the wrong length means none.
 #[test]
@@ -112,6 +128,29 @@ fn complexes_follow_merged_stations() {
     let plain = (0..g.adj_to.len()).filter(|&e| g.adj_seg[e] == u32::MAX && g.adj_to[e] < g.n_st as u32).count();
     // each end has one route node a run (the line's first or last stop), both runs: 4 walks
     assert_eq!(walks, plain + 4);
+}
+
+/// T-4265: the same network again with its stations' complex numbers moved (a station added anywhere renumbers the
+/// stations of no complex, `packService`) keeps the layout, so a zone's subzones stay those of the final shown; a
+/// station moved makes a new one.
+#[test]
+fn layout_kept_through_renumbered_complexes() {
+    let (mut api, xy, n, stops, times, tph, cars) = small();
+    let mut complex: Vec<u32> = (0..xy.len() as u32 / 2).map(|i| 100 + i).collect();
+    complex[16] = 100;
+    api.set_complexes(&complex);
+    api.set_network(&xy, &n, &stops, &times, &tph, &cars).unwrap();
+    assert!(!api.layout_kept(), "a first network is a new layout");
+    api.set_complexes(&complex.iter().map(|c| c + 7).collect::<Vec<_>>());
+    api.set_network(&xy, &n, &stops, &times, &tph, &cars).unwrap();
+    assert!(api.layout_kept(), "the same grouping under other numbers");
+    let slower: Vec<f32> = times.iter().map(|t| t * 1.1).collect();
+    api.set_network(&xy, &n, &stops, &slower, &tph, &cars).unwrap();
+    assert!(api.layout_kept(), "run times are no part of the layout");
+    let mut moved = xy.clone();
+    moved[2] += 50.0;
+    api.set_network(&moved, &n, &stops, &slower, &tph, &cars).unwrap();
+    assert!(!api.layout_kept(), "a station moved");
 }
 
 #[test]

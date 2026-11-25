@@ -1,7 +1,38 @@
 //! Lines (stops, look, cars, trains, loops) and undo.
 
 use super::*;
-use crate::track::net::{Extra, ALIGHT_ONLY};
+use crate::track::net::{DayFleet, Extra, ALIGHT_ONLY};
+
+/// T-4149: every line's track limits (`Capacity::line_limits`), worked out once for the reads that share them while
+/// the model stands still (`TrackWorld::weekend_counts_in`).
+pub(super) type Limits = Option<Vec<[(f64, u32); crate::track::params::SLOTS]>>;
+
+impl TrackApi {
+    /// `line_weekend` with the track limits shared (`Limits`).
+    pub(super) fn line_weekend_in(&self, id: u32, most: &mut Limits) -> Vec<f64> {
+        let (net, l) = (&self.w.net, id as usize);
+        if !net.line_ok(id) { return vec![] }
+        let (Some(w), Some(Some(t))) = (net.line_weekend.get(l).copied(), net.line_trains.get(l).copied()) else { return vec![] };
+        let k = if pairs_split(net, id) { 2 } else { 1 };
+        let c = self.w.weekend_counts_in(l, most).map(|c| crate::track::params::unplace(c).0).unwrap_or(t);
+        let h = if w.counts.is_some() { w.headways.map(|h| h / k) } else { [0; 3] };
+        vec![w.share as f64, w.counts.is_some() as u8 as f64, (c[0] * k) as f64, (c[1] * k) as f64, (c[2] * k) as f64, h[0] as f64, h[1] as f64, h[2] as f64]
+    }
+    /// `line_row_weekend` with the track limits shared (`Limits`).
+    pub(super) fn line_row_weekend_in(&self, id: u32, most: &mut Limits) -> Vec<f64> {
+        let (net, l) = (&self.w.net, id as usize);
+        if !net.line_ok(id) { return vec![] }
+        let (Some(w), Some(t)) = (net.line_weekend.get(l).copied(), net.trains_of(l)) else { return vec![] };
+        let k = if pairs_split(net, id) { 2 } else { 1 };
+        let c = self.w.weekend_counts_in(l, most).unwrap_or(t);
+        let h = if w.counts.is_some() { places(w.headways, net.line_x[l].weekend_headways).map(|h| h / k) } else { [0; 5] };
+        let rows = ROW_PLACES[net.rows(l) - ROWS_MIN];
+        let mut out = vec![w.share as f64, w.counts.is_some() as u8 as f64];
+        out.extend(rows.iter().map(|&p| (c[p] * k) as f64));
+        out.extend(rows.iter().map(|&p| h[p] as f64));
+        out
+    }
+}
 
 /// T-2987: the lowest speed limit a rail line can be given, km/h.
 const LINE_LIMIT_MIN: u32 = 40;
@@ -515,14 +546,22 @@ impl TrackApi {
         if !net.line_ok(line) {
             return vec![];
         }
+        let mut memo = HopMemo::for_stop_scan(net, net.line_stops(line));
+        self.stop_tiers_with(line, &mut memo)
+    }
+
+    pub(super) fn stop_tiers_with(&self, line: u32, memo: &mut HopMemo) -> Vec<f64> {
+        let net = &self.w.net;
+        if !net.line_ok(line) {
+            return vec![];
+        }
         let Some(line_d) = net.line_data(line) else { return vec![] };
         let stops = net.line_stops(line);
         let old = net.line_path(line);
         let old_turns = turn_nodes(net, old);
         let reach = reachable_from(net, stops);
-        let mut memo = HopMemo::new();
-        let turn_at: Vec<u32> = turns(net, line, &mut memo).into_iter().map(|t| t.branch).collect();
-        let unturn_at = unturn_branch(net, line, &mut memo);
+        let turn_at: Vec<u32> = turns(net, line, memo).into_iter().map(|t| t.branch).collect();
+        let unturn_at = unturn_branch(net, line, memo);
         let mut out = vec![];
         for n in 0..net.node_count() as u32 {
             if !net.node_ok(n) || net.node_platform[n as usize] == 0 {
@@ -534,7 +573,7 @@ impl TrackApi {
                 (7.0, -1.0)
             } else if stops.first() == Some(&n) && closed(stops) {
                 (6.0, -1.0)
-            } else if (stops.first() == Some(&n) || stops.last() == Some(&n)) && close_path(net, line, &mut memo).is_some() {
+            } else if (stops.first() == Some(&n) || stops.last() == Some(&n)) && close_path(net, line, memo).is_some() {
                 (5.0, -1.0)
             } else if turn_at.contains(&n) {
                 (7.0, -1.0)
@@ -545,7 +584,8 @@ impl TrackApi {
             } else if !stops.is_empty() && !reach[n as usize] {
                 (3.0, -1.0)
             } else {
-                match best_insert(net, line, n, &mut memo) {
+                memo.try_station(n);
+                match best_insert(net, line, n, memo) {
                     None if self.train_kept_off(stops, n) => (9.0, -1.0),
                     None => (3.0, -1.0),
                     Some((_, path)) => match turn_nodes(net, &path).into_iter().find(|t| !old_turns.contains(t)) {
@@ -770,13 +810,7 @@ impl TrackApi {
     /// whole trains at high, medium and low demand on weekends (the weekdays' where it runs those),
     /// whole-line counts as `set_train_counts` takes them. Empty for no line.
     pub fn line_weekend(&self, id: u32) -> Vec<f64> {
-        let (net, l) = (&self.w.net, id as usize);
-        if !net.line_ok(id) { return vec![] }
-        let (Some(w), Some(Some(t))) = (net.line_weekend.get(l).copied(), net.line_trains.get(l).copied()) else { return vec![] };
-        let k = if pairs_split(net, id) { 2 } else { 1 };
-        let c = self.w.weekend_counts(l).unwrap_or(t);
-        let h = if w.counts.is_some() { w.headways.map(|h| h / k) } else { [0; 3] };
-        vec![w.share as f64, w.counts.is_some() as u8 as f64, (c[0] * k) as f64, (c[1] * k) as f64, (c[2] * k) as f64, h[0] as f64, h[1] as f64, h[2] as f64]
+        self.line_weekend_in(id, &mut None)
     }
     /// T-3521: a line's trains an hour at level `lev` (a row: high, medium, low) on kind of day
     /// `row` (0 weekdays, 1 weekends; `Network::line_tph_on`).
@@ -1031,6 +1065,10 @@ impl TrackApi {
         let svc = self.w.svc.lines.get(l).filter(|s| s.ok);
         let twin = net.twin_line(id);
         let placed = net.trains_of(l).unwrap_or([0; 5]);
+        // T-4227: a slot its hours share between rows shares a weekend rate out by the weekend's
+        // trains, as its weekend departures do
+        let rest_fleet = |m: usize| net.mix(m).and_then(|_| self.w.svc.fleet_on(net, m, WEEKEND));
+        let fleets = (rest_fleet(l), twin.and_then(|t| rest_fleet(t as usize)));
         let mut out = vec![];
         for (k, slots) in net.row_slots(l) {
             let most = |f: &dyn Fn(usize) -> f64| slots.iter().map(|&s| f(s)).fold(f64::NEG_INFINITY, f64::max).max(0.0);
@@ -1043,7 +1081,11 @@ impl TrackApi {
             // T-3542: in a slot its hours share between rows, the row's own rate there
             let trip = |x: usize| svc.map_or(0.0, |s| s.round_trip[x]);
             let tph = least(&|x| net.place_tph(l, x, k, net.line_tph[l][x], trip(x)) as f64);
-            let rest = least(&|x| (net.place_tph(l, x, k, net.line_tph_on(l, WEEKEND, x), trip(x)) + twin.map_or(0.0, |t| net.place_tph(t as usize, x, k, net.line_tph_on(t as usize, WEEKEND, x), trip(x)))) as f64);
+            let rest_in = |m: usize, f: Option<&DayFleet>, x: usize| {
+                let tph = net.line_tph_on(m, WEEKEND, x);
+                f.map_or(tph, |f| net.place_tph_in(m, x, k, tph, trip(x), f))
+            };
+            let rest = least(&|x| (rest_in(l, fleets.0.as_ref(), x) + twin.map_or(0.0, |t| rest_in(t as usize, fleets.1.as_ref(), x))) as f64);
             out.extend([if tph.is_finite() { tph } else { 0.0 }, if rest.is_finite() { rest } else { 0.0 }]);
         }
         out
@@ -1052,16 +1094,23 @@ impl TrackApi {
     /// where its counts are set by hand, then its whole trains per row on weekends (whole-line counts)
     /// and the headways stepped to per row (seconds, 0 none), rows in the day's order.
     pub fn line_row_weekend(&self, id: u32) -> Vec<f64> {
-        let (net, l) = (&self.w.net, id as usize);
-        if !net.line_ok(id) { return vec![] }
-        let (Some(w), Some(t)) = (net.line_weekend.get(l).copied(), net.trains_of(l)) else { return vec![] };
-        let k = if pairs_split(net, id) { 2 } else { 1 };
-        let c = self.w.weekend_places(l).unwrap_or(t);
-        let h = if w.counts.is_some() { places(w.headways, net.line_x[l].weekend_headways).map(|h| h / k) } else { [0; 5] };
-        let rows = ROW_PLACES[net.rows(l) - ROWS_MIN];
-        let mut out = vec![w.share as f64, w.counts.is_some() as u8 as f64];
-        out.extend(rows.iter().map(|&p| (c[p] * k) as f64));
-        out.extend(rows.iter().map(|&p| h[p] as f64));
+        self.line_row_weekend_in(id, &mut None)
+    }
+    /// T-4149: `line_weekend` then `line_row_weekend` of each line in `ids`, each as its length and its numbers. Each
+    /// call alone works out every line's track limits (`Capacity::line_limits`, a pass over the whole network); here
+    /// they are worked out once for all of them.
+    pub fn line_weekends(&mut self, ids: &[u32]) -> Vec<f64> {
+        // (T-4299: the limits of this model state, shared with the stamps and the fleets' needs)
+        self.kept_now();
+        let mut most = self.kept.take_limits();
+        let mut out = vec![];
+        for &id in ids {
+            for v in [self.line_weekend_in(id, &mut most), self.line_row_weekend_in(id, &mut most)] {
+                out.push(v.len() as f64);
+                out.extend(v);
+            }
+        }
+        self.kept.put_limits(most);
         out
     }
     /// T-3542: set line `id`'s whole trains on weekends per row by hand (`line_period_count` of them,
@@ -1126,7 +1175,7 @@ impl TrackApi {
         let before = self.w.svc.before_edit(&self.w.net, at);
         let cash = self.spendable();
         match self.w.step_paid(redo, cash, &|w| trains_to_buy(w, fleet)) {
-            Some(r) => self.settle(r, &before),
+            Some(r) => self.settle(r, Some(&before)),
             None => {
                 self.money_short = None;
                 self.issues.clear();

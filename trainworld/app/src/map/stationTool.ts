@@ -11,9 +11,13 @@ import { metresBetween } from "../game/walks";
 import { stationKind, stationOnTram, tool } from "../game/ui";
 import { CORRIDOR_M } from "./busLayer";
 import { newStationName, trackDirection } from "./stationNames";
-import { edit, rightHand, say, stationNames, world } from "../game/world";
-import { type ClockEdge, type ClockNode } from "../workers/protocol";
-import { toLngLat, toLocal } from "./geo";
+import { clicksMoved, edit, rightHand, say, stationNames, world } from "../game/world";
+import { gameStamp } from "../workers/clockClient";
+import { clickWorld } from "./clickMap";
+import { type ClockEdge, type ClockNode, type StationBox } from "../workers/protocol";
+import { kAtY, toLngLat, toLocal } from "./geo";
+import { nodesNear } from "./snapIndex";
+import { oneSideAlong } from "./network";
 import { type TrackEdge } from "../game/types";
 import { circleOnScreen } from "./curveCircle";
 import { stationOutside } from "./stationSide";
@@ -31,7 +35,7 @@ import type { Tools } from "./tools";
 
 export function nameKey(tk: Tools, px: number, py: number) {
   const c = tk.map.getCenter();
-  return `${px},${py},${c.lng},${c.lat},${tk.map.getZoom()},${tk.map.getBearing()},${tk.map.getPitch()},${world.peek()?.version}`;
+  return `${px},${py},${c.lng},${c.lat},${tk.map.getZoom()},${tk.map.getBearing()},${tk.map.getPitch()},${clickWorld()?.version}`;
 }
 
 export function nameAhead(tk: Tools, px: number, py: number) {
@@ -45,7 +49,7 @@ export function nameAhead(tk: Tools, px: number, py: number) {
 
 /** T-3381: the name the station placed at `at` shows (a station joining a complex takes its name), not the one made for it */
 export function shownNameAt(_tk: Tools, lng: number, lat: number): string | undefined {
-  const w = world.peek();
+  const w = clickWorld();
   if (!w) return undefined;
   const k = Math.cos((lat * Math.PI) / 180);
   let best: string | undefined, bd = 4e-8;
@@ -77,7 +81,7 @@ export function metresPerPx(tk: Tools, lat: number): number {
 /** T-3999: the nearest point within `m` ground metres on a bus line's route (no ferry's), a point 10 m along it and
  * how far off it is; null where none is. */
 function busRouteNear(lng: number, lat: number, m: number, ferry = false): { at: { lng: number; lat: number }; along: { lng: number; lat: number }; d: number } | null {
-  const w = world.peek();
+  const w = clickWorld();
   if (!w) return null;
   const kx = M_PER_DEG * Math.cos((lat * Math.PI) / 180), ky = M_PER_DEG;
   let best = m, out: ReturnType<typeof busRouteNear> = null;
@@ -148,47 +152,109 @@ export async function stationClick(tk: Tools, e: MapMouseEvent) {
     playBuild("station");
     // T-4146: drawn at the click, gone again if refused
     const shown = ahead({ stations: [{ lx: b.lx, ly: b.ly, ways: b.ways, perM: b.perM, plat: BRT_STATION_PLATFORM, side: 0, tram: false }] });
-    const key = nameKey(tk, e.point.x, e.point.y), named = tk.named?.key === key && tk.map.areTilesLoaded() ? tk.named.name : null;
-    tk.named = null;
-    const name = await (named ?? nameFor(tk, e.point.x, e.point.y));
-    const r = await shown.send(() => edit({ op: "addBrtStation", x: b.x, y: b.y, heading: b.heading, name }, true, true));
-    if (r.ok) {
-      tk.lastPlaced = toLngLat(b.lx, b.ly);
-      say(tr("tools.blueprintStation", { name: shownNameAt(tk, tk.lastPlaced[0], tk.lastPlaced[1]) ?? name }));
-    } else if (r.issues.length) say(describeIssues(r.issues, undefined, undefined, true), true);
+    const hover = hoverName(tk, e), px = e.point.x, py = e.point.y;
+    const naming = nameLater(tk, () => hover ?? nameFor(tk, px, py));
+    const r = await shown.send(() => edit({ op: "addBrtStation", x: b.x, y: b.y, heading: b.heading, name: "", ticket: naming.ticket }, true, true, "click"));
+    naming.placed(r.ok);
+    if (r.ok) placedSay(tk, toLngLat(b.lx, b.ly), naming.name);
+    else if (r.issues.length) say(describeIssues(r.issues, undefined, undefined, true), true);
     return;
   }
   // T-3999: on open ground the first click is the platform's first end and the second its direction
-  if (freeStarted()) return freeClick(tk, e, (px, py) => nameFor(tk, px, py));
+  if (freeStarted()) return freeClick(tk, e, (px, py) => nameLater(tk, () => nameFor(tk, px, py)));
   const first = tk.snap(e.point.x, e.point.y, e.lngLat);
   if (first.kind === "free") return freeStart(tk, first);
   // T-671, T-695: the spot the ghost shows, else the first the track model takes of what is under the pointer
   const v = tk.verdict();
   // T-1474: heard at the click, not when the edit is answered; not when the ghost shows a refusal
   if (!(v && !v.ok && !v.held)) playBuild("station");
-  // T-4146: the station drawn at the click from its ghost, through every spot tried, gone if none is taken; a spot other
-  // than the ghost's is drawn once the network has it
-  const box = v?.ok && !v.held && tk.hover && tk.hover.kind !== "free" ? tk.lastBox : null;
-  const shown = ahead(box ? { stations: [box] } : {}, { tries: true });
+  // T-4146: the station drawn at the click from its ghost, through every spot tried, gone if none is taken. T-4214 stage E:
+  // the ghost's box as drawn, checked or not yet (none for a ghost shown refused), then at the edit's word the box from
+  // the tools' map holding it, at the spot taken
+  const box = !(v && !v.ok) && tk.hover && tk.hover.kind !== "free" && tk.lastBoxAt && tk.lastBoxAt === (v ? v.spot : tk.hover) ? tk.lastBox : null;
+  let trying: Exclude<Snap, { kind: "free" }> | null = null;
+  const shown = ahead(box ? { stations: [box] } : {}, { tries: true, atWord: (laid) => { const b = laid >= 0 && trying ? placedBox(tk, trying) : null; return b ? { stations: [b] } : null; } });
   let tried = 0;
   const tries = [...(v?.ok && v.spot && !v.held ? [v.spot] : []), ...tk.alts];
-  const key = nameKey(tk, e.point.x, e.point.y);
-  const named = tk.named?.key === key && tk.map.areTilesLoaded() ? tk.named.name : null;
-  tk.named = null;
-  const name = await (named ?? nameFor(tk, e.point.x, e.point.y));
-  const stationAt = (p: Exclude<Snap, { kind: "free" }>) => ({ op: "addStation" as const, at: p.kind === "node" ? { kind: "node" as const, node: p.node } : { kind: "edge" as const, edge: p.edge, ...tk.pack(p.lx, p.ly) }, platform: tk.platFor(p), name });
+  // T-4214: sent at once, its name after it (`nameLater`)
+  const hover = hoverName(tk, e), px = e.point.x, py = e.point.y;
+  const naming = nameLater(tk, () => hover ?? nameFor(tk, px, py));
+  const stationAt = (p: Exclude<Snap, { kind: "free" }>) => ({ op: "addStation" as const, at: p.kind === "node" ? { kind: "node" as const, node: p.node } : { kind: "edge" as const, edge: p.edge, ...tk.pack(p.lx, p.ly) }, platform: tk.platFor(p), name: "", ticket: naming.ticket });
   const one = tk.oneAt();
   const stationAt1 = (p: Exclude<Snap, { kind: "free" }>) => { const o = stationAt(p); return { ...o, at: { ...o.at, ...one } }; };
   const r = await firstAccepted(tries, async (p) => {
     if (tried++ === 1) shown.set({});
-    const a = await shown.send(() => edit(stationAt1(p), true, true));
+    trying = p;
+    const a = await shown.send(() => edit(stationAt1(p), true, true, "click"));
     return a.ok ? null : a.issues;
   }, (p) => roomSnap(tk, p), () => false);
   if (!r.spot) shown.drop();
-  if (r.spot) {
-    tk.lastPlaced = toLngLat(r.spot.lx, r.spot.ly); // T-312: the hover tag's "km from" (found again by position)
-    say(tr("tools.blueprintStation", { name: shownNameAt(tk, tk.lastPlaced[0], tk.lastPlaced[1]) ?? name }));
-  } else if (r.issues.length) say(describeIssues(r.issues, undefined, undefined, true), true);
+  naming.placed(!!r.spot);
+  if (r.spot) placedSay(tk, toLngLat(r.spot.lx, r.spot.ly), naming.name);
+  else if (r.issues.length) say(describeIssues(r.issues, undefined, undefined, true), true);
+}
+
+/** the name the hover worked out for the click's spot, if it is the one clicked */
+function hoverName(tk: Tools, e: MapMouseEvent): Promise<string> | null {
+  const key = nameKey(tk, e.point.x, e.point.y), named = tk.named?.key === key && tk.map.areTilesLoaded() ? tk.named.name : null;
+  tk.named = null;
+  return named;
+}
+
+/** T-312: a station placed at `at` is the hover tag's "km from" (found again by position); said by name once it has one */
+export function placedSay(tk: Tools, at: [number, number], name: Promise<string>) {
+  tk.lastPlaced = at;
+  void name.then((n) => say(tr("tools.blueprintStation", { name: shownNameAt(tk, at[0], at[1]) || n })));
+}
+
+// T-4214 stage A: a station goes to the worker at its click with no name and a ticket, its name after it once looked up
+// (place lists and real stations: 10-250 ms), so the click never waits for the lookup (workers/clockNames.ts).
+let tickets = 0;
+/** lookups not yet sent: undo and redo wait for them (map/toolWait.ts), so a name never comes after its station's undo */
+let lookups = 0;
+export const namesPending = () => lookups;
+/** names sent, when and for which ticket, until the world has them: a station looked up meanwhile takes another */
+const namesOut = new Map<string, { at: number; ticket: number }>();
+const NAME_OUT_MS = 60_000;
+
+/** The names in use for a new station to avoid: the tools' world's, and those sent and not yet in it. */
+export function takenNames(): Set<string> {
+  const taken = new Set(clickWorld()?.save.stations.map((st) => st.name) ?? []), now = performance.now();
+  for (const [n, o] of namesOut) if (taken.has(n) || now - o.at > NAME_OUT_MS) namesOut.delete(n); else taken.add(n);
+  return taken;
+}
+
+/** The name `look` finds, sent for the station edits that carry the returned ticket. The lookup starts after the next
+ * paint: its first part runs at once and reads the basemap's tiles (tens of ms with none read yet), which would hold
+ * back the edit's send and the station drawn at the click. A failed lookup takes the fallback "Station N", as
+ * `newStationName` would. `placed`, once the edits are answered: whether one placed a station; a name none took is not
+ * held from the next station. */
+export type Naming = { ticket: number; name: Promise<string>; placed: (ok: boolean) => void };
+export function nameLater(tk: Tools, look: () => Promise<string>): Naming {
+  const ticket = ++tickets, game = gameStamp.peek();
+  lookups++;
+  const named = new Promise<string>((res) => {
+    let started = false;
+    const go = () => { if (!started) { started = true; res(look()); } };
+    requestAnimationFrame(() => setTimeout(go, 0));
+    // (no frame comes in a hidden tab)
+    setTimeout(go, 100);
+  }).catch(() => "").then((n) => {
+    if (n) return n;
+    const t = takenNames();
+    // i18n-ignore: the default name is saved with the station
+    for (let k = 1; ; k++) if (!t.has(`Station ${k}`)) return `Station ${k}`;
+  });
+  void named.then((n) => {
+    namesOut.set(n, { at: performance.now(), ticket });
+    tk.client.post({ kind: "stationName", ticket, name: n, game });
+  }).finally(() => {
+    lookups--;
+    clicksMoved();
+  });
+  // (after the hold above, which was asked first)
+  const placed = (ok: boolean) => { if (!ok) void named.then((n) => { if (namesOut.get(n)?.ticket === ticket) namesOut.delete(n); }); };
+  return { ticket, name: named, placed };
 }
 
 /** Ask for the legs of the demand shown, unless held or asked already (T-412). T-2430: an answer
@@ -263,7 +329,7 @@ export function lastPlacedName(tk: Tools): { name: string; lng: number; lat: num
   const p = tk.lastPlaced;
   if (!p) return null;
   let best: { name: string; lng: number; lat: number } | null = null, bestD = 30;
-  for (const s of world.peek()?.save.stations ?? []) {
+  for (const s of clickWorld()?.save.stations ?? []) {
     const d = metresBetween(p[0], p[1], s.lng, s.lat);
     if (d < bestD) (bestD = d), (best = s);
   }
@@ -276,9 +342,9 @@ export function lastPlacedName(tk: Tools): { name: string; lng: number; lat: num
 export function nameFor(tk: Tools, px: number, py: number): Promise<string> {
   const s = tk.snap(px, py, tk.map.unproject([px, py]));
   const [lng, lat] = toLngLat(s.lx, s.ly);
-  const net = tk.overlay.renderer.net;
+  const net = tk.pickNet;
   const track = net ? trackDirection(net, ...toLocal(lng, lat, net.anchor)) : null;
-  return newStationName(tk.map, lng, lat, track, () => new Set(world.peek()?.save.stations.map((st) => st.name) ?? []));
+  return newStationName(tk.map, lng, lat, track, takenNames);
 }
 
 export function el(tk: Tools, i: number, cls: string): HTMLDivElement {
@@ -331,8 +397,48 @@ export function ghostPath(tk: Tools, el: SVGPathElement, shape: StationShape) {
 }
 
 export function stationGhost(tk: Tools, h: Exclude<Snap,{kind:"free"}>) {
-  const n=tk.overlay.renderer.net,w=world.peek();
-  if (!n || !w) return;
+  const b=boxParts(tk, h);
+  tk.lastBoxAt=b?h:null;
+  if (!b) return;
+  boxGhost(tk, h.lx,h.ly,b.ways,b.perM,tk.verdict()?.ok===false,null,undefined,b.double,b.outside);
+}
+
+/** T-4214 stage E: the station the tools' map holds at spot `p` (a station edit there patched in), boxed as its ghost was but
+ * on its own node, platform and one-track side; null where the map does not hold one yet */
+export function placedBox(tk: Tools, p: Exclude<Snap,{kind:"free"}>): StationBox | null {
+  const w=clickWorld();
+  if (!w) return null;
+  let node=p.kind==="node"?w.nodes.get(p.node):undefined;
+  if (p.kind==="edge") {
+    // (placed where the spot lies along the track, a station node new to the edge)
+    let best=PLACED_NEAR_M*kAtY(p.ly);
+    for (const n of nodesNear(w,p.lx,p.ly,best,"pick") ?? []) {
+      if (!(n.platform>0)) continue;
+      const [x,y]=toLocal(n.lng,n.lat), d=Math.hypot(x-p.lx,y-p.ly);
+      if (d<best) [best,node]=[d,n];
+    }
+  }
+  if (!node || !(node.platform>0) || node.bus || node.port) return null;
+  const [lx,ly]=toLocal(node.lng,node.lat);
+  const b=boxParts(tk,{kind:"node",node:node.id,lx,ly});
+  if (!b) return null;
+  // the node as its track's end lays it, as network.ts places a station (exact)
+  const at=b.ways[0], x=at.length>=2?at[0]:lx, y=at.length>=2?at[1]:ly;
+  const sh=platformShape(b.ways,0,node.platform/2*b.perM);
+  const st=w.save.stations.find((s)=>s.num===node!.id);
+  const one=st?.one===1 && st.oneHeading!==undefined ? oneSideAlong(st.oneHeading,rightHand.peek()===false,sh.ax,sh.ay) : 0;
+  const side=one||b.outside?.(sh)||0;
+  return {lx:x,ly:y,ways:b.ways,perM:b.perM,plat:node.platform,side,tram:!!node.kind||!!node.brtStation,mid:!one&&side!==0};
+}
+
+/** How far from its spot a station placed on an edge may be found on the tools' map, m */
+const PLACED_NEAR_M = 5;
+
+/** What a station's box at spot `h` is laid along on the tools' map: the track either way from it, whether it is double,
+ * and its outside side on single track; null where the map has no track there */
+function boxParts(tk: Tools, h: Exclude<Snap,{kind:"free"}>): { ways: ArrayLike<number>[]; perM: number; double: boolean; outside: ((sh: PlatformShape) => number) | null } | null {
+  const n=tk.pickNet,w=clickWorld();
+  if (!n || !w) return null;
   const candidates=h.kind==="edge"?[h.edge]:w.edges.filter(e=>e.a===h.node||e.b===h.node).map(e=>e.id);
   const usage=new Map<number,Set<number>>();
   for (let i=0;i<n.lines.count;i++) {
@@ -355,10 +461,10 @@ export function stationGhost(tk: Tools, h: Exclude<Snap,{kind:"free"}>) {
   // network.ts's `single`: every track under the platform is single and not a crossover
   const ends=candidates.map((id)=>w.edges.find((x)=>x.id===id));
   // a snap made before an undo can name track the undo took away: no ghost until the next snap
-  if (!ends.length||!ends.every((e):e is TrackEdge=>!!e)) return;
+  if (!ends.length||!ends.every((e):e is TrackEdge=>!!e)) return null;
   const single=!double&&ends.every((e)=>e.tracks===1&&!e.crossover);
   const outside=single?(sh:PlatformShape)=>outsideSide(tk, h,ends,ways,sh):null;
-  boxGhost(tk, h.lx,h.ly,ways,perM,tk.verdict()?.ok===false,null,undefined,double,outside);
+  return {ways,perM,double,outside};
 }
 
 /** The side of its platform a station on one-way single track (or single track joining double) draws its one bar, from the same `stationOutside` a
@@ -383,12 +489,12 @@ export function outsideSide(tk: Tools, h: Exclude<Snap,{kind:"free"}>, ends: Tra
   if (at.some((e)=>splitsAt(e, e.a===node?0:1, { platform: 1, one: 0 } as unknown as ClockNode))) return 0;
   const others=(n: number): readonly ClockEdge[] => {
     if (n===node) return at;
-    const w=world.peek();
+    const w=clickWorld();
     return (w?.edges ?? []).filter((e)=>(e.a===n||e.b===n)&&!(h.kind==="edge"&&e.id===h.edge)).map((e)=>clock(e));
   };
   return stationOutside(node, platformEdge, others, (n,id)=>{
     if (n===node) return way(n,id);
-    const e=world.peek()?.edges.find((x)=>x.id===id), p=tk.overlay.renderer.net?.edgePts.get(id);
+    const e=clickWorld()?.edges.find((x)=>x.id===id), p=tk.pickNet?.edgePts.get(id);
     return !e||!p?new Float32Array(0):e.a===n?p:reversed(p);
   }, sh.ax, sh.ay, rightHand.peek()===false);
 }
@@ -443,7 +549,7 @@ export function stationRings(tk: Tools, h: Snap) {
 }
 
 export function checkGhost(tk: Tools) {
-  const h=tk.hover, w=world.peek(), n=tk.overlay.renderer.net;
+  const h=tk.hover, w=clickWorld(), n=tk.pickNet;
   if (!h || h.kind==="free" || !w || !n) return;
   const key=tk.altsKey(h);
   if (key===tk.guess?.key) return;
@@ -503,7 +609,7 @@ export function checkGhost(tk: Tools) {
 
 export function layout(tk: Tools, w: NonNullable<ReturnType<typeof world.peek>>) {
   if (tk.lay?.version===w.version) return tk.lay;
-  const net=tk.overlay.renderer.net, marks=net?.marks, crossings=new Map<number, number[]>();
+  const net=tk.pickNet, marks=net?.marks, crossings=new Map<number, number[]>();
   const lay=layoutOf(w.edges,w.nodes,{
     crossingsOn:(e)=>{
       let out=crossings.get(e);
@@ -532,7 +638,7 @@ export function layout(tk: Tools, w: NonNullable<ReturnType<typeof world.peek>>)
 
 /** The spots near an edge spot where the platform may have room (`roomNear`, T-671, T-1870). */
 export function roomSnap(tk: Tools, h: Spot): Spot[] {
-  const w=world.peek(), net=tk.overlay.renderer.net, pts=h.kind==="edge"?net?.edgePts.get(h.edge):null;
+  const w=clickWorld(), net=tk.pickNet, pts=h.kind==="edge"?net?.edgePts.get(h.edge):null;
   if (!w || !net || !pts || pts.length<6 || h.kind!=="edge") return [];
   return roomNear({edge:h.edge,frac:fractionAlong(pts,h.lx,h.ly)},tk.platFor(h),layout(tk, w)).flatMap((c):Spot[]=>{
     if (c.kind==="node") {

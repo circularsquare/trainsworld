@@ -14,7 +14,11 @@ import { describeIssues, type Buys } from "./issues";
 import { vehicleOf, type Vehicle } from "./vehicle";
 import { tidyNodes, type FareNode } from "./fareCurve";
 import { groundDist, groundScale } from "./coords";
+import { busPlaces } from "./busLinks";
 import { noteEdit } from "./editCap";
+import { asRun, sendingRun } from "./pending";
+import { checkPatches, freshly, freshNow, sameBuilt, worldDiff } from "./worldDiff";
+import { timed } from "./stepTimes";
 import type { Demand, LineId, LineInput, LineStats, RowFigs, Save, StationInput, WorldView } from "./types";
 import { DEMAND_INDEX, DEMANDS, loopHalves } from "./types";
 
@@ -29,9 +33,9 @@ export const flipSites = signal<{ right: boolean; sites: { kind: number; id: num
 /** A short message for the player: why an edit was refused, what a construct cost. */
 export const notice = signal<{ text: string; bad: boolean; at: number } | null>(null);
 
-let sink: ((op: EditOp, early?: boolean | "rows", game?: number) => Promise<EditAnswer>) | null = null;
+let sink: ((op: EditOp, early?: boolean | "rows" | "click", game?: number) => Promise<EditAnswer>) | null = null;
 /** workers/clockClient.ts hands over its edit function. */
-export function setEditSink(f: (op: EditOp, early?: boolean | "rows", game?: number) => Promise<EditAnswer>) {
+export function setEditSink(f: (op: EditOp, early?: boolean | "rows" | "click", game?: number) => Promise<EditAnswer>) {
   sink = f;
 }
 
@@ -137,7 +141,7 @@ function afterClicks(): Promise<unknown> {
 /** Send an edit; a refusal is explained in `notice`. Resolves with the answer either way. `silent`:
  * its sound was played already (the click that sent it, or the one sound of a run of edits). `game`: the game stamp
  * (clockClient `gameStamp`) of an edit sent later than it was made, a queued stop edit's: refused under another. */
-export async function edit(op: EditOp, quiet = false, silent = false, early: boolean | "rows" = false, game?: number): Promise<EditAnswer> {
+export async function edit(op: EditOp, quiet = false, silent = false, early: boolean | "rows" | "click" = false, game?: number): Promise<EditAnswer> {
   if (tracing()) {
     const snapshot = world.peek();
     trace("edit-click", { edit: editTrace(op), version: snapshot?.version,
@@ -148,14 +152,16 @@ export async function edit(op: EditOp, quiet = false, silent = false, early: boo
   if (!silent) beforeEdit?.(op);
   if (!sink) return { ok: false, issues: [], charge: 0 };
   // T-3731: an undo or redo takes back the last stop click shown, so it waits for the clicks still out; T-4214: and the
-  // last map click, waiting for the map or being carried out
+  // last map click, waiting for the map or being carried out. T-4311: still sent as the track run that asked (`asRun`)
+  const run = sendingRun();
   if ((op.op === "undo" || op.op === "redo") && stopsQueued.peek() > 0) await afterStopEdits();
   if ((op.op === "undo" || op.op === "redo") && clicksBusy()) await afterClicks();
   noteEdit(op, world.peek());
   if (op.op !== "fares" && op.op !== "undo" && op.op !== "redo") editsSent.value++;
   // `early` (T-1407): the answer may come before `world` holds the edit (`a.early`); "rows" (T-2766, a stop click):
-  // the answer comes with `world` holding the edit, its network a moment later
-  const a = await sink!(op, early, game);
+  // the answer comes with `world` holding the edit, its network a moment later; "click" (T-4214, a station or a delete
+  // clicked on the map): the answer may come once the map the tools pick on holds it (map/clickMap.ts), before `world`
+  const a = await asRun(run, () => sink!(op, early, game));
   if (!a.ok && !quiet && a.issues.length) say(describeIssues(a.issues, buysOf(op), lineVehicle((op as { line?: number }).line)), true);
   else if (a.ok && !silent) afterEdit?.(op, a);
   return a;
@@ -975,8 +981,8 @@ function lookup<T>(w: WorldView, key: string, build: (s: Save) => T): T {
   if (!m.has(key)) m.set(key, build(w.save));
   return m.get(key) as T;
 }
-export const stationsById = (w: WorldView) => lookup(w, "stations", (s) => new Map(s.stations.map((x) => [x.id, x])));
-const stopMemo = new WeakMap<WorldView, { byId: Map<string, StationInput>; names: Map<string, string>; bus: Map<string, StationInput> }>();
+export const stationsById = (w: WorldView) => lookup(w, "stations", (s) => { const m = new Map<string, StationInput>(); for (const x of s.stations) m.set(x.id, x); return m; });
+const stopMemo = new WeakMap<WorldView, { byId: Map<string, StationInput>; names: Map<string, string>; bus: Map<string, StationInput>; custom: Map<string, string> }>();
 /** T-1464: the stations and a bus line's other stops (no station, no name of their own) by id: a stop's
  * place for the figures, its words for the panels. A bus stop is named for the station within 1 km
  * (the nearest), else "Bus stop". `stationsById` stays stations only. */
@@ -1002,36 +1008,103 @@ function namedNear(stations: readonly StationInput[], x: number, y: number, r: n
     for (let cy = Math.floor((y - r) / NAMED_CELL); cy <= Math.floor((y + r) / NAMED_CELL); cy++) out.push(...(g.get(cellKey(cx, cy)) ?? []));
   return out.sort((a, b) => a - b).map((i) => stations[i]);
 }
+/** A bus line's stops that are no station, each with its name, and the box (world m) a station must be in to change one */
+type BusNamed = { bus: NonNullable<LineStats["bus"]>; plain: string; keeps: Save["keeps"]; box: [number, number, number, number]; stops: { id: string; stop: StationInput; name: string; custom: boolean }[] };
+/** T-4080: a bus stop takes the name of the nearest named kept stop this near (`bus::KEEP_M` in the sim), ground m */
+const KEEP_M = 50;
+function namedBus(w: WorldView, b: NonNullable<LineStats["bus"]>, plain: string): BusNamed {
+  const stops: BusNamed["stops"] = [];
+  const box: BusNamed["box"] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const p of b.stops) {
+    if (p.station >= 0) continue;
+    const id = String(p.id);
+    const stop: StationInput = { id, num: p.id, name: "", lng: p.lng, lat: p.lat, x: p.x, y: p.y, level: 0, length: 0, built: b.built, heading: 0 };
+    const r = BUS_NAME_M * groundScale(p.y) * 1.1;
+    let kept = "", away = KEEP_M;
+    if (w.save.keeps) {
+      const rk = KEEP_M * groundScale(p.y) * 1.1;
+      for (const k of w.save.keeps) {
+        if (Math.abs(k.x - p.x) > rk || Math.abs(k.y - p.y) > rk) continue;
+        const d = groundDist(k.x, k.y, p.x, p.y);
+        if (d <= away) { away = d; kept = k.name; }
+      }
+    }
+    let near = "", best = 1000;
+    if (!kept) for (const s of namedNear(w.save.stations, p.x, p.y, r)) {
+      const d = groundDist(s.x, s.y, p.x, p.y);
+      if (d < best) { best = d; near = s.name; }
+    }
+    stops.push({ id, stop, name: kept || (near ? t("world.busStopNear", { name: near }) : plain), custom: !!kept });
+    box[0] = Math.min(box[0], p.x - r); box[1] = Math.min(box[1], p.y - r); box[2] = Math.max(box[2], p.x + r); box[3] = Math.max(box[3], p.y + r);
+  }
+  return { bus: b, plain, keeps: w.save.keeps, box, stops };
+}
+/** T-4150: the last world's bus stops by line, kept for a line while its route is the same and no station changed in its box */
+let lastBusNamed: { w: WorldView; lines: Map<string, BusNamed> } | null = null;
+
+/** more stations changed than this: a world's stops are made again from its lists */
+const STATIONS_LAID_MAX = 512;
+
 function stopsOf(w: WorldView) {
   let m = stopMemo.get(w);
   if (m) return m;
-  const byId = new Map<string, StationInput>(w.save.stations.map((x) => [x.id, x]));
-  const names = new Map<string, string>(w.save.stations.map((x) => [x.id, x.name]));
-  const bus = new Map<string, StationInput>();
-  for (const st of Object.values(w.lineStats)) {
-    for (const p of st.bus?.stops ?? []) {
-      const id = String(p.id);
-      if (p.station >= 0 || byId.has(id)) continue;
-      const stop: StationInput = { id, num: p.id, name: "", lng: p.lng, lat: p.lat, x: p.x, y: p.y, level: 0, length: 0, built: st.bus!.built, heading: 0 };
-      byId.set(id, stop);
-      bus.set(id, stop);
-      let near = "", best = 1000;
-      for (const s of namedNear(w.save.stations, p.x, p.y, BUS_NAME_M * groundScale(p.y) * 1.1)) {
-        const d = groundDist(s.x, s.y, p.x, p.y);
-        if (d < best) { best = d; near = s.name; }
-      }
-      names.set(id, near ? t("world.busStopNear", { name: near }) : t("world.busStop"));
-    }
+  const was = freshNow() ? null : lastBusNamed, d = was ? worldDiff(was.w, w) : null;
+  // where the stations that changed stand, before and after
+  const moved: [number, number][] = [];
+  if (d) for (const pair of d.stations.values()) for (const s of pair) if (s) moved.push([s.x, s.y]);
+  const plain = t("world.busStop"), lines = new Map<string, BusNamed>();
+  let busKept = !!d && d.stations.size <= STATIONS_LAID_MAX;
+  for (const [lid, st] of Object.entries(w.lineStats)) {
+    if (!st.bus) continue;
+    let e = d ? was!.lines.get(lid) : undefined;
+    if (!e || e.bus !== st.bus || e.plain !== plain || e.keeps !== w.save.keeps || moved.some(([x, y]) => x >= e!.box[0] && x <= e!.box[2] && y >= e!.box[1] && y <= e!.box[3])) { e = namedBus(w, st.bus, plain); busKept = false; }
+    lines.set(lid, e);
   }
-  stopMemo.set(w, (m = { byId, names, bus }));
+  // T-4284: the last world's stops with the stations its diff names laid in, while every bus line's stops are as they were
+  // (no bus stop came, went or was named again) and none has a name of its place's (T-4080): a copy of each map
+  const prev = busKept && lines.size === was!.lines.size ? stopMemo.get(was!.w) : undefined;
+  if (prev && !prev.custom.size && [...d!.stations].every(([id, [, s]]) => s || !w.nodes.get(Number(id))?.bus)) {
+    const byId = new Map(prev.byId), names = new Map(prev.names);
+    for (const [id, [, s]] of d!.stations) {
+      if (s) { byId.set(id, s); names.set(id, s.name); }
+      else { byId.delete(id); names.delete(id); }
+    }
+    m = { byId, names, bus: prev.bus, custom: prev.custom };
+  } else {
+    const byId = new Map<string, StationInput>(), names = new Map<string, string>();
+    for (const x of w.save.stations) { byId.set(x.id, x); names.set(x.id, x.name); }
+    const bus = new Map<string, StationInput>(), custom = new Map<string, string>();
+    for (const e of lines.values()) for (const s of e.stops) {
+      if (byId.has(s.id)) continue;
+      byId.set(s.id, s.stop);
+      bus.set(s.id, s.stop);
+      names.set(s.id, s.name);
+      if (s.custom) custom.set(s.id, s.name);
+    }
+    // T-4080: a stop with no name of its own, where another stop of its place has one, shows that one
+    if (custom.size) {
+      const p = busPlaces(w), at = new Map<number, string>();
+      for (const [id, name] of custom) {
+        const k = p.placeOf.get(Number(id));
+        if (k !== undefined && !at.has(k)) at.set(k, name);
+      }
+      for (const [k, name] of at) for (const s of p.places[k].stops) if (s.station < 0 && bus.has(String(s.id)) && !custom.has(String(s.id))) { names.set(String(s.id), name); custom.set(String(s.id), name); }
+    }
+    m = { byId, names, bus, custom };
+  }
+  if (!freshNow()) lastBusNamed = { w, lines };
+  stopMemo.set(w, m);
+  if (checkPatches() && d && !sameBuilt(m, freshly(() => stopsOf({ ...w })))) console.error("T-4150 check: the bus stops kept differ from a whole build");
   return m;
 }
-export const stopsById = (w: WorldView) => stopsOf(w).byId;
+export const stopsById = (w: WorldView) => stopMemo.get(w)?.byId ?? timed("world.stops", () => stopsOf(w)).byId;
 /** Only the bus stops that are no station. */
 export const busStopsById = (w: WorldView) => stopsOf(w).bus;
+/** T-4080: the bus stops that show a name the player gave, by id (their own, or their place's) */
+export const namedBusStops = (w: WorldView) => stopsOf(w).custom;
 /** Every stop's name by id, a bus stop's included. */
 export const stationNames = (w: WorldView) => stopsOf(w).names;
-export const stationsByNum = (w: WorldView) => lookup(w, "stationNums", (s) => new Map(s.stations.map((x) => [x.num, x])));
+export const stationsByNum = (w: WorldView) => lookup(w, "stationNums", (s) => { const m = new Map<number, StationInput>(); for (const x of s.stations) m.set(x.num, x); return m; });
 export const linesById = (w: WorldView) => lookup(w, "lines", (s) => new Map(s.lines.map((l) => [l.id, l])));
 export const linesByNum = (w: WorldView) => lookup(w, "lineNums", (s) => new Map(s.lines.map((l) => [l.num, l])));
 /** T-3333: the lines a player sees listed: every line but the hidden twins of lines run on both pairs of

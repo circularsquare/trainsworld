@@ -34,15 +34,18 @@ import { rowsFirst } from "./clockWordLines";
 import { bookCharge, buildSnapshot, busQuoteLL, complexOfNodes, editSteps, nameOnly, putPreviewAt, putXferSet, sameFloats, scheduleSnapshot, sendTrips, snapStations, stationsKey, stepBoarding, turnHour, xferSet } from "./clockDemand";
 import { apply, buildingQuoteAnswer, designOf, doubleUpAnswer, DROP_REFUSED, freeEnds, INSERT_REFUSED, issues, newLineShape, ORDER_REFUSED, paidFor, pisArr, rebuildQuoteAnswer, routeArgs, savedHidden, savedShapes } from "./clockEdits";
 import { goneLineFares, loadFares, newLineFare, pinFareRef, startFares, tidyLineFares, tidyStationFares } from "./clockFares";
-import { EARLY_WAIT_MS, followTimer, followUp, goesAhead, guardedFollowUp, heldEdges, HOLD_MS, holdOn, isPreview, isServiceOp, jumpsAhead, later, passesHeld, previewStaleSeq, putPreviewStaleSeq, sendStale, stale, standAside, startNow, stepThenRun, Waiting } from "./clockFollowUp";
+import { EARLY_WAIT_MS, followTimer, followUp, goesAhead, guardedFollowUp, heldEdges, HOLD_MS, holdOn, isPreview, isServiceOp, jumpsAhead, keepUntilState, later, passesFollowUp, passesHeld, previewStaleSeq, putPreviewStaleSeq, sendStale, settleOwedNow, stale, standAside, startNow, stepThenRun, takeForced, waitsFollowUp, Waiting, whenStateWent } from "./clockFollowUp";
 import { putLoadMaskWait } from "./clockGround";
 import { blocksIn, blueprintPolylines, ensureBlocks, ensureMasks, ensureStreets, fetchWater, groundForBlueprint, masksComplete, masksIn, nodePoints, openNetwork, pumpBlocks, putPackBase, putTerrainBase, putViewBlocks, putViewZones, retryGroundNow, roadFeed, roadsUnder, routePoints, terrainIndexIntoModel, tintSent, VIEW_MARGIN_M, VIEW_SPAN_M, viewBlocks, viewZones, wakeStale, WaterRaster, withMasks, worldWaterIntoModel, zonesOfPoints } from "./clockGround";
-import { anchorMoves, drawnEdge, drawnLine, edgeDrawn, forget, game, hex, lineDrawn, previewMarkRows, putAnchorMoves, putConvertedOnLoad, putShiftFrom, putShiftWas, putView, restart, rowsCanGo, sendHome, sendOpened, sendRows, sendState, SHIFT_REACH, shiftFrom, SHIFTS_EXACT } from "./clockMain";
+import { anchorMoves, drawnEdge, drawnLine, edgeDrawn, forget, forgetDrawn, game, hex, previewMarkRows, putAnchorMoves, putConvertedOnLoad, putShiftFrom, putShiftWas, putView, restart, rowsCanGo, sendHome, sendOpened, sendRows, sendState, SHIFT_REACH, shiftFrom, SHIFTS_EXACT } from "./clockMain";
 import { gameNow, lineDays, linesPeriods, loadLineDays, loadRegions, mergeLedger, putTodayGen, putTodayLast, regionEntries, regions, rounded, savedLineDays, savedRegions, sendCash, sendMoney, serviceLeadS, settle, today, todayGen, unsettleAfter } from "./clockMoney";
 import { afterLoadPanic, downTold, EDIT_UNDONE, kept, putDownTold, isPanic, keep, MODEL_DOWN, MODEL_RESTORED, modelDown, newModel, openFailReason, panicAfterEdit, panicLater, panicNow, panicOnLoad, panicWhy, putModelDown, putPanicAfterEdit, putPanicOnLoad, recover, SAVE_PANIC } from "./clockPanic";
 import { wordAfter, wordBefore } from "./clockWord";
+import { mapPatch, patchMiss } from "./clockPatch";
+import { routeEnded, runEnds } from "./clockRunEnds";
+import { nameArrived, nameOwed, nameOwedStations, placedNameless, withName } from "./clockNames";
 import { diagramOn, patchMode, postDiagram, posted, postWhole, putDiagramOn, putDiagramWhole, putPatchMode, sender } from "./clockPost";
-import { achievements, api, applyRunFactors, AUTOSAVE_MS, city, clk, copyOf, dayPinned, dayShift, demandBuilt, demandFine, diagramCities, emptyTrack, epoch, failInPlace, fares, frameSpec, freezeCheckpoint, freezePort, freezeTimer, goals, guide, guideWanted, heldCharges, home, hourLedger, initIncoming, ledger, ledgerDay, lineNotes, lineShapes, loadHolidays, loan, loanOp, messages, modded, mode, newLineCars, newLineHeadway, newLineWeekendShare, opened, outlinesGot, outlinesIn, outlinesRead, packLngLat, packLocal, pageModded, peakC, placeLineCountries, pricesOf, putAchievements, putClk, putCopyOf, putDemandBuilt, putDemandFine, putDiagramCities, putDiagramInside, putEmptyTrack, putEpoch, putFares, putFreezeMemory, putFreezePort, putFreezeTimer, putGoals, putGuide, putGuideWanted, putHiddenLines, putHome, putHourLedger, putIncomePerHour, putInitIncoming, putLedger, putLineIncome, putLineNotes, putLinePoints, putLineRides, putLineShapes, putLineShares, putLoan, putMessages, putMidLoad, putModded, putMoneyFrozen, putNewLineCars, putNewLineHeadway, putNewLineWeekendShare, putOpened, putOutlinesRead, putPageModded, putPrices, putRidesPerHour, putRowsSent, putStars, putTiming, putTrackVersion, putUpkeepRegions, send, setMode, setStartZone, stars, startZone, syncHolidays, timing, trackVersion, withModded } from "./clockState";
+import { achievements, api, applyRunFactors, AUTOSAVE_MS, city, clk, copyOf, dayPinned, dayShift, demandBuilt, demandFine, diagramCities, emptyTrack, epoch, failInPlace, fares, frameSpec, freezeCheckpoint, freezePort, freezeTimer, goals, guide, guideWanted, heldCharges, home, hourLedger, initIncoming, ledger, ledgerDay, lineIncome, lineNotes, linePoints, lineRides, lineShapes, loadHolidays, loan, loanOp, messages, modded, mode, newLineCars, newLineHeadway, newLineWeekendShare, opened, outlinesGot, outlinesIn, outlinesRead, packLngLat, packLocal, pageModded, peakC, placeLineCountries, pricesOf, putAchievements, putClk, putCopyOf, putDemandBuilt, putDemandFine, putDiagramCities, putDiagramInside, putEmptyTrack, putEpoch, putFares, putFreezeMemory, putFreezePort, putFreezeTimer, putGoals, putGuide, putGuideWanted, putHiddenLines, putHome, putHourLedger, putIncomePerHour, putInitIncoming, putLedger, putLineIncome, putLineNotes, putLinePoints, putLineRides, putLineShapes, putLineShares, putLoan, putMessages, putMidLoad, putModded, putMoneyFrozen, putNewLineCars, putNewLineHeadway, putNewLineWeekendShare, putOpened, putOutlinesRead, putPageModded, putPrices, putRidesPerHour, putRowsSent, putStars, putTiming, putTrackVersion, putUpkeepRegions, send, setMode, setStartZone, stars, startZone, syncHolidays, timing, trackVersion, withModded } from "./clockState";
 
 // T-3734: the save slot (slots.ts) and what it needs of the game in hand
 bindSlots({ api: () => api, game: () => game, send, gameNow, saveBytes, slotSummary, roomFor, outOfRoom, loadGame, inQueue: (f) => (putMessages(messages.then(f).catch((err) => send({ kind: "error", message: String(err) }))), messages), isPanic, panicLater, openFailed: failInPlace });
@@ -69,6 +72,7 @@ function header(m: typeof kept = null): SaveHeader {
 /** The game as file bytes. The network and header are taken at once, before anything awaits. */
 function saveBytes(): Promise<Uint8Array> {
   settle();
+  settleOwedNow();
   return encodeSave(header(), api!.save());
 }
 /** T-3869: the same in parts of at most 64 KB, never joined (a download) */
@@ -78,6 +82,7 @@ function saveParts(): Uint8Array[] {
     return encodeSaveParts(header(kept), kept.net);
   }
   settle();
+  settleOwedNow();
   return encodeSaveParts(header(), api!.save());
 }
 
@@ -488,6 +493,10 @@ function rowsOwed() {
   if (!api || modelDown || !f?.waiting.some((w) => w.owes()) || !sendRows()) return;
   for (const w of f.waiting) w.worldSent();
 }
+// T-4272: demand's results kept while a follow-up waited go into the queue, in order, once none waits; one from a game no
+// longer in hand is dropped (the message that ran the follow-up may open another, whose restart clears riders)
+// (T-4281: a question kept so is answered empty, as one the model cannot answer is)
+whenStateWent((msgs) => { for (const k of msgs) putMessages(messages.then(() => k.game === game ? processMessage(k.m) : failAnswer(k.m, [])).then(pumpBlocks).catch((err) => send({ kind: "error", message: String(err) }))); });
 onmessage = (e: MessageEvent<ToClock>) => {
   const msg = e.data;
   if (msg.kind === "freezeTrace") {
@@ -545,6 +554,8 @@ onmessage = (e: MessageEvent<ToClock>) => {
     return;
   }
   if (isPreview(msg)) putPreviewAt(performance.now());
+  // T-4214: a station's name, taken by its edit if that still waits in the queue
+  if (msg.kind === "stationName") nameArrived(msg.ticket, msg.name, msg.game);
   putMessages(messages.then(() => processMessage(msg)).then(pumpBlocks).catch(err => send({ kind: "error", message: String(err) })));
 };
 async function processMessage(msg: ToClock) {
@@ -719,13 +730,17 @@ async function processMessage(msg: ToClock) {
     if (!followUp.job) { clearTimeout(followTimer); stepThenRun(followUp); }
     return;
   }
+  // T-4214: a name its stations took when applied (or for a station refused, or another game's) has nothing left to do
+  if (msg.kind === "stationName" && !nameOwed(msg.ticket, game)) return;
   // T-3803: a follow-up's first edit HOLD_MS ago: an edit neither joins it nor goes ahead of it any more, so its state
   // still comes at most then (T-2404, T-2766) however quickly edits keep coming
   const due = !!followUp && msg.kind === "edit" && performance.now() - followUp.ask.at >= HOLD_MS;
-  if (followUp && !jumpsAhead(msg) && !(followUp.held && passesHeld(msg, followUp.held) && !due)) {
+  // T-4272: demand's results wait for the state; the page's money figures and the clock pass
+  if (followUp && waitsFollowUp(msg, followUp) && !(followUp.held && passesHeld(msg, followUp.held))) return keepUntilState(msg);
+  if (followUp && !jumpsAhead(msg) && !passesFollowUp(msg) && !(followUp.held && passesHeld(msg, followUp.held) && !due)) {
     // T-3803: an edit goes ahead of a follow-up's state still to come or between its pieces
     if (!due && api && !modelDown && goesAhead(msg, followUp)) standAside(followUp);
-    else await guardedFollowUp();
+    else await guardedFollowUp(due ? "due" : msg.kind === "query" ? "query:" + msg.q.what : msg.kind);
   }
   if (msg.kind === "release") return;
   if (msg.kind === "leave") return await leave(msg);
@@ -786,7 +801,8 @@ function failAnswer(msg: ToClock, issues: string[] = ["Internal"]) { // i18n-ign
 
 /** Once a wall second: autosave when due. */
 function tick() {
-  if (!api || modelDown) return;
+  // T-4272: nor while answered edits owe their services (an edit's follow-up works them out within a few tasks)
+  if (!api || modelDown || api.owes()) return;
   if (saves.dirty && Date.now() - saves.savedAt >= AUTOSAVE_MS) void autosave();
   else if (saves.cloudRetryAt && Date.now() >= saves.cloudRetryAt) { saves.cloudRetryAt = Date.now() + CLOUD_RETRY_MS; void cloudUp(saves.activeSlot); }
   noteUnsaved();
@@ -973,13 +989,23 @@ async function handleMessage(msg: ToClock) {
       send({ kind: "edited", seq: msg.seq, ok: r === 0, issues: r === 0 ? [] : issues(), charge, node });
       return;
     }
+    // T-4214 stage D: a track run's segment sent on from the one before starts at that one's end node
+    if (msg.op.op === "route") {
+      const r = runEnds(msg.op);
+      if (!r) {
+        routeEnded(msg.seq, undefined);
+        refusedLast = msg.seq;
+        return void send({ kind: "edited", seq: msg.seq, ok: false, issues: [], charge: 0 });
+      }
+      msg.op = r;
+    }
     await parkedOn(worldWaterIntoModel());
     await parkedOn(masksFor(msg.op));
     if (msg.op.op === "construct" || msg.op.op === "constructAll" || msg.op.op === "constructLine" || msg.op.op === "rebuild") {
       const missing = await parkedOn(groundForBlueprint());
       if (missing) return void send({ kind: "edited", seq: msg.seq, ok: false, issues: [missing], charge: 0 });
     }
-    const tA = performance.now();
+    const tA = performance.now(), forced = takeForced();
     // T-2763: blueprint track taken out carries no train, as a segment put in (T-1780)
     const bpRemove = msg.op.op === "removeEdge" && posted.edges.get(msg.op.edge)?.built === false;
     // T-1071: a train count takes effect a moment ahead, once its trips are on screen
@@ -996,10 +1022,14 @@ async function handleMessage(msg: ToClock) {
       api.set_edit_lead(0);
       return void send({ kind: "edited", seq: msg.seq, ok: false, issues: [], charge: 0 });
     }
+    msg.op = withName(msg.op, game);
     const before = wordBefore(api, msg.op, posted);
+    api.take_service_moved(); // T-4249: what the previews asked meanwhile moved and put back does not count
     const applied = apply(msg.op);
+    const moved = api.take_service_moved();
     const { r, fault, line, node, skipped, charge: charged, trainCharge, why } = applied;
     refusedLast = r === 0 ? -1 : msg.seq;
+    if (msg.op.op === "route") routeEnded(msg.seq, r === 0 ? node : undefined);
     api.set_edit_lead(0); // a refused edit leaves it set
     if (import.meta.env.DEV && panicAfterEdit) { putPanicAfterEdit(false); panicNow(); }
     const tB = performance.now();
@@ -1007,12 +1037,22 @@ async function handleMessage(msg: ToClock) {
     // an op of two edits (T-1899) says what both charged
     const charge = r === 0 ? charged ?? api.last_charge() : 0;
     const op = msg.op, seq = msg.seq;
-    const answer = (early?: boolean, held?: Float32Array[]) => send({ kind: "edited", seq, ok: r === 0, issues: r === 0 ? why ?? [] : r === INSERT_REFUSED ? ["InsertStop"] : r === DROP_REFUSED ? ["DropStop"] : r === ORDER_REFUSED && fault ? [`StopOrder:${fault.join(":")}`] : issues(), charge, line, node, paid: paidFor(op), skipped, ms: { apply: tB - tA, ...timing, total: performance.now() - tA }, early, held }); // i18n-ignore
+    const answer = (early?: boolean, held?: Float32Array[]) => send({ kind: "edited", seq, ok: r === 0, issues: r === 0 ? why ?? [] : r === INSERT_REFUSED ? ["InsertStop"] : r === DROP_REFUSED ? ["DropStop"] : r === ORDER_REFUSED && fault ? [`StopOrder:${fault.join(":")}`] : issues(), charge, line, node, paid: paidFor(op), skipped, ms: { apply: tB - tA, ...timing, ...forced, total: performance.now() - tA }, early, held }); // i18n-ignore
     if (r !== 0) return answer();
+    placedNameless(api, msg.op, game);
     // T-4145: what the page can show of the edit, before its rows and network (a stop click's line path, T-4114)
     // T-4170: and whether a network follows (`later`'s `net` below: none for a service edit or a rename sent as rows)
     const noNet = service || (named && !msg.early && !msg.rows && rowsCanGo());
-    send({ kind: "applied", seq, word: wordAfter(api, op, applied, posted, before, charge), ...(noNet ? { noNet: true as const } : {}) });
+    const word = wordAfter(api, op, applied, posted, before, charge);
+    // T-4214: and the records it touched, which the page patches the map its tools click on with (none for an edit whose
+    // network is not drawn, a service edit's, a rename's or a stop click's: no click waits for a stop click, and its rows
+    // follow at once)
+    const tP = performance.now();
+    const patch = service || named || msg.rows ? undefined : mapPatch(api);
+    timing.patch = performance.now() - tP;
+    if (!patch) timing.noPatch = 1;
+    if (import.meta.env.DEV && !patch && !service && !named && !msg.rows) console.debug(`T-4214: no patch for ${op.op}: ${patchMiss}`);
+    send({ kind: "applied", seq, word, ...(noNet ? { noNet: true as const } : {}), ...(patch ? { patch } : {}) });
     saves.dirty = saves.edited = true; saves.editAt = Date.now();
     if (line !== undefined) { newLineShape(op, line); newLineFare(op, line); }
     // T-3581: a line deleted or brought back by an undo or redo has its fare multiple dropped or given back in the
@@ -1024,8 +1064,9 @@ async function handleMessage(msg: ToClock) {
     const demand = api.dirty_demand_lines();
     // T-1780: blueprint track changes no train's run, so the trips and boarding account stand
     // (about 60 ms on New York's real save, more on shared track); T-1805: nor does the
-    // junction it pays for when it branches off constructed track
-    const trips = !((op.op === "route" || bpRemove || named) && !demand.length);
+    // junction it pays for when it branches off constructed track; T-4249: nor any edit that
+    // rebuilt, rescheduled or re-timed no line (a station on track no line runs over)
+    const trips = moved && !((op.op === "route" || bpRemove || named) && !demand.length);
     const effectiveAt = service ? api.edit_time() : undefined;
     // T-1407: the track tool's free segment is answered now (its next ghost needs only the model),
     // its state a moment later (a junction it pays for has its money's split read off that state)
@@ -1050,16 +1091,22 @@ async function handleMessage(msg: ToClock) {
     // T-4147: and a line edit's list and panel entries (`rowsFirst`), its network still to come
     const renamed = (named || rowsFirst(op)) && !early && !service && !msg.rows && sendRows();
     if (renamed) answer();
+    // T-4214: a map click's patched edit that cost nothing (`click`: a station, a delete) is answered now: the map the tools
+    // pick on holds it, so the tool waiting on the answer (a station's tries, a delete) lets the next click go. Any other
+    // edit is answered once `world` holds it, as before; a paid one waits for its state, whose world its money's split is
+    // read off (`chargeShares`).
+    const patched = !!patch && !!msg.click && !(charge > 0) && !early && !renamed && !stops;
+    if (patched) answer();
     // T-1407: the state, the trips and the boarding hour (and the answer, so the world is up to
     // date when it arrives) after the previews asked meanwhile
     // T-3803: answered already, or once a world holding it went (a rows state when an edit comes before its own state);
     // an early answer's money split waits for the next state the page takes
-    let answered = early || renamed, shares = early && charge > 0;
+    let answered = early || renamed || patched, shares = early && charge > 0;
     const rest = () => {
       // T-3758: a line's fare mode changes no train's run, yet demand reads it; T-3892: nor need a boat size (its riders, fares);
       // T-3915: nor BRT on a route with no road in town (its fares); T-3944: which a Construct turns on
       const brtOn = (op.op === "constructLine" || op.op === "constructAll" || op.op === "construct") && charge > 0;
-      if (demand.length || op.op === "undo" || op.op === "redo" || op.op === "lineFareDist" || op.op === "ferryBoat" || op.op === "busBrt" || brtOn || stationsKey() !== snapStations) scheduleSnapshot();
+      if (demand.length || op.op === "undo" || op.op === "redo" || op.op === "separate" || op.op === "lineFareDist" || op.op === "ferryBoat" || op.op === "busBrt" || brtOn || stationsKey() !== snapStations) scheduleSnapshot();
       if (!answered) { answered = true; answer(); }
       keep();
       // Paid for something: keep it (T-029, autosave on construct).
@@ -1072,20 +1119,32 @@ async function handleMessage(msg: ToClock) {
     // a service edit's first step only before its state (T-3655)
     trips && api.has_riders() ? editSteps(service) : undefined,
     hold || stops, stops);
+  } else if (msg.kind === "stationName") {
+    // T-4214: stations placed before their name came take it now, in the state their edit's follow-up sends (it goes ahead
+    // of that state, `goesAhead`), or in a rows state of its own once that state went
+    if (msg.game !== game || !nameOwedStations(api!, msg.ticket, msg.name, game)) return;
+    saves.dirty = saves.edited = true; saves.editAt = Date.now();
+    const patch = mapPatch(api!);
+    send({ kind: "named", ...(patch ? { patch } : {}) });
+    later({ net: false, name: true, service: false, trips: false, early: false, at: performance.now() }, keep, () => {}, null, 0);
   } else if (msg.kind === "clock") {
     putClk({ t: msg.t, rate: msg.rate, at: msg.at });
   } else if (msg.kind === "income") {
     putIncomePerHour(msg.perHour.map((p) => p.slice(0, PERIODS.length)));
-    putLineIncome(new Map((msg.lines ?? []).map((l) => [l.line, l.perHour])));
+    // T-4284: with `order`, only the lines whose entries changed came; the others stand as held
+    const got = new Map((msg.lines ?? []).map((l) => [l.line, l]));
+    const order = msg.order ?? (msg.lines ?? []).map((l) => l.line);
+    putLineIncome(new Map(order.map((id) => [id, got.get(id)?.perHour ?? lineIncome.get(id) ?? []])));
     putRidesPerHour(msg.rides.map((p) => p.slice(0, PERIODS.length)));
-    putLineRides(new Map((msg.lines ?? []).map((l) => [l.line, l.rides])));
+    putLineRides(new Map(order.map((id) => [id, got.get(id)?.rides ?? lineRides.get(id) ?? []])));
   } else if (msg.kind === "regionShares") {
     putLineShares(new Map(msg.lines.map((l) => [l.line, { fare: l.fare, ride: l.ride, run: l.run }])));
     putUpkeepRegions(msg.upkeep);
     // the money state carries the running cost an hour, which the factors move
     if (applyRunFactors()) sendMoney();
   } else if (msg.kind === "points") {
-    putLinePoints(new Map(msg.lines.map((l) => [l.line, l.regions])));
+    const got = new Map(msg.lines.map((l) => [l.line, l.regions]));
+    putLinePoints(msg.order ? new Map(msg.order.map((id) => [id, got.get(id) ?? linePoints.get(id) ?? []])) : got);
   } else if (msg.kind === "star" && msg.share !== undefined) {
     const g = goals.get(msg.zone) ?? {};
     if (g[msg.share] === undefined) {
@@ -1253,12 +1312,15 @@ async function handleMessage(msg: ToClock) {
     else sendStale(msg.seq);
   } else if (msg.kind === "preview" || msg.kind === "previewEdge") {
     const a = api;
-    const out = await parkedOn(withMasks(() => msg.kind === "preview"
-      ? a.preview_route(...routeArgs(a, msg))
-      : (a.set_design_speed(designOf(msg)), a.preview_edge(msg.edge, pisArr(msg.pis))), routePoints, msg.seq));
+    // T-4214 stage D: a ghost from a run's end still to be answered, read as that end's node (none from a refused one)
+    const m = msg.kind === "preview" ? runEnds(msg) : msg;
+    if (!m) return sendStale(msg.seq);
+    const out = await parkedOn(withMasks(() => m.kind === "preview"
+      ? a.preview_route(...routeArgs(a, m))
+      : (a.set_design_speed(designOf(m)), a.preview_edge(m.edge, pisArr(m.pis))), routePoints, msg.seq));
     if (!out) return sendStale(msg.seq);
     void roadsUnder(routePoints(out));
-    if (msg.kind === "preview") maskedRoute = masksComplete ? routeKey(msg) : "";
+    if (m.kind === "preview") maskedRoute = masksComplete ? routeKey(m) : "";
     let arc: Float64Array | undefined;
     const ra = msg.kind === "preview" ? a.route_arc() : null;
     if (ra?.length === 3) {
@@ -1331,8 +1393,7 @@ async function handleMessage(msg: ToClock) {
       // T-1170: only positions are in local units; the rows hold none, so they stay as posted and
       // the page keeps its world's rows (labels, complexes and the rest are not rebuilt)
       putShiftWas(shiftFrom ? new Map(edgeDrawn) : new Map());
-      edgeDrawn.clear();
-      lineDrawn.clear();
+      forgetDrawn();
       posted.net = null;
       sender.forget();
       sendState();

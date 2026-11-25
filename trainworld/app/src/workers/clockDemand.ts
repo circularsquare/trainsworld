@@ -7,15 +7,16 @@ import { headwaysFor, headwaysIn } from "../game/newLine";
 import { BOATS, MEDIUM, type Boat } from "../game/boats";
 import { NEIGHBOUR_FARE_M } from "../game/fareZones";
 import { assignBays, BAY_LOOKBACK_S, profileTimes } from "../map/terminalBays";
-import { buildComplexes, type Complexes } from "../game/complexes";
-import { ComplexBuilder } from "../game/complexBuilder";
-import { buildingMembers, buildingsFrom, withBuildingLinks } from "../game/buildings";
+import { NO_PAIRS, buildComplexes, pairKey, type Complexes } from "../game/complexes";
+import { ComplexBuilder, complexChanges, complexesDiffer, type ComplexInputs } from "../game/complexBuilder";
+import { buildingMembers, buildingsFrom, withBuildingLinks, type BuildingInput } from "../game/buildings";
 import { BRT_STATION, IN_BUILDING } from "../game/upgrades";
 import { type NewHeadways } from "./saveFile";
-import { upgradesOf } from "./stateRows";
+import { rowGeo, upgradesOf, type StationGeo } from "./stateRows";
+import type { KeepInput } from "../game/types";
 import type { ClockBus, ClockNode, EditOp, FerryPortIn, FerryRow, NetworkSnapshot } from "./protocol";
 import { demandFares, tidyLineFares } from "./clockFares";
-import { followUp, putServiceEditMs, REST_MS, runFollowUp } from "./clockFollowUp";
+import { followUp, putServiceEditMs, REST_MS, whenNoneWaits } from "./clockFollowUp";
 import { platformLineOf, stateRows, termEnds, version } from "./clockMain";
 import { dayEntry, gameNow, hourEntry, moneyNow, putTodayGen, regionEntries, shapeHour, todayGen } from "./clockMoney";
 import { patchMode } from "./clockPost";
@@ -86,17 +87,21 @@ let boardSince: number | null = null;
 /** a service edit's loads are still being worked out (its lead is timed when they go) */
 export const loadsOwed = () => boardSince !== null;
 export function loadsLater(boardAt: number | undefined): boolean {
-  if (boardAt === undefined || !accountStale()) return false;
+  if (boardAt === undefined || !api?.has_riders() || !api.boarding_step_service(0)) return false;
+  accountStale();
   boardSince = boardAt;
   return true;
 }
-/** an edit's boarding steps before its state (`later`'s `step`); `budget`: at most BOARD_STEPS_BEFORE_STATE */
+/** an edit's boarding steps before its state (`later`'s `step`); `budget`: at most BOARD_STEPS_BEFORE_STATE. T-4240: only
+ * the lines whose service changed (the edit's): lines out of date for new riders alone keep their last loads in its
+ * trips (`sendSlice`) until `stepBoarding` reaches them, so an edit made while trips are calculated no longer waits for
+ * every line's account (4.8 s of a station's 6.1 s on the Asia save) */
 export function editSteps(budget: boolean): () => boolean {
   let n = 0;
   return () => {
     if (budget && n++ >= BOARD_STEPS_BEFORE_STATE) return false;
     putTodayGen(todayGen + 1);
-    return api!.boarding_step(BOARDING_STEP_LINES);
+    return api!.boarding_step_service(BOARDING_STEP_LINES);
   };
 }
 
@@ -111,9 +116,13 @@ const sentHours = new Set<number>();
  * being worked out (its last step sends both hours); begun again if an edit or a state came between the two */
 function nextHourLater() {
   clearTimeout(nextHourTimer);
+  // (T-4281: as `sendTrips`, after a waiting follow-up's state; an edit between the two tasks starts again here)
+  const waits = () => !!followUp && !followUp.held;
+  if (waits()) return whenNoneWaits(nextHourLater);
   const e = epoch, h = e + 3600;
   const due = () => !!api && e === epoch && !sentHours.has(h) && !accountStale();
   nextHourTimer = setTimeout(() => {
+    if (waits()) return whenNoneWaits(nextHourLater);
     if (!due() || !tripsPrelude()) return;
     const at = [version, trackVersion], s = sliceTrips(h, rawTrips(), bayTimes());
     nextHourTimer = setTimeout(() => {
@@ -152,6 +161,9 @@ function accountStale(): boolean {
  * York); dropped if the trips are sent again or riders come before it. `withBoard` false: no boarding hour, even with
  * riders (T-3804: the account is not up to date). */
 export function sendTrips(split = false, hours?: number[], withBoard = true) {
+  // T-1407: never trips of the model ahead of the state they are drawn on; T-4281: so while a follow-up waits they go after
+  // its state (the account's last step sent them ahead of a click's, and ran that state whole first, 0.4-1 s on her Asia save)
+  if (followUp && !followUp.held) return whenNoneWaits(() => sendTrips(split, hours, withBoard));
   if (!tripsPrelude()) return;
   if (!hours) sentHours.clear();
   if (split && !hours) nextHourLater();
@@ -160,9 +172,7 @@ export function sendTrips(split = false, hours?: number[], withBoard = true) {
 }
 /** what comes before any hour's slice; false if there is none to send */
 function tripsPrelude(): boolean {
-  // T-1407: never trips of the model ahead of the state they are drawn on; T-2404: a held
-  // follow-up's blueprint changes no line's run, so its trips are the same
-  if (followUp && !followUp.held) runFollowUp();
+  // (T-2404: a held follow-up's blueprint changes no line's run, so its trips are the same; any other waits, `sendTrips`)
   clearTimeout(nextHourTimer);
   if (!api || !Number.isFinite(epoch)) return false;
   putTodayGen(todayGen + 1);
@@ -220,10 +230,12 @@ function sendSlice(s: TripSlice, withBoard = true) {
   const a = api!, { e, trips, ends, nexts, bays } = s, riders = a.has_riders();
   if (withBoard && riders) {
     const t0 = performance.now();
-    const board = a.boarding_hour(e);
+    // (T-4240: a line out of date for new riders alone with its last loads, so an edit's trips never wait for every
+    // line's account; the last of `stepBoarding`'s steps sends the hours again with theirs)
+    const board = a.boarding_hour_kept(e);
     shapeHour(e, board); // T-284: when this hour's fares land, read before the slice is sent
     timing.board += performance.now() - t0;
-    send({ kind: "trips", version, epoch: e, trips, ends, nexts, bays, board, boardMs: performance.now() - t0, redone: a.boarding_redone(), prepMs: prep.ms, prepMax: prep.max }, [trips.buffer, ends.buffer, nexts.buffer, bays.buffer, board.buffer]);
+    send({ kind: "trips", version, epoch: e, trips, ends, nexts, bays, board, boardMs: performance.now() - t0, redone: a.boarding_redone(), prepMs: prep.ms, prepMax: prep.max, ...(import.meta.env.DEV ? { timing: { trips: timing.trips, bays: timing.bays, board: timing.board } } : {}) }, [trips.buffer, ends.buffer, nexts.buffer, bays.buffer, board.buffer]);
     prep = { ms: 0, max: 0 };
   } else send({ kind: "trips", version, epoch: e, trips, ends, nexts, bays }, [trips.buffer, ends.buffer, nexts.buffer, bays.buffer]);
   if (withBoard || !riders) sentHours.add(e);
@@ -246,9 +258,9 @@ export function bookCharge(seq: number, charge: number, trains: number) {
 /** T-1380: the complexes of the snapshot's built stations and of every station (`complexOfNodes`),
  * each kept up to date from the stations that changed since it was last asked for. */
 const snapshotComplexes = new ComplexBuilder();
-export const nodeComplexes = new ComplexBuilder();
+const nodeComplexes = new ComplexBuilder();
 export const groundK = (y: number) => (frame.kind === "merc" ? mercK(y) : 1);
-export type StationGeo = { id: string; x: number; y: number; heading: number; length: number; line?: Float32Array };
+export type { StationGeo };
 function stationGeo(a: TrackApi, ni: ArrayLike<number>, i: number): StationGeo {
   const line = platformLineOf(a, ni[i], ni[i + 1], ni[i + 2], ni[i + 7]);
   return { id: String(ni[i]), x: ni[i + 1], y: ni[i + 2], heading: ni[i + 9], length: ni[i + 7], ...(line ? { line } : {}) };
@@ -257,25 +269,16 @@ function stationGeo(a: TrackApi, ni: ArrayLike<number>, i: number): StationGeo {
 function buildingsOf(a: TrackApi) {
   return buildingsFrom(a.buildings_info(), (id) => (a.building_named(id) ? a.building_name(id) : ""));
 }
-/** T-3750: each unnamed building's first member, kept while the station rows and those outlines stay */
-let bldFirst: { rows: readonly ClockNode[]; key: string; first: Map<number, number> } | null = null;
-/** The station buildings as shown: one nobody named shows its complex's name (`StateRows.complexName`,
- * read with `nodes`), the part before any slash, as the track model's own default. */
-export function shownBuildings(a: TrackApi, nodes: readonly ClockNode[]) {
+/** The station buildings as shown: one nobody named shows its first member's complex's name (`StateRows.complexName`;
+ * T-4300: its members kept with the complexes, `buildingFirst`, as the last rows read them), the part before any slash,
+ * as the track model's own default. */
+export function shownBuildings(a: TrackApi) {
   const blds = buildingsOf(a);
-  const open = blds.filter((b) => !b.name);
-  if (!open.length) return blds;
-  const key = open.map((b) => `${b.id}:${b.corners.join(",")}`).join("|");
-  if (!bldFirst || bldFirst.key !== key || bldFirst.rows.length !== nodes.length || bldFirst.rows.some((r, i) => r !== nodes[i])) {
-    const geo = nodes.filter((r) => r.platform > 0 && !r.port).map((r) => ({ id: String(r.id), x: r.x, y: r.y, heading: r.heading, length: r.platform, ...(r.line ? { line: r.line } : {}) }));
-    const members = buildingMembers(open, geo, groundK);
-    bldFirst = { rows: nodes, key, first: new Map(open.map((b, i) => [b.id, members[i].length ? Number(members[i][0]) : -1])) };
-  }
-  const first = bldFirst.first;
+  if (!blds.some((b) => !b.name)) return blds;
   return blds.map((b) => {
     if (b.name) return b;
-    const m = first.get(b.id) ?? -1;
-    const name = (m >= 0 ? stateRows.complexName(m) : undefined) ?? a.building_name(b.id);
+    const m = stateRows.buildingFirst(b.id);
+    const name = (m !== undefined ? stateRows.complexName(m) : undefined) ?? a.building_name(b.id);
     return { ...b, name: name.split("/")[0].trim() };
   });
 }
@@ -292,11 +295,48 @@ export function renameComplex(a: TrackApi, node: number, name: string): number {
   if (stateRows.complexSize(node) <= 1 && a.station_own(node)) return a.set_station_own(node, name, true);
   return a.type_station_name(stateRows.headOf(node) ?? node, name);
 }
+/** T-4259 (omi-key's PR 35): the line panel's Rename stations: each station renamed as `renameStation` does (an
+ * unbound one alone, a bound one's complex through its head), all as one undo (`TrackApi.rename_stations`). */
+export function renameStations(a: TrackApi, nodes: number[], names: string[]): number {
+  const to: number[] = [], as: string[] = [], kinds: number[] = [];
+  nodes.forEach((node, i) => {
+    const name = names[i]?.trim();
+    if (!name) return;
+    if (a.station_own(node)) to.push(node), kinds.push(stateRows.complexSize(node) <= 1 ? 1 : 0);
+    else to.push(stateRows.headOf(node) ?? node), kinds.push(2);
+    as.push(name);
+  });
+  return to.length ? a.rename_stations(new Uint32Array(to), as, new Uint8Array(kinds)) : 0;
+}
+const NO_KEEP = 0xffffffff;
+/** T-4080: name a bus stop as its panel does: the name goes to the kept stop its place already has (the first of `stops` with
+ * one), else a new one at (x, y); an empty name clears it. */
+export function renameBusStop(a: TrackApi, stops: number[], x: number, y: number, name: string): number {
+  const id = stops.map((s) => a.bus_stop_keep(s)).find((k) => k !== NO_KEEP);
+  return a.name_keep(id ?? NO_KEEP, x, y, name);
+}
+let keepsRead: { epoch: number; list: KeepInput[] } | null = null;
+/** T-4080: the kept stops that have a name, read again when the sim says the kept stops changed (`keep_epoch`, which a load
+ * starts over: `forgetKeeps`) */
+export function namedKeeps(a: TrackApi): KeepInput[] {
+  const epoch = a.keep_epoch();
+  if (keepsRead?.epoch === epoch) return keepsRead.list;
+  const flat = a.keeps(), list: KeepInput[] = [];
+  for (let k = 0; k + 2 < flat.length; k += 3) {
+    const name = a.keep_name(flat[k]);
+    if (name) list.push({ id: flat[k], x: flat[k + 1], y: flat[k + 2], name });
+  }
+  keepsRead = { epoch, list };
+  return list;
+}
+export const forgetKeeps = () => { keepsRead = null; };
 /** T-3793: an edit that changes only what a station or line is called (asked before it is applied): no train's run
  * changes, and the network drawn has no names in it. T-4147: and a new line with no stops. */
 export function nameOnly(op: EditOp): boolean {
   switch (op.op) {
-    case "renameStation": case "renameComplex": case "bindStation": case "bindAll": return true;
+    case "renameStation": case "renameComplex": case "renameStations": case "bindStation": case "bindAll": return true;
+    // T-4080: a name for a kept stop that exists moves no stop; making or clearing one can (lines near it are planned again)
+    case "renameBusStop": return !!op.name && op.stops.some((s) => api!.bus_stop_keep(s) !== NO_KEEP);
     case "stationProps": return op.platform === stateRows.nodeRow(op.node)?.platform;
     // T-4147: a line with no stops draws nothing and carries no train, so its list entry needs only the rows
     case "addLine": return op.stops.length === 0;
@@ -304,16 +344,49 @@ export function nameOnly(op: EditOp): boolean {
     default: return false;
   }
 }
-/** The complexes of `geo` with the player's `links` and the station buildings' members (T-2217). */
-export function complexesOf(builder: ComplexBuilder, geo: StationGeo[], playerLinks: [string, string][]): Complexes {
-  const links = withBuildingLinks(playerLinks, buildingsOf(api!), geo, groundK);
-  if (patchMode === "0") return buildComplexes(geo, links, groundK);
-  const cx = builder.update(geo, links, groundK, frame.kind);
+let apartFlat = "", apartKeys: ReadonlySet<string> = NO_PAIRS;
+/** T-4048: the pairs the player separated, as `pairKey`s; the same set while they stay the same */
+export function apartNow(a: TrackApi): ReadonlySet<string> {
+  const fl = a.station_apart(), k = fl.join();
+  if (k !== apartFlat) {
+    apartFlat = k;
+    const s = new Set<string>();
+    for (let i = 0; i + 1 < fl.length; i += 2) s.add(pairKey(String(fl[i]), String(fl[i + 1])));
+    apartKeys = s.size ? s : NO_PAIRS;
+  }
+  return apartKeys;
+}
+const NO_LINKS: readonly (readonly [string, string])[] = [];
+let linksFlat: ArrayLike<number> = [], linkPairs = NO_LINKS;
+let bldFlat: ArrayLike<number> = [], bldShapes: readonly BuildingInput[] = [];
+/** T-4300: what the complexes are made of besides the stations (the player's links T-197, the pairs separated T-4048, the
+ * station buildings' outlines T-2217), each the same object while the model's numbers for it are the same */
+export function complexInputs(a: TrackApi): ComplexInputs {
+  const fl = a.station_links();
+  if (!sameNums(fl, linksFlat)) {
+    linksFlat = fl;
+    const p: [string, string][] = [];
+    for (let k = 0; k + 1 < fl.length; k += 2) p.push([String(fl[k]), String(fl[k + 1])]);
+    linkPairs = p.length ? p : NO_LINKS;
+  }
+  const bi = a.buildings_info();
+  if (!sameNums(bi, bldFlat)) { bldFlat = bi; bldShapes = buildingsFrom(bi, () => ""); }
+  return { links: linkPairs, apart: apartNow(a), buildings: bldShapes, kAt: groundK, frame: frame.kind };
+}
+function sameNums(p: ArrayLike<number>, q: ArrayLike<number>): boolean {
+  if (p.length !== q.length) return false;
+  for (let i = 0; i < p.length; i++) if (p[i] !== q[i]) return false;
+  return true;
+}
+
+/** The complexes of `geo` (each station once) kept by `builder` from the stations that changed since its last call. */
+function complexesOf(builder: ComplexBuilder, geo: StationGeo[]): Complexes {
+  const c = complexInputs(api!);
+  if (patchMode === "0") return buildComplexes(geo, withBuildingLinks(c.links, c.buildings, geo, groundK), groundK, c.apart);
+  const cx = builder.update(geo, c.links, groundK, c.frame, c.apart, c.buildings);
   if (patchMode === "check") {
-    const full = buildComplexes(geo, links, groundK);
-    if (cx.of.size !== full.of.size || cx.members.length !== full.members.length || [...full.of].some(([id, c]) => cx.of.get(id) !== c) || full.members.some((m, i) => m.join() !== cx.members[i].join())) {
-      console.error("T-1380 check: the complexes patched from changes differ from a whole build");
-    }
+    const d = complexesDiffer(cx, geo, c.links, groundK, c.apart, c.buildings);
+    if (d) console.error(`T-1380 check: the complexes patched from changes differ from a whole build (${d})`);
   }
   return cx;
 }
@@ -337,11 +410,16 @@ export function buildSnapshot(): NetworkSnapshot {
     }
   }
   // T-161: each constructed station's complex, among constructed stations only (a blueprint
-  // platform carries nobody, so it joins nothing), with the player's links (T-197)
-  const fl = a.station_links(), links: [string, string][] = [];
-  for (let k = 0; k + 1 < fl.length; k += 2) links.push([String(fl[k]), String(fl[k + 1])]);
-  const cx = complexesOf(snapshotComplexes, geo, links);
-  stations.forEach((s) => (s.complex = cx.of.get(String(s.id))));
+  // platform carries nobody, so it joins nothing), with the player's links (T-197); numbered 0, 1, ... by their first
+  // station, as demand takes them (workers/demandClient.ts numbers a station of none past them)
+  const cx = complexesOf(snapshotComplexes, geo), dense = new Map<number, number>();
+  for (const s of stations) {
+    const c = cx.of.get(String(s.id));
+    if (c === undefined) continue;
+    let d = dense.get(c);
+    if (d === undefined) dense.set(c, (d = dense.size));
+    s.complex = d;
+  }
   // T-2220: a change inside a station building is quicker; the bit is the snapshot's alone, never saved
   const blds = buildingsOf(a);
   if (blds.length) {
@@ -356,7 +434,10 @@ export function buildSnapshot(): NetworkSnapshot {
   }
   // T-1281: the links are passages, walked faster; between constructed stations only
   const built = new Set(geo.map((g) => g.id));
-  const passages = links.filter(([p, q]) => built.has(p) && built.has(q)).map(([p, q]) => [Number(p), Number(q)] as [number, number]);
+  const passages = complexInputs(a).links.filter(([p, q]) => built.has(p) && built.has(q)).map(([p, q]) => [Number(p), Number(q)] as [number, number]);
+  // T-4048: the pairs the player separated, between constructed stations only
+  const fa = a.station_apart(), apart: [number, number][] = [];
+  for (let k = 0; k + 1 < fa.length; k += 2) if (built.has(String(fa[k])) && built.has(String(fa[k + 1]))) apart.push([fa[k], fa[k + 1]]);
   const li = a.lines_info();
   const lines: NetworkSnapshot["lines"] = [];
   for (let i = 0; i < li.length; i += 22) {
@@ -400,7 +481,7 @@ export function buildSnapshot(): NetworkSnapshot {
   if (fz.size) busStopFares(stations);
   snapStations = stationsKey(ni);
   tidyLineFares(a);
-  return { version: ++snapVersion, city, frame: frameSpec(), stations, lines, fare: demandFares(), ...(passages.length ? { passages } : {}) };
+  return { version: ++snapVersion, city, frame: frameSpec(), stations, lines, fare: demandFares(), ...(passages.length ? { passages } : {}), ...(apart.length ? { apart } : {}) };
 }
 
 /** T-3740: a bus stop that is no station takes the fare zone of the nearest station with one within
@@ -633,25 +714,80 @@ export function stationsKey(ni = api!.nodes_info()): string {
   return `${out.join(",")}|${api!.station_upgrades().join(",")}${fares.zones ? `|${api!.station_fares().join(",")}` : ""}`;
 }
 
-/** T-1168: each node's station complex for `line_related`, over every station (blueprints too,
- * unlike the snapshot's: a planned express is related before it is built), 0xffffffff for none;
- * worked out again when the world changes. */
-let complexNodes: { version: number; of: Uint32Array } | null = null;
+/** T-1168, T-4300: each node's station complex for `line_related`, the drawn network and the schematic, over every
+ * station (blueprints and ports too, unlike the snapshot's: a planned express is related before it is built),
+ * 0xffffffff for none; a new array for each change, which only the stations whose complex changed differ in. The
+ * complexes follow the state's rows by the reads' changes (`nodeRead`), with the stations edits since the last read
+ * touched taken from the model (`nodeLive`, given again from the rows once a read has them). */
+let nodeRead = -1;
+const nodeLive = new Set<number>();
+let nodeArr: { cx: Complexes; of: Uint32Array } | null = null;
+const NO_COMPLEX = 0xffffffff;
 export function complexOfNodes(): Uint32Array {
-  if (complexNodes?.version === version) return complexNodes.of;
-  const a = api!, ni = a.nodes_info();
-  const geo: StationGeo[] = [];
-  let top = 0;
-  for (let i = 0; i < ni.length; i += 10) {
-    top = Math.max(top, ni[i]);
-    if (ni[i + 7] > 0) geo.push(stationGeo(a, ni, i));
+  const a = api!, c = complexInputs(a);
+  // T-4299: between an edit and its state the stations it touched are read from the model in their place (review21);
+  // after a read that left regions for the next one (a rows state's focus: review25) every station is
+  // (?patch=0 has no builder to patch: every station, as complexesOf builds them)
+  const t = a.peek_touched(), whole = stateRows.behind || t[0] === 0xffffffff || patchMode === "0";
+  let cx: Complexes;
+  if (whole) {
+    const ni = a.nodes_info(), geo: StationGeo[] = [];
+    for (let i = 0; i < ni.length; i += 10) if (ni[i + 7] > 0) geo.push(stationGeo(a, ni, i));
+    cx = complexesOf(nodeComplexes, geo);
+    nodeRead = -1;
+    nodeLive.clear();
+  } else {
+    const touched = new Set(t.subarray(1 + t[0])), since = nodeRead >= 0 && nodeComplexes.ready(c.frame) ? stateRows.changedSince(nodeRead, 1) : null;
+    const changes: [string, StationGeo | null][] = [];
+    // the stations the reads since changed, and those taken from the model before that no edit since touched, as the rows
+    // have them (every one when that is not known)
+    const rows = since ? null : complexesOf(nodeComplexes, stateRows.modelNodes().filter((r) => r.platform > 0).map(rowGeo));
+    if (since) {
+      const put = (id: number) => { const r = stateRows.nodeNow(id); changes.push([String(id), r && r.platform > 0 && !r.bus ? rowGeo(r) : null]); };
+      for (const id of since) if (!touched.has(id)) put(id);
+      for (const id of nodeLive) if (!since.has(id) && !touched.has(id)) put(id);
+    }
+    nodeRead = stateRows.lastRead;
+    nodeLive.clear();
+    // (a touched node the model has no numbers for is gone)
+    if (touched.size) {
+      const ids = Uint32Array.from(touched), ni = a.nodes_info_of(ids), now = new Map<number, StationGeo>();
+      for (let i = 0; i < ni.length; i += 10) if (ni[i + 7] > 0) now.set(ni[i], stationGeo(a, ni, i));
+      for (const id of ids) { changes.push([String(id), now.get(id) ?? null]); nodeLive.add(id); }
+    }
+    cx = rows && !changes.length ? rows : nodeComplexes.patch(changes, c.links, c.kAt, c.frame, c.apart, c.buildings);
   }
-  const fl = a.station_links(), links: [string, string][] = [];
-  for (let k = 0; k + 1 < fl.length; k += 2) links.push([String(fl[k]), String(fl[k + 1])]);
-  const cx = complexesOf(nodeComplexes, geo, links);
-  const of = new Uint32Array(top + 1).fill(0xffffffff);
-  for (const g of geo) of[Number(g.id)] = cx.of.get(g.id)!;
-  complexNodes = { version, of };
+  if (patchMode === "check" && !whole) {
+    const ni = a.nodes_info(), geo: StationGeo[] = [];
+    for (let i = 0; i < ni.length; i += 10) if (ni[i + 7] > 0) geo.push(stationGeo(a, ni, i));
+    const d = complexesDiffer(cx, geo, c.links, c.kAt, c.apart, c.buildings);
+    if (d) console.error(`T-4300 check: every station's complexes kept from the rows and the edits since differ from a whole build of the model's (${d})`);
+  }
+  return nodeArray(cx);
+}
+
+/** each node's complex in `cx` as an array: the last one copied with the stations `complexChanges` names laid in */
+function nodeArray(cx: Complexes): Uint32Array {
+  if (nodeArr?.cx === cx) return nodeArr.of;
+  const ch = nodeArr ? complexChanges(nodeArr.cx, cx) : null;
+  let of: Uint32Array;
+  if (ch && nodeArr) {
+    let top = nodeArr.of.length - 1;
+    for (const id of ch) top = Math.max(top, Number(id));
+    if (top < nodeArr.of.length) of = nodeArr.of.slice();
+    else { of = new Uint32Array(top + 1).fill(NO_COMPLEX); of.set(nodeArr.of); }
+    for (const id of ch) of[Number(id)] = cx.of.get(id) ?? NO_COMPLEX;
+  } else {
+    let top = 0;
+    for (const id of cx.of.keys()) top = Math.max(top, Number(id));
+    of = new Uint32Array(top + 1).fill(NO_COMPLEX);
+    for (const [id, k] of cx.of) of[Number(id)] = k;
+  }
+  if (patchMode === "check") {
+    const bad = [...cx.of].find(([id, k]) => of[Number(id)] !== k) ?? Array.from(of).findIndex((k, n) => k !== NO_COMPLEX && cx.of.get(String(n)) !== k);
+    if (bad !== -1) console.error(`T-4300 check: each node's complex laid from changes differs from the complexes (${bad})`);
+  }
+  nodeArr = { cx, of };
   return of;
 }
 

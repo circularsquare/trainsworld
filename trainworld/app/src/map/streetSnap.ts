@@ -19,6 +19,7 @@ import type { Overlay } from "./overlay";
 import { strokesFromPreview } from "./network";
 import { toLocal, unitPerPxAt } from "./geo";
 import { BusRoads, railRoad, type BusRefusal } from "./busRoads";
+import { buswaysOf } from "./buswayLines";
 
 /** the wait after the pointer moves before the streets are searched, ms; the search and fit take a few ms (notes/T-3016.md) and the workers drop stale asks */
 const REST_MS = 0;
@@ -102,6 +103,8 @@ export class StreetSnap {
   private shownWhy = "";
   private readonly tramRoads: BusRoads;
   private readonly railRoads: BusRoads;
+  /** the roads a BRT station stands beside: a bus may use busways, a tram may not */
+  private readonly brtRoads: BusRoads;
   private profile: SnapProfile = "tram";
   /** where a first click at the pointer would land on a street */
   ringAt: [number, number] | null = null;
@@ -124,11 +127,14 @@ export class StreetSnap {
   ) {
     this.tramRoads = new BusRoads(map, () => this.landed());
     this.railRoads = new BusRoads(map, () => this.landed(), railRoad);
+    // the station tool's hover is worked out again when the roads land (`landed` is for the track tool's search)
+    this.brtRoads = new BusRoads(map, () => this.redraw());
+    this.brtRoads.buswaySource = () => buswaysOf(overlay, true);
   }
 
   /** T-3378: the roads a bus may use, for placing a BRT station beside one */
   get busRoads(): BusRoads {
-    return this.tramRoads;
+    return this.brtRoads;
   }
 
   /** the roads the snap follows now */

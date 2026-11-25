@@ -11,7 +11,7 @@ import { FARE_BASELINE, FARE_E, keepOwn } from "../game/income";
 import { type SaveHeader } from "./saveFile";
 import type { EditOp, PaidFor, PiInput, RouteAsk, RouteEnd, StationAt } from "./protocol";
 import { saves } from "./slots";
-import { addPorts, newLineRows, newLineWeekends, nextBusName, renameComplex, renameStation } from "./clockDemand";
+import { addPorts, newLineRows, newLineWeekends, nextBusName, renameBusStop, renameComplex, renameStation, renameStations } from "./clockDemand";
 import { cityFares, setLineFare } from "./clockFares";
 import { stateRows } from "./clockMain";
 import { gameNow } from "./clockMoney";
@@ -22,6 +22,8 @@ import { api, fares, freezeCheckpoint, hiddenLines, lineShapes, loanOp, newLineC
 function endArr(e: RouteEnd): number[] {
   if (e.kind === "free") return [0, 0, e.x, e.y, e.level];
   if (e.kind === "node") return [1, e.node, 0, 0, 0];
+  // (read as a node before any route reaches the model, clockRunEnds.ts)
+  if (e.kind === "endOf") throw new Error("T-4214: a run end not read as a node");
   return [2, e.edge, e.x, e.y, 0];
 }
 export function freeEnds(at: Extract<StationAt, { kind: "free" }>): Float64Array {
@@ -233,6 +235,10 @@ function applyInner(op: EditOp): Applied {
       return { r: renameStation(a, op.node, op.name) };
     case "renameComplex":
       return { r: renameComplex(a, op.node, op.name) };
+    case "renameStations":
+      return { r: renameStations(a, op.nodes, op.names) };
+    case "renameBusStop":
+      return { r: renameBusStop(a, op.stops, op.x, op.y, op.name) };
     case "bindStation":
       return { r: a.set_station_bound(op.node, op.bound) };
     case "bindAll":
@@ -519,6 +525,8 @@ function applyInner(op: EditOp): Applied {
       return { r: loanOp(op) };
     case "link":
       return { r: op.on ? a.link_stations(op.a, op.b) : a.unlink_stations(op.a, op.b) };
+    case "separate":
+      return { r: a.separate(op.a, op.b, new Uint32Array(op.apart)) };
     case "addBuilding":
       return { r: a.add_building(new Float64Array(op.corners), op.name) };
     case "reshapeBuilding":

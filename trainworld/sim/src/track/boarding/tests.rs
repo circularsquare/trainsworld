@@ -383,6 +383,54 @@ fn line_periods_kept_equal_a_whole_read() {
     same(&b, &w.svc, l, "new riders");
 }
 
+/// T-4240: new riders leave every account out of date, but an edit's steps (`ensure_service_some`) work out only the
+/// lines whose service changed; the others keep their accounts until `ensure_some` reaches them, and `hour_kept` reads
+/// them as they are.
+#[test]
+fn an_edits_steps_leave_new_riders_to_the_steps_after_them() {
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let (mut w, l) = setup(10.0);
+    let mut b = Boarding::default();
+    b.set_riders(&riders(l, [500.0, 200.0, 500.0, 200.0, 50.0]));
+    b.ensure(&w.net, &w.svc);
+    let t = 2.0 * DAY + 8.0 * 3600.0;
+    let before = b.hour(&w.net, &w.svc, t);
+    let id = b.accounts[0][l as usize].as_ref().unwrap().id;
+    b.set_riders(&riders(l, [900.0, 300.0, 700.0, 300.0, 80.0]));
+    let fresh = b.clone().hour(&w.net, &w.svc, t);
+    assert_ne!(bits(&fresh), bits(&before), "the new riders load the trains otherwise");
+    assert!(b.ensure_some(&w.net, &w.svc, 0), "out of date for the new riders");
+    assert!(!b.ensure_service_some(&w.net, &w.svc, 0), "but not for an edit");
+    assert_eq!(bits(&b.hour_kept(&w.net, &w.svc, t)), bits(&before), "the last riders' loads");
+    assert_eq!(b.accounts[0][l as usize].as_ref().unwrap().id, id);
+    set_headway(&mut w, l, [20.0, 10.0, 5.0]);
+    assert!(b.ensure_service_some(&w.net, &w.svc, 0), "the service changed");
+    assert!(!b.ensure_service_some(&w.net, &w.svc, usize::MAX));
+    assert!(!b.ensure_some(&w.net, &w.svc, 0), "worked out with the new riders");
+    let kept = b.hour_kept(&w.net, &w.svc, t);
+    assert_eq!(bits(&kept), bits(&b.hour(&w.net, &w.svc, t)));
+}
+
+/// T-4260: a line paused or broken loses its account in an edit's steps; undoing that (or unpausing) must make it again
+/// at once, not leave it empty until new riders' steps reach it.
+#[test]
+fn an_undone_edit_gets_its_account_back_at_once() {
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let (mut w, l) = setup(10.0);
+    let mut b = Boarding::default();
+    b.set_riders(&riders(l, [500.0, 200.0, 500.0, 200.0, 50.0]));
+    b.ensure(&w.net, &w.svc);
+    let t = 2.0 * DAY + 8.0 * 3600.0;
+    let before = b.hour(&w.net, &w.svc, t);
+    w.svc.lines[l as usize].running = false;
+    assert!(!b.ensure_service_some(&w.net, &w.svc, usize::MAX));
+    assert!(b.accounts[0][l as usize].is_none(), "a paused line has no account");
+    w.svc.lines[l as usize].running = true;
+    assert!(b.ensure_service_some(&w.net, &w.svc, 0), "the line is back and owes its account");
+    assert!(!b.ensure_service_some(&w.net, &w.svc, usize::MAX));
+    assert_eq!(bits(&b.hour_kept(&w.net, &w.svc, t)), bits(&before), "its loads, not empty ones");
+}
+
 #[test]
 fn period_totals_match_demand_with_the_busiest_hour_shapes() {
     let (w, l) = setup(12.0);
@@ -1031,19 +1079,21 @@ fn a_long_lines_opening_day_runs_as_full_as_the_next() {
 }
 
 
-/// T-3939: the sparse queues read back every trip and stop's two numbers to the bit.
+/// T-3939: the sparse queues read back every trip and stop's numbers to the bit.
 #[test]
 fn queues_read_back_to_the_bit() {
     let n = 200;
     let q: Vec<f32> = (0..n).map(|i| match i % 7 { 0 => 1.5 + i as f32, 3 => -0.0, 5 => 1e-30, _ => 0.0 }).collect();
     let g: Vec<f32> = (0..n).map(|i| if i % 11 == 4 { 0.25 * i as f32 } else { 0.0 }).collect();
-    let s = Queues::new(&q, &g);
+    let l: Vec<f32> = (0..n).map(|i| if i % 13 == 6 { 0.5 * i as f32 } else { 0.0 }).collect();
+    let s = Queues::new(&q, &g, &l);
     for i in 0..n {
         assert_eq!(s.q_after(i).to_bits(), q[i].to_bits(), "q at {i}");
         assert_eq!(s.gone(i).to_bits(), g[i].to_bits(), "gone at {i}");
+        assert_eq!(s.left(i).to_bits(), l[i].to_bits(), "left at {i}");
     }
-    assert_eq!(s.kept(), (0..n).filter(|&i| q[i].to_bits() != 0 || g[i].to_bits() != 0).count());
-    let empty = Queues::new(&[], &[]);
+    assert_eq!(s.kept(), (0..n).filter(|&i| q[i].to_bits() != 0 || g[i].to_bits() != 0 || l[i].to_bits() != 0).count());
+    let empty = Queues::new(&[], &[], &[]);
     assert_eq!(empty.q_after(0), 0.0);
 }
 

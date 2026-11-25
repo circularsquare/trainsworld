@@ -10,9 +10,9 @@
 // region (its stations go with it), new trains by the line the edit started.
 
 import { computed } from "@preact/signals";
-import { demandByDay, type DemandView } from "./demand";
+import { mainDemandByDay, type DemandView, type LineDemand } from "./demand";
 import { stationZone } from "./listScope";
-import { baseTrips, busUpkeepDay, lineGeo, liveMoney, moneyState, moneyTerms, moneyWorld, scalesOf, type MoneyTerms } from "./money";
+import { baseTrips, busUpkeepDay, lineGeo, liveMoney, moneyState, moneyTerms, moneyWorld, scalesOf, type LineGeo, type MoneyTerms } from "./money";
 import { placeAt, zonesLoaded } from "./zones";
 import { zoneCountry } from "./cities";
 import { runFactorOf } from "./income";
@@ -22,7 +22,8 @@ import { boatOf } from "./boats";
 import { TRACK_SPECS, TRAM_STOP_UPKEEP } from "./trackKinds";
 import { lineFares } from "./fareInEffect";
 import { stopsById, world } from "./world";
-import type { WorldView } from "./types";
+import type { LineInput, LineStats, StationInput, WorldView } from "./types";
+import { ascendingBy, checkPatches, freshly, perLineOf, sameBuilt, worldDiff, type PerLine } from "./worldDiff";
 import type { MoneyState, PaidFor } from "../workers/protocol";
 import { newDay, newHour, type DayLedger, type HourLedger } from "../workers/saveFile";
 
@@ -46,61 +47,97 @@ export const lineShares = computed(() => {
   const out: LineShares = new Map();
   if (!w || !m) return out;
   const zl = zonesLoaded.value; // boundaries arriving re-place the stations
-  const dv = demandByDay.value[0]?.view ?? null;
+  const dv = mainDemandByDay.value[0]?.view ?? null;
   const was = sharesMemo;
   if (was && was.w === w && was.m === m && was.zl === zl && was.dv === dv) return was.out;
   sharesMemo = { w, m, zl, dv, out };
-  const byId = stopsById(w);
-  const baseOf = baseTrips(w, dv, m.fares, byId);
+  const baseOf = baseTrips(w, dv, m.fares, 0);
+  // T-4284: each line's parts kept from the world last read and its own figures, its split while its part of the base
+  // fares (moved by any line's edit) is the same
+  const kept = perLineOf(sharesLinesBy, 0);
+  kept.start(w, [m.fares, zl]);
   for (const l of w.save.lines) {
-    const st = w.lineStats[l.id], n = l.stops.length;
-    if (!st || st.status !== "running" || n < 2) continue;
-    const g = lineGeo(w, l, byId), z = g.zones;
-    const s0 = st.stopS[0] ?? [];
-    const km = new Map<string, number>();
-    for (let k = 0; k + 1 < n; k++) {
-      const d = Math.max(0, ((s0[k + 1] ?? 0) - (s0[k] ?? 0)) / 1000);
-      add(km, z[k], d / 2);
-      add(km, z[k + 1], d / 2);
-    }
-    const run = norm(km);
-    // run 0's segments run stop k to k + 1, run 1's the stops in reverse (LineDemand.loads)
     const dm = dv?.lines.get(l.id);
-    let fare = run, ride = run;
-    if (dm && st.stopS[1]?.length === n) {
-      const ends: [string, string, number][] = [];
-      for (let r = 0; r < 2; r++) {
-        const s = st.stopS[r], zz = r === 0 ? z : [...z].reverse();
-        for (let k = 0; k + 1 < n; k++) ends.push([zz[k], zz[k + 1], Math.abs(s[k + 1] - s[k]) / 1000]);
-      }
-      // T-1277: a stretch pays its starting stop's fare scale, the base its boarding stop's
-      const lf = lineFares(dm, m.fares); // T-2266: its riders pay the fares they were solved with
-      const { sc, from } = scalesOf(g, l, byId, lf);
-      const pkm = new Map<string, number>(), board = new Map<string, number>(), paid = new Map<string, number>();
-      let pkmAll = 0;
-      for (const per of dm.loads) {
-        if (per.length !== ends.length) continue;
-        ends.forEach(([a, b, d], k) => { const v = per[k] * d * from[k]; add(pkm, a, v / 2); add(pkm, b, v / 2); pkmAll += v; });
-      }
-      dm.boardings.forEach((v, k) => { add(board, z[k] ?? "", v); add(paid, z[k] ?? "", v * (sc[k] ?? 1)); });
-      const byBoarding = norm(board), byPaid = norm(paid);
-      if (byBoarding.length) ride = byBoarding;
-      // a bent curve's extra goes with the per-km part, as it is counted on the km ridden (T-1516)
-      const fx = dm.fareX?.reduce((a, b) => a + b, 0) ?? 0;
-      // T-1626, T-2195: a high-speed or ferry line's rate times its multiplier, T-3567 its own (its extra came so from demand)
-      const mul = lineFareMul({ id: l.id, fast: st.fast, ferry: !!st.bus?.ferry, boat: boatOf(st.bus), bus: !!st.bus && !st.bus.ferry, brt: !!st.bus?.brt }, lf);
-      const base = lf.base * (baseOf.get(l.id) ?? 0), perKm = Math.max(0, mul * lf.perKm * pkmAll + fx);
-      if (base + perKm > 0) {
-        const mix = new Map<string, number>();
-        for (const [k, v] of byPaid) add(mix, k, v * base);
-        for (const [k, v] of norm(pkm)) add(mix, k, v * perKm);
-        fare = norm(mix);
-      }
-    }
-    out.set(l.num, { fare, ride, run });
+    let e = kept.kept(l.id, dm);
+    if (e === undefined) e = kept.put(l.id, sharesLine(w, l, dv, m), dm);
+    if (!e) continue;
+    const based = baseOf.get(l.id) ?? 0;
+    if (e.based !== based) { const got = { parts: e.parts, based, split: shareWith(e.parts, based) }; kept.put(l.id, got, dm); e = got; }
+    out.set(l.num, e.split);
   }
+  kept.end();
+  if (checkPatches()) freshly(() => {
+    const whole: LineShares = new Map(), base = baseTrips(w, dv, m.fares, 0), byId = stopsById(w);
+    for (const l of w.save.lines) { const st = w.lineStats[l.id]; if (st && st.status === "running" && l.stops.length >= 2) whole.set(l.num, shareWith(shareParts(l, st, lineGeo(w, l, byId), dv?.lines.get(l.id), m, byId), base.get(l.id) ?? 0)); }
+    if (!sameBuilt(out, whole)) console.error("T-4150 check: the region shares kept per line differ from a whole build");
+  });
   return out;
 });
+type Parts = { run: Shares; ride: Shares; byPaid: Shares | null; pkm: Shares; perKm: number; lfBase: number };
+/** T-4284: a running line's parts and its split at the base share it was made with, per demand view; null: not running */
+type SharesLine = { parts: Parts; based: number; split: { fare: Shares; ride: Shares; run: Shares } };
+const sharesLinesBy = new Map<unknown, PerLine<SharesLine | null>>();
+function sharesLine(w: WorldView, l: LineInput, dv: DemandView | null, m: MoneyTerms): SharesLine | null {
+  const st = w.lineStats[l.id], n = l.stops.length;
+  if (!st || st.status !== "running" || n < 2) return null;
+  const byId = stopsById(w), parts = shareParts(l, st, lineGeo(w, l, byId), dv?.lines.get(l.id), m, byId);
+  return { parts, based: NaN, split: shareWith(parts, NaN) };
+}
+
+/** A line's split from its parts and its part of the network's base fares. */
+function shareWith(p: Parts, based: number): { fare: Shares; ride: Shares; run: Shares } {
+  let fare = p.run;
+  if (p.byPaid) {
+    const base = p.lfBase * based;
+    if (base + p.perKm > 0) {
+      const mix = new Map<string, number>();
+      for (const [k, v] of p.byPaid) add(mix, k, v * base);
+      for (const [k, v] of p.pkm) add(mix, k, v * p.perKm);
+      fare = norm(mix);
+    }
+  }
+  return { fare, ride: p.ride, run: p.run };
+}
+
+/** One running line's split of its rides and its running cost, and what its split of its fares is made of. */
+function shareParts(l: LineInput, st: LineStats, g: LineGeo, dm: LineDemand | undefined, m: MoneyTerms, byId: Map<string, StationInput>): Parts {
+  const n = l.stops.length, z = g.zones;
+  const s0 = st.stopS[0] ?? [];
+  const km = new Map<string, number>();
+  for (let k = 0; k + 1 < n; k++) {
+    const d = Math.max(0, ((s0[k + 1] ?? 0) - (s0[k] ?? 0)) / 1000);
+    add(km, z[k], d / 2);
+    add(km, z[k + 1], d / 2);
+  }
+  const run = norm(km);
+  // run 0's segments run stop k to k + 1, run 1's the stops in reverse (LineDemand.loads)
+  let ride = run;
+  if (dm && st.stopS[1]?.length === n) {
+    const ends: [string, string, number][] = [];
+    for (let r = 0; r < 2; r++) {
+      const s = st.stopS[r], zz = r === 0 ? z : [...z].reverse();
+      for (let k = 0; k + 1 < n; k++) ends.push([zz[k], zz[k + 1], Math.abs(s[k + 1] - s[k]) / 1000]);
+    }
+    // T-1277: a stretch pays its starting stop's fare scale, the base its boarding stop's
+    const lf = lineFares(dm, m.fares); // T-2266: its riders pay the fares they were solved with
+    const { sc, from } = scalesOf(g, l, byId, lf);
+    const pkm = new Map<string, number>(), board = new Map<string, number>(), paid = new Map<string, number>();
+    let pkmAll = 0;
+    for (const per of dm.loads) {
+      if (per.length !== ends.length) continue;
+      ends.forEach(([a, b, d], k) => { const v = per[k] * d * from[k]; add(pkm, a, v / 2); add(pkm, b, v / 2); pkmAll += v; });
+    }
+    dm.boardings.forEach((v, k) => { add(board, z[k] ?? "", v); add(paid, z[k] ?? "", v * (sc[k] ?? 1)); });
+    const byBoarding = norm(board), byPaid = norm(paid);
+    if (byBoarding.length) ride = byBoarding;
+    // a bent curve's extra goes with the per-km part, as it is counted on the km ridden (T-1516)
+    const fx = dm.fareX?.reduce((a, b) => a + b, 0) ?? 0;
+    // T-1626, T-2195: a high-speed or ferry line's rate times its multiplier, T-3567 its own (its extra came so from demand)
+    const mul = lineFareMul({ id: l.id, fast: st.fast, ferry: !!st.bus?.ferry, boat: boatOf(st.bus), bus: !!st.bus && !st.bus.ferry, brt: !!st.bus?.brt }, lf);
+    return { run, ride, byPaid, pkm: norm(pkm), perKm: Math.max(0, mul * lf.perKm * pkmAll + fx), lfBase: lf.base };
+  }
+  return { run, ride, byPaid: null, pkm: [], perKm: 0, lfBase: 0 };
+}
 
 /** T-2669: a running line's running cost over the world price list, by where its km are (its `run`
  * shares, `runFactorOf`); the clock worker charges it the same. 1 before the line is placed. */
@@ -202,14 +239,25 @@ export const upkeepShares = computed<Shares>(() => {
 /** How the last paid edit's charge divides: construction by the cost of the track it built in each
  * region (a station alone by its own region), new trains by `line`'s route km, else as construction. */
 export function chargeShares(before: WorldView | null, after: WorldView, line?: number, paid?: PaidFor): { build: Shares; trains: Shares } {
+  const out = chargeSharesOf(before, after, line, paid, false);
+  if (checkPatches() && before && !sameBuilt(out, chargeSharesOf(before, after, line, paid, true))) console.error("T-4284 check: an edit's charge shares from what it changed differ from a whole pass");
+  return out;
+}
+/** `chargeShares`; T-4284: the edges and stations built anew read off the worlds' diff (in id order, as a pass meets
+ * them), the pass over every one only when `whole` or their lists are not in id order */
+function chargeSharesOf(before: WorldView | null, after: WorldView, line: number | undefined, paid: PaidFor | undefined, whole: boolean): { build: Shares; trains: Shares } {
   line ??= paid?.line;
-  const was = new Map(before?.edges.map((e) => [e.id, e.built]) ?? []);
+  const d = !whole && before ? worldDiff(before, after) : null;
   const cost = new Map<string, number>();
-  for (const e of after.edges) {
-    if (!e.built || was.get(e.id)) continue;
+  const builtEdge = (e: WorldView["edges"][number]) => {
     const a = after.nodes.get(e.a), b = after.nodes.get(e.b);
-    if (!a || !b) continue;
-    add(cost, placeAt((a.lng + b.lng) / 2, (a.lat + b.lat) / 2) ?? "", e.cost);
+    if (a && b) add(cost, placeAt((a.lng + b.lng) / 2, (a.lat + b.lat) / 2) ?? "", e.cost);
+  };
+  if (d && ascendingBy(after.edges, (e) => e.id)) {
+    for (const id of [...d.edges.keys()].sort((a, b) => a - b)) { const [x, e] = d.edges.get(id)!; if (e?.built && !x?.built) builtEdge(e); }
+  } else {
+    const was = new Map(before?.edges.map((e) => [e.id, e.built]) ?? []);
+    for (const e of after.edges) if (e.built && !was.get(e.id)) builtEdge(e);
   }
   const ms = moneyState.peek(), perKm = (ms?.busRouteKm ?? 0) * 1e6, brtKm = (ms?.brtRouteKm ?? 0) * 1e6;
   for (const l of after.save.lines) {
@@ -221,7 +269,9 @@ export function chargeShares(before: WorldView | null, after: WorldView, line?: 
     const price = (was?.built ? 0 : perKm) + (now.brt && !(was?.built && was.brt) ? brtKm * town : 0);
     if (price > 0) for (const [z, km] of busKmByRegion(after, l.id)) add(cost, z, km * price);
   }
-  if (!cost.size) {
+  if (!cost.size && d && ascendingBy(after.save.stations, (s) => s.num)) {
+    for (const id of [...d.stations.keys()].sort((a, b) => Number(a) - Number(b))) { const [x, s] = d.stations.get(id)!; if (s?.built && !x?.built) add(cost, stationZone(s) ?? "", 1); }
+  } else if (!cost.size) {
     const built = new Set(before?.save.stations.filter((s) => s.built).map((s) => s.id) ?? []);
     for (const s of after.save.stations) if (s.built && !built.has(s.id)) add(cost, stationZone(s) ?? "", 1);
   }

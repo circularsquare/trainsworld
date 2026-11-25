@@ -14,6 +14,7 @@
 //! not a station (the stop's `cover`), so a home near the route walks to the route and rides from there.
 
 pub mod busway;
+pub mod keep;
 pub mod lanes;
 
 use super::net::Network;
@@ -142,6 +143,8 @@ pub const KIND_END: u8 = 0;
 pub const KIND_STATION: u8 = 1;
 pub const KIND_MIDDLE: u8 = 2;
 pub const KIND_CROSSING: u8 = 3;
+/// T-4080: while planning only, a stop held at a kept stop (`keep`); it comes out as `KIND_MIDDLE`.
+const KIND_KEPT: u8 = 4;
 
 /// One of the stops demand sees.
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +161,9 @@ pub struct BusStop {
     /// The stretch of the route (road metres from its start) whose homes walk to the route and
     /// ride from this stop; None at a station, which riders reach on foot.
     pub cover: Option<[f64; 2]>,
+    /// T-4080: the kept stop this stop is (`bus::keep`): the one it was held at, else the nearest within
+    /// `keep::KEEP_M`; None at a station.
+    pub keep: Option<u32>,
 }
 
 /// A route's stops: those demand sees, the street stops between (road m from the start), and the
@@ -342,6 +348,46 @@ fn crossings(a: &Poly, b: &Poly) -> Vec<(f64, f64)> {
     out
 }
 
+/// T-4249: the bus lines whose stops or pace an edit can have moved, by what it touched (`Touch`): those a station
+/// changed within `STATION_REACH_M` of (`reach`'s; a constructed line sees only constructed stations), and every bus
+/// line crossing one of those (where two cross, each reads the stations the other reaches, `plan_by`'s `theirs`);
+/// those crossing a bus route set, as it was or is; those a kept stop changed within `KEEP_M` of (T-4080); every one
+/// when a busway changed (T-3378).
+pub fn lines_touched(net: &Network, t: &super::net::Touch) -> Vec<u32> {
+    let lines = net.bus_lines();
+    if t.busways || lines.is_empty() {
+        return lines;
+    }
+    if t.station_places.is_empty() && t.bus_routes.is_empty() && t.keeps.is_empty() {
+        return vec![];
+    }
+    let polys: Vec<Poly> = lines.iter().map(|&l| net.line_bus[l as usize].as_ref().map_or_else(|| Poly::new(net, &[], &[]), |r| Poly::new(net, &r.points, &r.kinds))).collect();
+    let within = |poly: &Poly, places: &[[f64; 2]], m: f64| {
+        let bb = poly.bbox();
+        places.iter().any(|p| {
+            let pad = m * net.k_at(p[1]) * 1.1 + 1.0;
+            p[0] >= bb[0] - pad && p[0] <= bb[2] + pad && p[1] >= bb[1] - pad && p[1] <= bb[3] + pad && poly.project_passes(net, p[0], p[1]).iter().any(|c| c.1 <= m + 1e-6)
+        })
+    };
+    let places: Vec<[f64; 2]> = t.station_places.iter().map(|s| s.0).collect();
+    let built_places: Vec<[f64; 2]> = t.station_places.iter().filter(|s| s.1).map(|s| s.0).collect();
+    let built = |i: usize| net.line_bus[lines[i] as usize].as_ref().is_some_and(|r| r.built);
+    // (a metre past the reach, so a station on its edge is never missed)
+    let reached: Vec<bool> = (0..lines.len()).map(|i| within(&polys[i], if built(i) { &built_places } else { &places }, STATION_REACH_M + 1.0)).collect();
+    let set: Vec<Poly> = t.bus_routes.iter().map(|pts| Poly::new(net, pts, &[])).collect();
+    let meets = |a: &Poly, b: &Poly| a.pts.len() >= 2 && b.pts.len() >= 2 && !crossings(a, b).is_empty();
+    (0..lines.len())
+        .filter(|&i| {
+            let p = &polys[i];
+            reached[i]
+                || within(p, &t.keeps, keep::KEEP_M)
+                || set.iter().any(|s| meets(p, s))
+                || (0..lines.len()).any(|j| j != i && reached[j] && meets(p, &polys[j]))
+        })
+        .map(|i| lines[i])
+        .collect()
+}
+
 /// The stations within `STATION_REACH_M` of a route, as (road m along it, node, ground m off it), in
 /// road order; of two within `STATION_GAP_M` along the road, the one nearer the route. `built_only`:
 /// constructed stations only. `brt`: the line is on BRT; only such a line stops at a BRT station (T-3378).
@@ -476,8 +522,9 @@ fn spaced_stops(fixed: &[(f64, u8, Option<u32>)], sp: f64) -> Vec<(f64, u8, Opti
             break;
         }
         let (lo, hi) = (cur + 0.5 * sp, (target + 0.5 * sp).min(last.0 - 0.5 * sp));
-        let nearest = |kind: u8| inner.iter().filter(|c| c.1 == kind && c.0 >= lo && c.0 <= hi).min_by(|a, b| (a.0 - target).abs().total_cmp(&(b.0 - target).abs())).copied();
-        let stop = nearest(KIND_STATION).or_else(|| nearest(KIND_CROSSING)).unwrap_or((target, KIND_MIDDLE, None));
+        let nearest = |kinds: &[u8]| inner.iter().filter(|c| kinds.contains(&c.1) && c.0 >= lo && c.0 <= hi).min_by(|a, b| (a.0 - target).abs().total_cmp(&(b.0 - target).abs())).copied();
+        // T-4080: a kept stop's place as a station's
+        let stop = nearest(&[KIND_STATION, KIND_KEPT]).or_else(|| nearest(&[KIND_CROSSING])).unwrap_or((target, KIND_MIDDLE, None));
         cur = stop.0;
         out.push(stop);
     }
@@ -565,6 +612,31 @@ pub fn plan_by(net: &Network, l: u32, pts: &[[f64; 2]], kinds: &[u8], built_only
             fixed.push((len, KIND_END, None));
         }
     }
+    // T-4080: a kept stop within KEEP_M of the route holds a stop at the route's point nearest it, as a station does,
+    // between the line's first and last stops and where no end, station's stop or other held stop is within KEEP_M
+    // (a crossing near it folds in below); by hand, the player's stops hold
+    let near_keeps = keep::near_route(net, &poly);
+    let mut held: Vec<(f64, u32)> = vec![];
+    if let (false, Some(&first), Some(&last)) = (matches!(rule, StopRule::Hand(..)), fixed.first(), fixed.last()) {
+        // nearest the route first, so of two kept stops within KEEP_M of each other the one nearer holds
+        let mut order = near_keeps.clone();
+        order.sort_by(|a, b| a.2.total_cmp(&b.2).then(a.0.total_cmp(&b.0)).then(a.1.cmp(&b.1)));
+        for &(s, id, _) in &order {
+            if s <= first.0 || s >= last.0 || fixed.len() >= SPACED_MAX_STOPS as usize {
+                continue;
+            }
+            let (x, y) = poly.at_road(s);
+            let near = |f: &(f64, u8, Option<u32>)| {
+                let (px, py) = poly.at_road(f.0);
+                // within STATION_GAP_M along the road too: the other pass of an out-and-back route is a stop of its own
+                (px - x).hypot(py - y) / net.k_at(y) <= keep::KEEP_M && (f.0 - s).abs() <= STATION_GAP_M
+            };
+            if !fixed.iter().any(near) {
+                fixed.push((s, KIND_KEPT, None));
+                held.push((s, id));
+            }
+        }
+    }
     // T-2952: a crossing is decided alike from both lines' sides. Two crossings of the same two lines within
     // STATION_REACH_M of each other along both are one, the first in the lower-numbered line's order. Where
     // one station is a stop of both within STATION_REACH_M of the crossing along each, they change there and
@@ -644,12 +716,20 @@ pub fn plan_by(net: &Network, l: u32, pts: &[[f64; 2]], kinds: &[u8], built_only
         all.insert(1, (0.5 * len, KIND_MIDDLE, None));
     }
     // T-2982: every stop is on the route, a station's too (where the route passes nearest the station)
+    // T-4080: a held stop is its kept stop's; any other plain stop the nearest kept stop's within KEEP_M
+    let near_ids: Vec<u32> = near_keeps.iter().map(|k| k.1).collect();
     let mut stops: Vec<BusStop> = all
         .iter()
         .enumerate()
         .map(|(k, &(s, kind, station))| {
             let (x, y) = poly.at_road(s);
-            BusStop { id: station.unwrap_or_else(|| stop_id(l, k)), s, x, y, kind, station, cover: None }
+            let keep = match (kind, station) {
+                (KIND_KEPT, _) => held.iter().find(|h| h.0 == s).map(|h| h.1),
+                (_, None) if !near_ids.is_empty() => keep::nearest_of(net, &near_ids, x, y),
+                _ => None,
+            };
+            let kind = if kind == KIND_KEPT { KIND_MIDDLE } else { kind };
+            BusStop { id: station.unwrap_or_else(|| stop_id(l, k)), s, x, y, kind, station, cover: None, keep }
         })
         .collect();
     if closed {
@@ -658,11 +738,16 @@ pub fn plan_by(net: &Network, l: u32, pts: &[[f64; 2]], kinds: &[u8], built_only
             last.id = id;
         }
     }
-    let open: Vec<usize> = (0..stops.len()).filter(|&k| stops[k].station.is_none()).collect();
-    for (j, &k) in open.iter().enumerate() {
+    // In automatic mode, include rail-linked stops when finding neighboring stops.
+    // Riders reach those stops through the station's walking access.
+    let boundaries: Vec<usize> = (0..stops.len()).filter(|&k| !spaced || stops[k].station.is_none()).collect();
+    for (j, &k) in boundaries.iter().enumerate() {
+        if stops[k].station.is_some() {
+            continue;
+        }
         let g = stops[k].s;
-        let a = if j == 0 { 0.0 } else { 0.5 * (g + stops[open[j - 1]].s) };
-        let b = if j + 1 == open.len() { len } else { 0.5 * (g + stops[open[j + 1]].s) };
+        let a = if j == 0 { 0.0 } else { 0.5 * (g + stops[boundaries[j - 1]].s) };
+        let b = if j + 1 == boundaries.len() { len } else { 0.5 * (g + stops[boundaries[j + 1]].s) };
         stops[k].cover = Some(if spaced { [a.max(g - SPACED_COVER_M), b.min(g + SPACED_COVER_M)] } else { [a, b] });
     }
     Plan { stops, street: vec![], len, cum: poly.road.clone(), reach: kept.iter().map(|k| k.1).collect() }
@@ -855,6 +940,14 @@ impl Pace {
 #[cfg_attr(not(test), allow(dead_code))]
 fn street_bus_kmh(car: f64, trunk: bool) -> f64 {
     street_bus_kmh_at(car, trunk, BUS_LANE_KMH)
+}
+
+/// T-4257: what the drawing tool weighs roads by before any street grid is known: a plain bus's moving speed, km/h,
+/// on local streets, on a trunk road or motorway, and on a constructed busway, where the car's local streets run at
+/// `CAR_TOWN_KMH` (what `Pace::speed_runs` takes with no grid). The same functions as `Pace`, so the tool's idea of a
+/// quick road is the sim's.
+pub fn road_speeds() -> [f64; 3] {
+    [street_bus_kmh_at(CAR_TOWN_KMH, false, BUS_LANE_KMH), street_bus_kmh_at(CAR_TOWN_KMH, true, BUS_LANE_KMH), BUSWAY_KMH]
 }
 
 /// A bus's moving speed on local streets where the car's run at `car`, on a line whose floor is `lane`.

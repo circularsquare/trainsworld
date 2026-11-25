@@ -70,7 +70,7 @@ bars); the network takes the line colours ([ui-map.md](ui-map.md)).
   inter-city and city bubbles, line widths and track colours, trains, stations, crowds, demand
   circles, capacity tags, and in the panels the purpose split, pie and timing bars, the trip
   explorer's bars, the complex map's platforms, the junction map's routes and the
-  train's load bar.
+  train's load bar and speed dial.
 
 ## The dock
 
@@ -200,7 +200,7 @@ wide so a longer date moves nothing [T-1868].
   (the find button's row included). **"Trips here being recomputed…"** shows whenever the trips of the zone in view are rough,
   early, from before an edit or from the last session's cache, or while its detailed solve is on the
   way [T-1851, T-1223, T-328, T-421]; when the solve doing it is a whole one over several zones (a
-  game's load, an edit's whole solve after its local one) it says **"Trips in 171 cities being
+  game's load, an intercity edit's whole solve after its local one) it says **"Trips in 171 cities being
   recomputed…"** instead, the zones that solve has still to finish (`demandScope`, `demandSolving`),
   since that takes much longer on a big game than the zone in view alone [T-1904], except while a
   game's load solves the zone in view on its own first, which says "Trips here being recomputed…"
@@ -208,9 +208,10 @@ wide so a longer date moves nothing [T-1868].
   [T-392], and a zone solved on its own first counts as final at its last round [T-2045]. The tag
   shows all the while the clock is capped (below): when the zone in view is final and the cap still
   holds for an edit, it says **"Calculating trips after your change…"** [T-2622]. It says the same
-  while an edit's whole solve runs after its local result showed, until that solve's final: the
+  while an intercity edit's whole solve runs after its local result showed, until that solve's final: the
   local result keeps the longer trips and other zones' riders as they were before the edit (a line
-  with no trains left can read tens of thousands) [T-3601]. While capped, the
+  with no trains left can read tens of thousands) [T-3601]. A city edit's solve ends at its local result, and the
+  tag with it; the idle refresh after it shows nothing unless an edit waits for it [T-2188, docs/demand-runtime.md]. While capped, the
   tag's hover says "Time capped at 4x while updating demand". After an edit the hover's first line is
   the time left [T-3599]: on "Calculating trips after your change…" to the edit's final, on the
   recomputing tag to the zone in view's figures; "About 5 min left" in whole minutes, "Less than a
@@ -234,15 +235,15 @@ wide so a longer date moves nothing [T-1868].
   does not touch, or whose cluster is already done, keeps its split unfaded. The split's hover ends
   "(trips being recomputed…)" in the same cases. A city loading later shows "Loading data" with a thin bar
   after it (Loading, below). Every status text has a thin bar after it and nothing before it
-  (no bar on a failure) [T-2693, T-2728]: the load's own share for "Loading data"; a zone's share
-  (`zoneLoads`) for a wait on a zone's load, and for bubbles on their way; the running solve's
-  rounds published of all (`demandStep`) for a recomputing, behind or capped status and a click
-  waiting on a solve, except an edit's solve, which publishes only at each stage's end: there the
-  solving workers' units done of all planned (a period of the local solve while its result is
-  awaited, then a round of a period of the whole solve), the unit in hand by its time against the
-  stage's mean unit, to 90% of it (`demandWork`, to 97% at most) [T-2729]; terrain downloads finished of the most waiting at once; and where nothing
-  measures the work (or a solve has not begun), the share of the time the last such wait took that
-  has passed, to 95% at most, 3 s for the first. Only the load's bar has a hover; the others pass
+  (no bar on a failure) [T-2693, T-2728], past half only where bounded (Loading, "Every bar passes half only on a
+  time left it can bound"): the load's own bar for "Loading data"; a zone's bar (`zoneLoads`) for a wait on a
+  zone's load, for data or bubbles on their way and a click waiting on a zone; else, while a solve runs (a
+  recomputing, behind or capped status, and data, bubbles or a click waiting behind it), the share of the wait by
+  the time left its hover gives, bounded once the workers' units bound it, else, guesses, the solving workers'
+  units done of all planned (an edit's solve, the unit in hand by its time against the stage's mean unit, to 90%
+  of it, `demandWork`) [T-2729] or the rounds published of all (`demandStep`); terrain downloads finished of the
+  most waiting at once (bounded); and where nothing measures the work, the share of the time the last such wait
+  took that has passed, 3 s for the first (a guess) [T-4264]. Only the load's bar has a hover; the others pass
   the pointer to the tag. The figures change in one step when a detailed solve lands
   [T-1223, docs/demand-runtime.md "Levels of detail"]. No grey and no bar: those stay for a zone with no figures. A rough zone's city view,
   opened from elsewhere, and the Cities list mark nothing: rough figures are close enough (Anita,
@@ -599,6 +600,7 @@ with Ctrl, Meta or Alt held]. Each button's or tab's hover shows its key.
 | D | demand bubbles: None, Homes, Destinations, Total and then None again, once the view's demand is ready (`DEMAND_KEY`, T-2338); each of the four buttons' hovers names it | any tab |
 | N, S, G, C | new line, edit the selected line's stops, add every station the selected line passes, construct blueprints (`ACTION_KEYS`) | any tab |
 | E, Delete | E enables the picked blueprints when any is off and disables them when all are on (`SWITCH_PICK_KEY`, T-2338; the Enable hover, and the Disable hover while all are on, name it); Delete removes them | select tool |
+| R | rename the open station: its name box opens (`RENAME_KEY`, T-4273); the pencil's hover names it | a station's panel open |
 | Space, Esc, F1, F2, Ctrl+S/Z/Y, `/`, Ctrl+K | pause, back out, open the help panel, hide the interface, save, undo and redo, search | any tab |
 
 C stays Construct's, so Cities has Y; A opens Stations and S is Edit stops (Anita's pick); add-passed-stations
@@ -1538,11 +1540,15 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   table's direction in front and the other direction dimmed behind, every line of a group alike (another line's way
   by most of the track it shares). Hovering a train, its column or its path, lights it in both and fades the rest (a
   veil over the table, the chart's trains at 35%).
-- **A group's**: from the group view's chart icon, for a group with two or more running rail lines. Heading the
-  group's pill and name, then "schedule"; the body is the timetable and chart at the panel's width, the longest line
-  (by length) down the side, each other line's trains in the table at the stations it shares with it, a station's
-  complex counting as the station (a line sharing fewer than two is left out of the table), and in the chart drawn at full strength in their colours where
-  they share its track (T-2660's mapping); the other lines toggle adds lines outside the group as the line chart does.
+- **A group's**: from the group view's timetable icon (the line panel's, hover "Detailed schedule"), for a group with two or more running rail lines. Heading the
+  group's pill and name, then "schedule"; the body is the timetable and chart at the panel's width. The table's rows
+  are every station its lines stop at, each once (a station's complex counting as the station), in the group view's
+  order (T-4276, `groupRows`): the longest line's (by length) stops, each other line's own stations a block where it
+  leaves and rejoins them (a branch), a line sharing none below. Every train of the group is a column under its
+  line's bullet, its times in its colour. A train shows "|" at a station it passes, or where another line stopping
+  at both its stops either side stops (an express beside a local), and nothing on another branch. The chart draws the
+  longest line, the others at full strength in their colours where they share its track (T-2660's mapping); the
+  other lines toggle adds lines outside the group on the longest line's rows, as the line chart does.
 
 ## Start menu
 
@@ -1689,14 +1695,21 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   rate; times how this browser's last load compared with the model), the solve 34 s plus 148 ms a
   zone it covers plus 7.88 ms times the square of its line stops, times how this browser's last game solve of 10 s or
   more compared with that [T-1479, T-2552]. A file or backup being opened has none of its own (never the last game's)
-  and is remembered under the slot it goes into [T-2552]. Every load bar (the card's, "Loading data"'s and a
-  zone's) shows the model's fraction to the power 1.7 (`shownShare`), since the model ran ahead of the clock
-  early and crawled at the end on measured loads: a model's 30% shows as 13% [T-2638, notes/T-2638.md]. The solve's first round and its later ones are timed apart: before the first lands the
+  and is remembered under the slot it goes into [T-2552]. The solve's first round and its later ones are timed apart: before the first lands the
   later ones are expected at this browser's last ratio of the two (0.5 with none), after it at that
   ratio times the first, from the second on at their own mean; a round running late stretches the
-  rounds after it too. The bar never goes back: when the model's share falls (the network arrives and the
-  guess gives way to the model, or an estimate grows) it keeps its place and the rest is spread over the rest
-  of it, moving again with the next work done [T-2552]. It is never full before the card goes, except after a
+  rounds after it too. This model is a guess, so it fills half the bar at most (below).
+- **Every bar passes half only on a time left it can bound** [T-4264, Anita 11-25; `barPlace` in
+  `game/loadBarCore.ts`]: the card's, the status tag's and the zones' on the map. A guess (the model above, a
+  remembered load, the last such wait) shows its fraction to the power 1.7 (the model ran ahead of the clock early:
+  T-2638, notes/T-2638.md), its 90% at half the bar (her 11-22 call), and goes no further until the work is done or
+  bounded. Bounded is a solve's share of its wait by its workers' time left (`editLeftOf`): every unit still to run
+  timed at this solve's own pace (a unit of its stage has ended on that worker) and none in hand past its time at
+  that pace, the card's other stages done; and counted downloads (terrain). A bounded share runs the bar from where
+  it stands to the top in step with it; where the bound lapses (a unit over its time, the stretch after the last
+  unit until the figures show) the bar holds. The bar never goes back: when a bounded share falls (an estimate
+  grows) it keeps its place and the rest is spread over the rest of it, moving again with the next work done
+  [T-2552]. It is never full before the card goes, except after a
   cached result [T-2574]: once the load's network is found in the cache (its zones, build, workers and flags match,
   its packs' digests still to come), the stages are the game, the packs' download and the result's showing (1.5 s
   once the network and packs are in), with nothing opened or solved; the bar keeps its place and runs from there, the
@@ -1743,7 +1756,8 @@ server `trainworld_community.go`, its `docs/trainworld-api.md` "Community"; note
   ground under the blueprint and is refused while it could not load (track-and-service.md 6.4).
 - **Bubbles on their way** [T-1493]: with Homes, Destinations or Total on, a zone in view that has its
   figures but whose own bubbles are not drawn yet (being asked for, waiting behind a solve, built)
-  has the status "Loading data…", with no hover. An ask that ends with
+  has the status "Loading data…", with no hover, or behind a running solve that solve's time left as the
+  edit's hover words it ("About 4 min left") [T-4264]. An ask that ends with
   no bubbles is made again after 1 s, doubling to 8 s, until they come, so the bubbles of a zone in
   view always arrive. A zone come back to (the last 6 left) takes its cells and final legs from its last
   visit: at once for the same result, else shown until the result shown's come [T-2756].

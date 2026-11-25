@@ -20,7 +20,7 @@ import { clock, startClock } from "./game/clock";
 import { getWorldFrame, HOME_CITY } from "./game/cities";
 import { ZONE_LOAD_ZOOM } from "./game/zones";
 import { packToLngLat, lngLatToPack } from "./game/coords";
-import { ask, buildLevel, display, isBuildTool, mapShade, selection, shade, snapRealTram, snapRoads, snapStreets, stopEditing, tab, tool, tramTrack, VIDEO } from "./game/ui";
+import { ask, buildLevel, display, isBuildTool, mapShade, selection, selectMode, shade, snapRealTram, snapRoads, snapStreets, stopEditing, tab, tool, tramTrack, VIDEO } from "./game/ui";
 import { groupHover, lineGroups } from "./game/lineGroups";
 import { complexOf, dotGroups, inComplexView, openAlone, singleStation } from "./game/complexView";
 import { hot, onHot } from "./map/hovered";
@@ -30,8 +30,8 @@ import { addAllPassedSelected, constructBlueprints, newLineKey, toggleEditStopsS
 import { hideUiKey } from "./ui/hideUi";
 import { helpKey } from "./ui/HelpPanel";
 import { followCapsLock, keyIsTheirs, releaseSelectsAfterMousePick } from "./ui/keys";
-import { stopsById, world } from "./game/world";
-import "./map/aheadShow"; // T-4145: draws the edits waiting to show (game/pending.ts)
+import { stationsById, world } from "./game/world";
+import { aheadMapMoved } from "./map/aheadShow"; // T-4145: draws the edits waiting to show (game/pending.ts)
 import { pendingNetIn, pendingTaken } from "./game/pending";
 import { drawnEdgesOf } from "./map/lineAhead";
 import type { NetworkBuffers } from "./map/network";
@@ -61,7 +61,10 @@ import { stationIndexOf, tripAt } from "./map/network";
 import { cityOverview } from "./map/intercityView";
 import { Overlay } from "./map/overlay";
 import { carryGrids, pick } from "./map/pick";
+import { floorAt } from "./map/buildingFloors";
 import { carryEdgeGrid } from "./map/snapIndex";
+import { timed } from "./game/stepTimes";
+import { clickNetIn, clickPatched, clickWorld, patchClickNet } from "./map/clickMap";
 import { NetworkRenderer } from "./map/renderer";
 import { followTrain } from "./map/trainFollow";
 import { rebaseFollow, startFollow } from "./map/cameraFollow";
@@ -80,6 +83,7 @@ import { FareZoneTool } from "./map/fareZoneTool";
 import { bpPicked, clearBpPicked, dropPicked, levelPicked, pickedState, removePicked, selectPicked } from "./game/blueprintPick";
 import { NodeDrag } from "./map/nodeDrag";
 import { EndMarkers } from "./map/endMarkers";
+import { JoinButtons } from "./map/joinButtons";
 import { hoverAbove } from "./map/demandHover";
 import { CapacityMarkers } from "./map/capacityMarkers";
 import { ReversalMarks } from "./map/reversalMarks";
@@ -281,6 +285,8 @@ renderer.checkPatch = params.get("patch") === "check"; // T-1029
 // T-2763: whether a line is drawn over track the player removes
 setTrackHider({
   onLine: (edge) => {
+    // T-4214: track patched in since the network drawn (no line moved under a patch: the world's rows say it)
+    if (clickPatched(edge)) return !!clickWorld()?.edges.find((e) => e.id === edge)?.lines.length;
     const l = renderer.net?.lines;
     if (!l) return true;
     for (let i = 0; i < l.count; i++) if (l.edge[i] === edge) return true;
@@ -384,19 +390,30 @@ if (SYNTH) {
   demandClick = views.click;
   demandHover = views.hover;
   let trackSoon = false;
+  // T-4214: an edit's edges laid on the network the tools pick on, when it is drawn at the patch's anchor
+  client.onPatch = (set, gone, order, at) => {
+    const n = renderer.net;
+    if (!n || (n.anchor?.version ?? 0) !== at) return false;
+    patchClickNet(n, order, set, gone);
+    // (stage E: what is drawn ahead from that map, once the patch's rows are laid too)
+    queueMicrotask(aheadMapMoved);
+    return true;
+  };
   client.onState = (s) => {
     const put = () => {
       // a train count: the same buffers with the new run profiles (T-229)
-      if (s.service && renderer.net) renderer.setService(s.render.phases, s.render.meta);
+      if (s.service && renderer.net) renderer.setService(s.render.phases, s.render.meta, s.touched);
       else if (s.net) {
         const was = renderer.net;
         // T-4145: what is drawn ahead of the edits this network holds goes with it (built once, by setNetwork)
         const held = pendingTaken(client.orderOf(s), { net: true });
-        renderer.setNetwork(s.net); // built in the worker (T-063)
-        if (import.meta.env.DEV) checkHeld(s.net, held);
+        renderer.setNetwork(s.net, s.touched); // built in the worker (T-063)
+        if (import.meta.env.DEV) timed("dev.checkHeld", () => checkHeld(s.net!, held));
         renderer.netVersion = s.version;
-        carryGrids(was, s.net, renderer.checkPatch); // T-1030
-        carryEdgeGrid(was, s.net, renderer.checkPatch);
+        timed("net.grids", () => { carryGrids(was, s.net!, renderer.checkPatch); carryEdgeGrid(was, s.net!, renderer.checkPatch); }); // T-1030
+        // T-4214: the patches of the edits it holds go from the map the tools pick on, later ones are laid on it again
+        timed("net.clickNetIn", () => clickNetIn(s.net!, client.orderOf(s)));
+        aheadMapMoved();
         // T-4214: the map clicks pick on holds these edits now (a click waiting for them goes, map/toolWait.ts)
         pendingNetIn(client.orderOf(s));
         // T-1047; T-1021: a task of its own right after, so a big network's first state is two tasks
@@ -513,8 +530,8 @@ const hiddenNums = computed(() => {
 });
 effect(() => {
   const w = world.value;
-  const stations = new Map((w?.save.stations ?? []).map((s) => [s.id, s.level]));
-  const changed = setHidden(hiddenNums.value, levelBits(hiddenLevels.value), (id) => stations.get(id), (id) => w?.nodes.get(id)?.level);
+  // (T-4150 stage 2: the stations by id only once a hidden level asks)
+  const changed = setHidden(hiddenNums.value, levelBits(hiddenLevels.value), (id) => (w ? stationsById(w).get(id)?.level : undefined), (id) => w?.nodes.get(id)?.level);
   if (changed) overlay.invalidate();
 });
 // Settings' Show blueprints: every blueprint piece is not drawn or picked (map/visibility.ts)
@@ -542,6 +559,7 @@ effect(() => {
 
 const labels = new StationLabels(map.getContainer(), overlay, map);
 fareZoneTool.nameBoxes = () => labels.shownBoxes();
+const joinButtons = new JoinButtons(map, overlay); // T-4048
 effect(() => {
   const w = world.value;
   if (w && !SYNTH) labels.set(w);
@@ -556,6 +574,7 @@ effect(() => {
   if (w && !SYNTH) labels.set(w);
 });
 const capacity = new CapacityMarkers(map.getContainer(), overlay, map);
+joinButtons.nameBoxes = () => [...labels.shownBoxes(), ...capacity.shownBoxes()];
 capacity.demandClick = demandOnTop;
 effect(() => {
   const w = world.value;
@@ -617,6 +636,7 @@ effect(() => {
 // ---- picking and tools ----
 map.on("click", (e) => {
   if (tool.peek() === "trip") tripTool.click(e); // T-195
+  else if (pickingBubbles()) pickBubble(e.point.x, e.point.y, e.originalEvent.shiftKey);
   else if (tool.peek() === "blueprint" || tool.peek() === "fares") return; // their pointer handlers pick (map/blueprintBox.ts, map/fareZoneTool.ts)
   else if (tool.peek() !== "select") touchInput.peek() ? tools.tap(e) : tools.click(e);
   else selectAt(e.point.x, e.point.y, e.originalEvent.shiftKey);
@@ -653,10 +673,20 @@ function selectAt(x: number, y: number, add: boolean) {
       const members = complexOf(cur.station);
       if (members.length > 1 && members.includes(hit.station)) { openAlone(hit.station); live.overlay?.invalidate(); return; }
     }
-    selection.value = hit;
+    // T-4341: a floor pick() left is an empty building's (pick() stays without it for the hovers, the cursor and the build tools)
+    const floor = hit ? null : floorAt(overlay, x, y);
+    selection.value = hit ?? (floor ? { kind: "building", id: floor.id } : null);
   }
 }
 capacity.selectClick = selectAt;
+/** T-4330: the Select tool picks demand bubbles: a box drag is map/commuterView.ts's, a click is here. */
+const pickingBubbles = () => tool.peek() === "blueprint" && selectMode.peek() === "demand";
+/** A click with the Select tool on demand bubbles: the bubble under it, Shift adding; a click on none clears. */
+function pickBubble(x: number, y: number, add: boolean) {
+  const hit = demandClick?.(x, y, add);
+  if (hit) selection.value = hit;
+  else if (!add) selection.value = null;
+}
 const hasPick = () => bpPicked.peek().edges.length + bpPicked.peek().stations.length > 0;
 // T-3634, T-3746: a Shift press on track or a station with something picked is a click, not the start of
 // MapLibre's zoom box (which would swallow the click); elsewhere Shift+drag zooms as before
@@ -676,6 +706,11 @@ if (!SYNTH && !perfOff("hover")) // ?perfOff=hover: T-045 measurement only
     if (tool.peek() === "trip") {
       // a station under the pointer is picked as the trip's end (T-221)
       const c = tripTool.stationAt(e.point.x, e.point.y) ? "pointer" : "crosshair";
+      if (map.getCanvas().style.cursor !== c) map.getCanvas().style.cursor = c;
+      return;
+    }
+    if (pickingBubbles()) {
+      const c = demandHover?.(e.point.x, e.point.y) ? "pointer" : "crosshair";
       if (map.getCanvas().style.cursor !== c) map.getCanvas().style.cursor = c;
       return;
     }
@@ -983,7 +1018,7 @@ if (DEBUG) {
       const w = world.peek(), m = moneyState.peek();
       if (!w || !m) return null;
       const base = faresOf(m.fares, m.fares).base * m.economy;
-      return Object.fromEntries([...baseTrips(w, dv, m.fares, stopsById(w), byBoardings)].map(([id, t]) => [id, t * base]));
+      return Object.fromEntries([...baseTrips(w, dv, m.fares, "probe", byBoardings)].map(([id, t]) => [id, t * base]));
     },
     frame: () => { const f = getWorldFrame(); return { kind: f.kind, lon: f.lon, lat: f.lat }; }, packToLngLat, lngLatToPack,
     select: (s: unknown) => (selection.value = s as any),

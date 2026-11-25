@@ -20,12 +20,14 @@ refuses while a run is live, unless --force. The newest KEEP freezes stay. A reg
 missing a file stops the freeze (it would not be a good state).
 
 `build`: in the tree (default maps/.tw-snap, the snapshot of a commit) the freeze's four game files
-are laid over the tree's for the build only (`git checkout` puts the tree's back), then Vite builds
+are laid over the tree's for the build only (`git checkout` puts the tree's back), and the market's
+corridor file made for them and the freeze's drives (T-4199, the tree's own put back after), then Vite builds
 with TW_PACKS=<freeze>/packs into --out (default artifacts/trainworld/publish/<stamp>/dist), which
 gets `frozen.json` naming the freeze and the tree; `tools/deploy.py --dist <out>` publishes that.
 The tree's wasm must be built already (its last `npm run build` made it).
 """
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -178,22 +180,44 @@ def build(path, tree, out):
         sys.exit(f"{app} lacks node_modules or its wasm: run its `npm run build` once first")
     commit = subprocess.run(["git", "-C", str(tree), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
     t0 = time.time()
+    corridors = app / "src/game/market-corridors.bin"
+    own = corridors.read_bytes() if corridors.is_file() else None
     try:
         for g in GAME:
             if (path / "game" / g).exists():
                 shutil.copyfile(path / "game" / g, app / "src/game" / g)
+        # T-4199: the market's corridor file for the freeze's rows and drives (the tree's own put back after)
+        # (a publish's file that browsers refuse keeps the right figures but loses the speed, with nothing to show it:
+        # a stale fareBits.json, missing drives or a failed script stop the build here)
+        drives = path / "packs/market-drives.bin"
+        if not drives.is_file():
+            sys.exit(f"{drives} is missing: the corridor file needs the freeze's routed drives")
+        made = subprocess.run(["node", str(tree / "trainworld/tools/corridor_file.mjs"), "--strict", "--need-drives"], cwd=str(app),
+                              env=dict(os.environ, TW_MARKET_DRIVES=str(drives)),
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if made.returncode or not corridors.is_file() or corridors.stat().st_mtime < t0:
+            sys.exit(f"corridor_file.mjs failed ({made.returncode}); no build on a file browsers would refuse")
+        file_bytes = corridors.read_bytes()
         p = subprocess.run(["node", str(vite), "build", "--outDir", str(out), "--emptyOutDir"], cwd=str(app),
                            env=dict(os.environ, TW_PACKS=str(path / "packs")))
     finally:
         subprocess.run(["git", "-C", str(tree), "checkout", "--", *rels], check=True)
+        if own is None:
+            corridors.unlink(missing_ok=True)
+        else:
+            corridors.write_bytes(own)
     if p.returncode:
         sys.exit(f"vite build failed ({p.returncode})")
+    sha = hashlib.sha256(file_bytes).hexdigest()
+    if not any(hashlib.sha256(a.read_bytes()).hexdigest() == sha for a in (out / "assets").glob("market-corridors*.bin")):
+        sys.exit("the build holds no copy of the corridor file made for it (assets/market-corridors*.bin)")
     bad = check(path)
     if bad:
         sys.exit(f"freeze {path.name} changed during the build: {'; '.join(bad[:5])}")
     man = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     (out / "frozen.json").write_text(json.dumps({"task": "T-928", "freeze": str(path), "stamp": man["stamp"], "label": man["label"],
                                                  "zones": man["zones"], "tree": str(tree), "app": str(app), "commit": commit,
+                                                 "corridors": {"sha256": sha, "world": file_bytes[8:16].hex(), "drives": file_bytes[16:24].hex(), "src": file_bytes[24:32].hex()},
                                                  "built": datetime.datetime.now().isoformat(timespec="seconds")}, indent=1), encoding="utf-8")
     print(f"built {commit} of {tree} on freeze {man['stamp']} ({man['label'] or 'no label'}, {man['zones']} zones) into {out} "
           f"in {time.time() - t0:.0f} s", flush=True)

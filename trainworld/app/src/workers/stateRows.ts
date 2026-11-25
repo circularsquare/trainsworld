@@ -14,19 +14,24 @@
 //    and laid end to end only when a line's differ (T-1540).
 // T-4113: and an edge's or node's own calls (its kind, one-way setting, platform line, port, ...) are made only for
 // the records in a region an edit dirtied (workers/regions.ts), the records an edit touched (`take_touched`), the
-// ends of the track whose lines changed, and any record whose bulk numbers moved; a line's own calls only for the
+// ends of the track whose lines changed, and those a list read whole names as changed; a line's own calls only for the
 // lines the model says changed, whose bulk numbers moved or that stop in those regions, and a bus or ferry line's
 // row only where its route or stops reach them. A read given a focus does the regions there first and leaves the
-// rest dirty for the next read, which never drops them.
+// rest dirty for the next read, which never drops them. T-4291: no other edge or node is visited (a load, a repricing and
+// `?patch=walk` visit every one); each read's changes go in a numbered log (workers/rowLog.ts) that the post and the
+// worker's derived tables patch by, and the lists are patched by id.
 // The result is the same as `new StateRows().read(...)` on the same model, rows field for field
 // (checks/t1382-rows.mjs, which runs it on the Asia save too; `?patch=check` compares them in the page).
 import type { TrackApi } from "../wasm/track/sim";
 import type { ClockEdge, ClockLine, ClockNode } from "./protocol";
 import type { OuterGroup } from "../game/types";
 import type { Complexes } from "../game/complexes";
+import { ComplexBuilder, complexChanges, complexesDiffer, type ComplexInputs } from "../game/complexBuilder";
+import { buildingMembers } from "../game/buildings";
 import { nameSource } from "../game/complexLead";
 import { META_PER_LINE, PROFILES_PER_LINE } from "../map/profiles";
 import { Regions, type Focus, type Taken } from "./regions";
+import { RowLog } from "./rowLog";
 
 /** T-4113: stations per region at most (notes/T-4113.md: the curve it was picked from) */
 export const REGION_CAP = 64;
@@ -35,6 +40,74 @@ export const FOCUS_BUDGET = 3000;
 
 /** what the model answers for "every one" in `take_changed_lines` and `take_name_changes` */
 const ALL = 0xffffffff;
+/** T-4291: a move (two path entries, `edge << 1 | dir`, run on through their node) as one number */
+const PAIR = 2 ** 26;
+
+/** T-4291: the index of row `id` in `list` (rows in id order), -1 for none */
+function indexOfId(list: readonly { id: number }[], id: number): number {
+  let lo = 0, hi = list.length - 1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1, v = list[m].id;
+    if (v === id) return m;
+    if (v < id) lo = m + 1; else hi = m - 1;
+  }
+  return -1;
+}
+/** T-4291: past this many ids a list is merged whole rather than spliced one id at a time */
+const SPLICE_MAX = 256;
+
+/** T-4291: the first index in `list` (rows in id order) whose id is `id` or more */
+function lowerBound(list: readonly { id: number }[], id: number): number {
+  let lo = 0, hi = list.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].id < id) lo = m + 1; else hi = m; }
+  return lo;
+}
+
+/** T-4291: `was`, a list kept beside `old` (rows in id order, an item each), as it goes beside `now` (the same but for the
+ * rows of `ids`, changed, come or gone): the items of rows gone taken out, those of rows come put in and those of the rest of
+ * `ids` made again (`make`), by splices; a new list, the other items the same */
+export function alignList<T>(was: readonly T[], old: readonly { id: number }[], now: readonly { id: number }[], ids: ReadonlySet<number>, make: (id: number) => T): T[] {
+  const out = was.slice(), gone: number[] = [], come: number[] = [];
+  for (const id of ids) {
+    const k = indexOfId(old, id), j = indexOfId(now, id);
+    if (k >= 0 && j < 0) gone.push(k);
+    else if (j >= 0) come.push(j);
+  }
+  gone.sort((x, y) => y - x);
+  for (const k of gone) out.splice(k, 1);
+  come.sort((x, y) => x - y);
+  // (in order of the place each takes in `now`: every item before it is then in place)
+  for (const j of come) {
+    if (indexOfId(old, now[j].id) >= 0) out[j] = make(now[j].id);
+    else out.splice(j, 0, make(now[j].id));
+  }
+  return out;
+}
+
+/** T-4291: `list` (rows in id order) with the rows of `ids` as `by` has them now, gone where it has none: the same list
+ * when none, else a new one, so a state holding the old list keeps it as it was. `reorder`: some id came or went. */
+export function patchList<T extends { id: number }>(list: T[], by: ReadonlyMap<number, T>, ids: ReadonlySet<number>, reorder: boolean): T[] {
+  if (!ids.size) return list;
+  if (!reorder || ids.size <= SPLICE_MAX) {
+    // (the list stays in id order after each step, so each place is found in it as it is then)
+    const out = list.slice();
+    for (const id of [...ids].sort((x, y) => x - y)) {
+      const r = by.get(id), k = lowerBound(out, id), here = k < out.length && out[k].id === id;
+      if (r) { if (here) out[k] = r; else out.splice(k, 0, r); }
+      else if (here) out.splice(k, 1);
+    }
+    return out;
+  }
+  const live = [...ids].filter((id) => by.has(id)).sort((x, y) => x - y), out: T[] = [];
+  let j = 0;
+  for (const r of list) {
+    if (ids.has(r.id)) continue;
+    while (j < live.length && live[j] < r.id) out.push(by.get(live[j++])!);
+    out.push(r);
+  }
+  while (j < live.length) out.push(by.get(live[j++])!);
+  return out;
+}
 
 export interface RowEnv {
   /** world metres to longitude and latitude */
@@ -46,10 +119,11 @@ export interface RowEnv {
   busRow(a: TrackApi, id: number, nodes: ClockNode[]): NonNullable<ClockLine["bus"]>;
   /** a station's platform line, the same array while unchanged (T-1859, workers/platformLines.ts) */
   platformLine?(a: TrackApi, id: number, x: number, y: number, platform: number): Float32Array | undefined;
-  /** the complexes of these station rows (T-3288), for the one name their untyped members show */
-  complexes?(stations: readonly ClockNode[]): Complexes;
-  /** T-4113: what else the complexes are made from (the player's links, the station buildings), as a key */
-  complexKey?(a: TrackApi): string;
+  /** T-4214: the same right after an edit, with the edges it `changed` (their ends, null when gone), keeping nothing */
+  platformLineNow?(a: TrackApi, id: number, x: number, y: number, platform: number, changed: ReadonlyMap<number, readonly [number, number] | null>): Float32Array | undefined;
+  /** T-3288, T-4300: what the complexes of the station rows are made of besides them, for the one name their untyped
+   * members show (absent: every station is its own) */
+  complexInputs?(a: TrackApi): ComplexInputs;
 }
 
 /** What a line row holds that costs several model calls and changes only when the line's service or
@@ -104,6 +178,9 @@ interface LineKept {
 /** what a line row is made of beyond the bulk numbers and its heavy parts, one call or more each */
 type LineOwn = Omit<LineRead, "i" | "id" | "ok" | "running" | "bus" | "prev" | "fresh" | "heavy" | "upkeep">;
 
+/** what a node row is made of beyond its `nodes_info` numbers and its own calls */
+type NodeFields = { stationOff: boolean; upgrades: number; name: string; named: boolean; own: string; one: 0 | 1 | 2; onePlatform: boolean; fare: number; upgradeUpkeep: number };
+
 /** T-4113: a bus or ferry line's row and the stops it adds to the nodes (each once, in order), kept until its route
  * or stops are in a region a read takes, or the model says it changed */
 interface BusKept {
@@ -112,6 +189,8 @@ interface BusKept {
   stopNodes: ClockNode[];
   /** its route's and stops' points, x, y each */
   pts: Float64Array;
+  /** T-4291: the regions they are in, at the regions' `cells` */
+  keys?: { cells: number; keys: ReadonlySet<number> };
 }
 
 /** T-4113: what a read takes again, from `begin` */
@@ -173,12 +252,29 @@ interface LineRead {
 }
 
 /** T-3542: a line's trains an hour per period and its rows; for four or five rows, its figures per row. */
-function periodsOf(a: TrackApi, id: number): Pick<LineRead, "tphP" | "periods" | "periodsOwn" | "hours" | "hoursOwn" | "rows"> {
+function periodsOf(a: TrackApi, id: number, rowWeekend: ArrayLike<number>): Pick<LineRead, "tphP" | "periods" | "periodsOwn" | "hours" | "hoursOwn" | "rows"> {
   const periods = a.line_period_count(id), periodsOwn = a.line_periods_own(id), tphP = Array.from(a.line_tph_by_period(id));
   const hours = Array.from(a.line_hours(id)), hoursOwn = a.line_hours_own(id).length > 0;
   if (periods <= 3) return { tphP, periods, periodsOwn, hours, hoursOwn, rows: undefined };
   const auto = a.line_row_headways(id);
-  return { tphP, periods, periodsOwn, hours, hoursOwn, rows: { figs: Array.from(a.line_rows(id)), set: Array.from(a.line_row_trains(id)), ...(auto.length ? { auto: Array.from(auto) } : {}), weekend: Array.from(a.line_row_weekend(id)) } };
+  return { tphP, periods, periodsOwn, hours, hoursOwn, rows: { figs: Array.from(a.line_rows(id)), set: Array.from(a.line_row_trains(id)), ...(auto.length ? { auto: Array.from(auto) } : {}), weekend: Array.from(rowWeekend) } };
+}
+
+/** T-4149: `TrackApi.line_weekends` of these lines, by id: each line's `line_weekend` and `line_row_weekend`. One call
+ * for all: each of those alone works out every line's track limits, a pass over the whole network. */
+export function weekendsOf(a: TrackApi, ids: readonly number[]): Map<number, [Float64Array, Float64Array]> {
+  const out = new Map<number, [Float64Array, Float64Array]>();
+  if (!ids.length) return out;
+  const v = a.line_weekends(Uint32Array.from(ids));
+  let k = 0;
+  for (const id of ids) {
+    const n = v[k], w = v.subarray(k + 1, k + 1 + n);
+    k += 1 + n;
+    const m = v[k], r = v.subarray(k + 1, k + 1 + m);
+    k += 1 + m;
+    out.set(id, [w, r]);
+  }
+  return out;
 }
 
 export function upgradesOf(a: TrackApi): Map<number, number> {
@@ -187,8 +283,16 @@ export function upgradesOf(a: TrackApi): Map<number, number> {
   return out;
 }
 
+/** the sets an edge row reads (`StateRows.edgeSets`) and a node row (`StateRows.nodeSets`) */
+type EdgeSets = ReturnType<typeof StateRows.edgeSets>;
+type NodeSets = ReturnType<typeof StateRows.nodeSets>;
+
 /** a line with no phase tables (`TrackApi.line_phases` of a line with none) */
 const NO_TABLE = new Float32Array(0);
+
+/** a deep line's own calls before they are made (`StateRows.lines` makes them for every deep line after its first pass) */
+const NO_OWN: Omit<LineOwn, "busRow"> = { auto: new Float64Array(0), fast: false, tram: false, loopKind: 0, oneWay: false, oneWayByTrack: false, limit: 0, fareDist: false, weekend: [], restTph: [], shift: 0,
+  tphP: [], periods: 0, periodsOwn: 0, hours: [], hoursOwn: false, rows: undefined, pairs: 0, twinOf: -1 };
 
 const hex = (c: number) => "#" + c.toString(16).padStart(6, "0");
 
@@ -198,9 +302,27 @@ function autoOf(v: ArrayLike<number>): [number, number, number] | null {
 }
 
 /** T-3521: a line's weekends (`TrackApi.line_weekend`), empty where they are the weekdays' at 100%. */
-function weekendOf(a: TrackApi, id: number): number[] {
-  const w = a.line_weekend(id);
-  return w.length === 8 && (w[0] !== 100 || w[1] !== 0) ? [...w] : [];
+function weekendOf(w: ArrayLike<number>): number[] {
+  return w.length === 8 && (w[0] !== 100 || w[1] !== 0) ? Array.from(w) : [];
+}
+
+/** a station row, whose name folds with its complex's (`foldNames`; a port's never does) */
+const isStation = (r: ClockNode | undefined): r is ClockNode => !!r && r.platform > 0 && !r.port;
+
+/** a station row as the complexes take it, the same object while the row is */
+const geoOfRow = new WeakMap<ClockNode, StationGeo>();
+export type StationGeo = { id: string; x: number; y: number; heading: number; length: number; line?: Float32Array };
+export function rowGeo(r: ClockNode): StationGeo {
+  let g = geoOfRow.get(r);
+  if (!g) geoOfRow.set(r, (g = { id: String(r.id), x: r.x, y: r.y, heading: r.heading, length: r.platform, ...(r.line ? { line: r.line } : {}) }));
+  return g;
+}
+
+/** T-3288, T-3759: the name station row `r` shows, and its complex's beside it where that is another (`hub`); `complex`: the
+ * name of its complex when that has more than one station (its name source's stored name) */
+function shows(r: ClockNode, complex: string | undefined): { name: string; hub: string | undefined } {
+  const name = r.own || complex || r.name;
+  return { name, hub: complex !== undefined && complex !== name ? complex : undefined };
 }
 
 function sameNumbers(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
@@ -227,12 +349,23 @@ export class StateRows {
   private sizes = new Map<number, number>();
   /** T-3759: typed bound stations whose stored name is not their complex's, as the last rows read them
    * (an older save's, `takeOldNames`) */
-  private apart: number[] = [];
+  private apart = new Set<number>();
+  /** T-4300: the complexes of the station rows (`isStation`), kept from what each read and patch changed: those the last
+   * read folded the names by, and the stations a patch has given from the model since (the next read gives them again) */
+  private cxb = new ComplexBuilder();
+  private readCx: Complexes | null = null;
+  private cxLive = new Set<number>();
   private lineKept = new Map<number, LineKept>();
   /** each line's phase tables (`line_phases`), by id, and all of them laid end to end as `phases`
    * answers (T-1540): the same array until a line's tables change */
   private phaseTables = new Map<number, Float32Array>();
   private phaseAll: Float32Array | null = null;
+  /** T-4280: the lines whose phase tables may differ from those last posted (`ClockState.touched.phases`), and whether
+   * every line's may (the rows read whole) */
+  phasesMoved = new Set<number>();
+  phasesAll = true;
+  /** a state carrying the phase tables was posted (a network's, or a train count's) */
+  phasesPosted() { this.phasesMoved.clear(); this.phasesAll = false; }
   /** the tables changed since `phaseAll` was laid out, which of them, and whether any changed in length */
   private phaseStale = false;
   private phaseDirty = new Set<number>();
@@ -247,6 +380,9 @@ export class StateRows {
   static wholePhases = 48;
   /** T-4113: false makes every read call every record's own calls (the walk before regions; `?bounded=0`) */
   static bounded = true;
+  /** T-4280: `?patch=check`: every other read of the phase tables takes them whole, so both ways name what changed */
+  static alternate = false;
+  private phaseCalls = 0;
   /** T-4113: the regions' station cap and the focus budget (the rows check sweeps them) */
   static regionCap = REGION_CAP;
   static focusBudget = FOCUS_BUDGET;
@@ -259,7 +395,50 @@ export class StateRows {
    * ways are ordered by the lines on them as the read before left them, `PlatformLines.setLines`) */
   private carry = new Set<number>();
   /** T-4113: what the last read read again, for the notes' work counts */
-  work = { edges: 0, nodes: 0, lines: 0, buses: 0, leaves: 0, left: 0, busWhy: "" };
+  work = { edges: 0, nodes: 0, lines: 0, buses: 0, leaves: 0, left: 0, busWhy: "", foldMs: 0 };
+  /** T-4291: what each read changed, numbered (workers/rowLog.ts): the post takes it instead of comparing every row */
+  readonly log = new RowLog();
+  /** T-4291: the read in progress (from `begin` to the end of `lines`): per kind the ids whose row in the list is another
+   * object or is gone, and whether ids came, went or moved in order; `readAll` for a read that walked every record */
+  private chg: [Set<number>, Set<number>, Set<number>] = [new Set(), new Set(), new Set()];
+  private ord: [boolean, boolean, boolean] = [false, false, false];
+  private readAll = true;
+  private reading = false;
+  /** T-4291: the lists as the last read left them, patched by id: the edges and the model's nodes (unfolded) in id order,
+   * the nodes after the names are folded, and the bus stops' nodes after them */
+  private edgeList: ClockEdge[] = [];
+  private rawNodes: ClockNode[] = [];
+  private busTail: ClockNode[] = [];
+  /** T-4299: the bus stops' nodes by id (review21: `nodeNow` found them one by one) */
+  private busTailOf = new Map<number, ClockNode>();
+  /** the number of the read that made the lists last handed out (`ClockState.rowsRead`) */
+  get lastRead(): number { return this.log.next - 1; }
+  /** T-4291: the model's node rows as the last read left them (names not folded), in id order; never to be changed */
+  modelNodes(): readonly ClockNode[] { return this.rawNodes; }
+  /** T-4299: whether the last read left regions for the next one (a rows state's focus): the rows outside them are the
+   * model's, those in them may be from before an edit */
+  get behind(): boolean { return this.regions.behind(); }
+  /** T-4291: the number of the read in progress, or of the last one once it is done */
+  get readNumber(): number { return this.reading ? this.log.next : this.log.next - 1; }
+  /** T-4291: the ids of kind `k` (0 edges, 1 nodes, 2 lines) whose row in the list changed or went in the reads after read `n`
+   * up to the one in progress; null where that is not known (a whole read among them, `n` too old) */
+  changedSince(n: number, k: 0 | 1 | 2): Set<number> | null {
+    const s = this.log.since(n + 1);
+    if (!s) return null;
+    if (this.reading) {
+      if (this.readAll) return null;
+      for (const id of this.chg[k]) s.ids[k].add(id);
+    }
+    return s.ids[k];
+  }
+  /** T-4291: the changes of the read in progress (or the last one): per kind (0 edges, 1 nodes, 2 lines) the ids whose row
+   * in the list is another object or is gone; null for a read that walked every record */
+  changes(k: 0 | 1 | 2): ReadonlySet<number> | null { return this.readAll ? null : this.chg[k]; }
+  /** T-4291: the rows the last read handed out, by id: an edge's, a node's as shown (its name folded; a bus stop's too), a
+   * line's */
+  edgeNow(id: number): ClockEdge | undefined { return this.edgeRows.get(id); }
+  nodeNow(id: number): ClockNode | undefined { return this.folded.get(id)?.row ?? this.nodeRows.get(id) ?? this.busTailOf.get(id); }
+  lineNow(id: number): ClockLine | undefined { return this.lineKept.get(id)?.row; }
 
   /** Forget every row: the next read is a full one. */
   reset() {
@@ -272,7 +451,10 @@ export class StateRows {
     this.owns.clear();
     this.heads.clear();
     this.sizes.clear();
-    this.apart = [];
+    this.apart.clear();
+    this.cxb = new ComplexBuilder();
+    this.readCx = null;
+    this.cxLive.clear();
     this.lineKept.clear();
     this.phaseTables.clear();
     this.phaseAll = null;
@@ -280,15 +462,33 @@ export class StateRows {
     this.phaseDirty.clear();
     this.phasePending.clear();
     this.phaseSeen = new Set();
+    this.phasesMoved.clear();
+    this.phasesAll = true;
     this.regions.reset();
     this.scope = null;
     this.busKept.clear();
     this.nodeOwn.clear();
     this.carry.clear();
     this.lastSets.clear();
+    this.eSets = this.nSets = null;
+    this.flagsOwed = { edgesAll: true, nodesAll: true, edges: new Set(), nodes: new Set() };
     this.lastNodes = null;
-    this.lastFoldKey = "";
+    this.nameSent.clear();
     this.namesMoved = [];
+    this.edgeList = [];
+    this.rawNodes = [];
+    this.busTail = [];
+    this.busTailOf.clear();
+    this.reading = false;
+    // (a reader of the rows from before compares whole)
+    this.log.add(true);
+  }
+
+  /** T-4291: the read in progress goes in the log */
+  private commit() {
+    if (!this.reading) return;
+    this.reading = false;
+    this.log.add(this.readAll, this.chg, this.ord);
   }
 
   /** A kept model node's row (not a bus stop's). */
@@ -353,15 +553,36 @@ export class StateRows {
   /** T-4113: what this read takes again (`edges`, `nodes` and `lines` read it; without it they read everything):
    * the regions an edit dirtied since the last read, or with a focus past `FOCUS_BUDGET` those in it first. */
   begin(a: TrackApi, focus?: Focus) {
-    const ei = a.edges_info(), ni = a.nodes_info(), li = a.lines_info();
+    this.commit();
+    const li = a.lines_info();
     a.set_line_stamps(StateRows.bounded);
     const touched = a.take_touched(), changed = a.take_changed_lines();
+    this.oweFlags(a.take_flag_changes());
+    this.nameSent.clear();
     // every line again after a load or repricing; every edge and node after a load, the focus's first in a rows state
     const linesAll = touched[0] === ALL || (changed.length > 0 && changed[0] === ALL) || !this.lineKept.size;
     const all = !StateRows.bounded || touched[0] === ALL || !this.edgeRows.size;
+    // (repricing for water or terrain moves edge prices no edit touched: every record is visited then)
+    const walk = !StateRows.bounded || all || linesAll;
     const R = this.regions;
-    // (bounded: only the records an edit touched, and any added or gone, move between regions)
-    R.sync(ni, ei, all ? undefined : this.touchedIds(touched));
+    const t = all ? undefined : this.touchedIds(touched);
+    // T-4291: otherwise the model is asked for the records the edits touched alone, and the regions move by them: it lists
+    // every record whose numbers an edit moves, those it works out again included (an edge's ends, a run of single track's
+    // ways and their ends: `Network::derive`); what the lines move is found below (notes/T-4291.md "What names a change")
+    let ei: Float64Array, ni: Float64Array;
+    if (walk) {
+      ei = a.edges_info();
+      ni = a.nodes_info();
+      R.sync(ni, ei, t);
+    } else {
+      ei = a.edges_info_of(Uint32Array.from(t!.edges));
+      ni = a.nodes_info_of(Uint32Array.from(t!.nodes));
+      R.syncTouched(ni, ei, t!);
+    }
+    this.reading = true;
+    this.readAll = walk;
+    this.chg = [new Set(), new Set(), new Set()];
+    this.ord = [false, false, false];
     const nodes = new Set<number>(this.carry), edges = new Set<number>();
     /** the edit's own records' ends: their regions are the focus's */
     const own: number[] = [], mine = new Set<number>();
@@ -373,18 +594,28 @@ export class StateRows {
       for (let k = 1 + ne; k < touched.length; k++) { R.markNode(touched[k]); nodes.add(touched[k]); own.push(touched[k]); }
     }
     // the lines read again whole, their heavy parts now: track whose lines changed (a one-way arrow the model works
-    // out from them, the order of a platform's ways) is read again at its ends
+    // out from them, the order of a platform's ways, a junction's crossing moves) is read again at its ends
     const dirty = new Set<number>(linesAll ? [] : changed);
-    let ends: Map<number, [number, number]> | null = null;
-    const endsOf = (e: number) => {
-      if (!ends) { ends = new Map(); for (let i = 0; i < ei.length; i += 10) ends.set(ei[i], [ei[i + 1], ei[i + 2]]); }
-      return ends.get(e);
-    };
     const heavies = new Map<number, Heavy>(), bus = new Map<number, boolean>(), fresh = new Set<number>();
+    const mark = (v: number) => {
+      edges.add(v >> 1);
+      const e = R.endsOf(v >> 1);
+      if (e) { nodes.add(e[0]); nodes.add(e[1]); this.carry.add(e[0]); this.carry.add(e[1]); }
+    };
+    const pairs = (p: readonly number[] | undefined) => {
+      const s = new Set<number>();
+      if (p) for (let i = 0; i + 1 < p.length; i++) s.add(p[i] * PAIR + p[i + 1]);
+      return s;
+    };
     const moved = (p: readonly number[] | undefined, q: readonly number[] | undefined) => {
       const was = new Set(p ?? []), now = new Set(q ?? []);
-      for (const v of was) if (!now.has(v)) { edges.add(v >> 1); const e = endsOf(v >> 1); if (e) { nodes.add(e[0]); nodes.add(e[1]); this.carry.add(e[0]); this.carry.add(e[1]); } }
-      for (const v of now) if (!was.has(v)) { edges.add(v >> 1); const e = endsOf(v >> 1); if (e) { nodes.add(e[0]); nodes.add(e[1]); this.carry.add(e[0]); this.carry.add(e[1]); } }
+      for (const v of was) if (!now.has(v)) mark(v);
+      for (const v of now) if (!was.has(v)) mark(v);
+      // T-4291: a move that came or went (two entries run on through their node) moves the node's crossing flag
+      // (`conflict_nodes`) though no entry came or went
+      const pw = pairs(p), pn = pairs(q);
+      for (const k of pw) if (!pn.has(k)) { mark(Math.floor(k / PAIR)); mark(k % PAIR); }
+      for (const k of pn) if (!pw.has(k)) { mark(Math.floor(k / PAIR)); mark(k % PAIR); }
     };
     for (let i = 0; i < li.length; i += 22) {
       const id = li[i], ok = li[i + 2] === 1, running = li[i + 3] === 1;
@@ -396,8 +627,9 @@ export class StateRows {
       const h = this.heavy(a, id, ok);
       heavies.set(id, h);
       // (a line that stops or starts counting, ok or running, moves what its track derives from the lines, such as a
-      // junction's crossing moves, with no entry of its path moving: its whole track is read again)
-      const flip = !!prev && (prev.row.ok !== ok || prev.row.running !== running);
+      // junction's crossing moves, with no entry of its path moving: its whole track is read again. T-4291: so does one
+      // whose trains start or stop running back (one way, a loop), which takes or gives its own way back's moves)
+      const flip = !!prev && (prev.row.ok !== ok || prev.row.running !== running || (!isBus && (prev.row.oneWay !== a.line_one_way(id) || prev.row.oneWayByTrack !== a.line_one_way_by_track(id) || prev.row.loopKind !== a.line_loop(id))));
       if (!isBus) for (const k of ["path", "planPath", "back"] as const) if (flip) { moved(prev.heavy[k], []); moved([], h[k]); } else moved(prev?.heavy[k], h[k]);
     }
     // a line gone: its track too
@@ -413,10 +645,8 @@ export class StateRows {
     const lines = new Set<number>(fresh);
     if (!linesAll && nodes.size) for (const [id, k] of this.lineKept) if (k.row.stops.some((s) => nodes.has(s))) lines.add(id);
     // (an "everything" a focus split leaves the rest to the bulk numbers now and its regions to the next read)
-    // (repricing for water or terrain moves edge prices no edit touched: every record is visited then)
-    const walk = !StateRows.bounded || all || linesAll;
     this.scope = { all: taken.all || all && (!focus || !StateRows.bounded), walk, linesAll, ei, ni, li, edges, nodes, lines, heavies, fresh, bus, taken, dirty };
-    this.work = { edges: 0, nodes: 0, lines: 0, buses: 0, leaves: taken.leaves, left: taken.left, busWhy: "" };
+    this.work = { edges: 0, nodes: 0, lines: 0, buses: 0, leaves: taken.leaves, left: taken.left, busWhy: "", foldMs: 0 };
   }
 
   /** the read's scope, begun now when `begin` was not called (a caller reading one part) */
@@ -425,9 +655,8 @@ export class StateRows {
     return this.scope!;
   }
 
-  edges(a: TrackApi): ClockEdge[] {
-    const sc = this.scoped(a);
-    const ei = sc.ei;
+  /** the model's sets an edge row reads, each read whole */
+  static edgeSets(a: TrackApi) {
     const offEdges = new Set<number>(a.off_edges());
     const hsrEdges = new Set<number>(a.hsr_edges());
     const crossoverIds = a.crossover_edges(), crossoverPartners = a.crossover_partners();
@@ -440,30 +669,94 @@ export class StateRows {
     for (let k = 0; k + 1 < lm.length; k += 2) limits.set(lm[k], lm[k + 1]);
     const rp = a.edge_ramps(), ramps = new Map<number, number>();
     for (let k = 0; k + 1 < rp.length; k += 2) ramps.set(rp[k], rp[k + 1]);
+    return { offEdges, hsrEdges, crossovers, oneWays, joins, limits, ramps };
+  }
+
+  /** an edge's row from its `edges_info` numbers at `ei[i]`, the sets and its own calls (T-4214: the one place a row is made) */
+  private static edgeRow(id: number, ei: ArrayLike<number>, i: number, s: ReturnType<typeof StateRows.edgeSets>, kind: number, setWay: 0 | 1 | 2 | 3, autoWay: 0 | 1 | 2): ClockEdge {
+    return { id, a: ei[i + 1], b: ei[i + 2], tracks: ei[i + 3] as 1 | 2, built: ei[i + 4] === 1, off: s.offEdges.has(id), hsr: s.hsrEdges.has(id), kind, oneWay: s.oneWays.get(id) ?? 0, join: s.joins.get(id) ?? 0, setWay, autoWay,
+      crossover: s.crossovers.has(id), partner: s.crossovers.get(id) ?? -1, lengthM: ei[i + 5], cost: ei[i + 6], vminKmh: ei[i + 7], limit: s.limits.get(id) ?? 0, ramp: s.ramps.get(id) ?? 0, levelMin: ei[i + 8], levelMax: ei[i + 9] };
+  }
+  /** an edge's own calls: its kind, and on single track its way as set and as worked out */
+  private static edgeOwn(a: TrackApi, id: number, tracks: number): { kind: number; setWay: 0 | 1 | 2 | 3; autoWay: 0 | 1 | 2 } {
+    const k = a.edge_kind(id);
+    // T-3078: 1 is high speed, which is rail
+    return { kind: k >= 2 ? k : 0, setWay: (tracks === 1 ? a.edge_oneway(id) : 0) as 0 | 1 | 2 | 3, autoWay: (tracks === 1 ? a.edge_infer(id) : 0) as 0 | 1 | 2 };
+  }
+
+  edges(a: TrackApi): ClockEdge[] {
+    const sc = this.scoped(a);
+    const kept = this.edgeRows;
+    // T-4113: a record no edit touched whose sets are as last read is kept without a look
+    const patch = !sc.walk, setMoved = new Set<number>();
+    let sets: EdgeSets;
+    const owed = this.flagsOwed;
+    if (sc.walk || owed.edgesAll || !this.eSets) {
+      sets = StateRows.edgeSets(a);
+      for (const [k, v] of Object.entries(sets)) { if (patch) StateRows.moved(this.lastSets.get("e" + k), v, setMoved); this.lastSets.set("e" + k, v); }
+    } else {
+      // T-4299: the sets as last read, patched by the edges the model says moved
+      sets = this.eSets;
+      const ids = [...owed.edges];
+      StateRows.patchEdgeSets(sets, a.edge_flags_of(Uint32Array.from(ids)), ids);
+      for (const id of ids) setMoved.add(id);
+    }
+    this.eSets = sets;
+    owed.edgesAll = false;
+    owed.edges.clear();
+    for (const id of setMoved) {
+      sc.edges.add(id);
+      // (T-4291: a way or a join that moved moves what the rows at its ends derive from the track there, the unusable ends)
+      const e = this.regions.endsOf(id);
+      if (e) { sc.nodes.add(e[0]); sc.nodes.add(e[1]); }
+    }
+    if (sc.walk) return (this.edgeList = this.walkEdges(a, sc, sets));
+    // T-4291: the edges in the read's scope alone, as the model has them now; every other edge's row is as last read
+    const ids = Uint32Array.from([...sc.edges].sort((x, y) => x - y));
+    const ei = a.edges_info_of(ids), chg = this.chg[0], live = new Set<number>();
+    let order = false;
+    for (let i = 0; i < ei.length; i += 10) {
+      const id = ei[i];
+      live.add(id);
+      this.work.edges++;
+      const { kind, setWay, autoWay } = StateRows.edgeOwn(a, id, ei[i + 3]);
+      const r = kept.get(id);
+      if (r && StateRows.edgeSame(r, ei, i, sets, kind, setWay, autoWay)) continue;
+      if (!r) order = true;
+      kept.set(id, StateRows.edgeRow(id, ei, i, sets, kind, setWay, autoWay));
+      chg.add(id);
+    }
+    for (const id of ids) if (!live.has(id) && kept.delete(id)) { chg.add(id); order = true; }
+    if (order) this.ord[0] = true;
+    return (this.edgeList = patchList(this.edgeList, kept, chg, order));
+  }
+
+  /** whether kept row `r` is what `edgeRow` would make now */
+  private static edgeSame(r: ClockEdge, ei: ArrayLike<number>, i: number, s: ReturnType<typeof StateRows.edgeSets>, kind: number, setWay: number, autoWay: number): boolean {
+    const id = ei[i];
+    return r.a === ei[i + 1] && r.b === ei[i + 2] && r.tracks === ei[i + 3] && r.built === (ei[i + 4] === 1) && r.off === s.offEdges.has(id) && r.hsr === s.hsrEdges.has(id) && r.kind === kind && r.oneWay === (s.oneWays.get(id) ?? 0)
+      && r.join === (s.joins.get(id) ?? 0) && r.limit === (s.limits.get(id) ?? 0) && r.ramp === (s.ramps.get(id) ?? 0) && r.setWay === setWay && r.autoWay === autoWay && r.crossover === s.crossovers.has(id) && r.partner === (s.crossovers.get(id) ?? -1)
+      && Object.is(r.lengthM, ei[i + 5]) && Object.is(r.cost, ei[i + 6]) && Object.is(r.vminKmh, ei[i + 7]) && r.levelMin === ei[i + 8] && r.levelMax === ei[i + 9];
+  }
+
+  /** every edge visited (its bulk numbers compared), as before T-4291: a load, `?patch=walk`, repricing */
+  private walkEdges(a: TrackApi, sc: ReadScope, sets: ReturnType<typeof StateRows.edgeSets>): ClockEdge[] {
+    const ei = sc.ei;
+    const { offEdges, hsrEdges, crossovers, oneWays, joins, limits, ramps } = sets;
     const out: ClockEdge[] = [];
     const kept = this.edgeRows;
     const seen = new Set<number>();
-    // T-4113: a record no edit touched whose sets are as last read is kept without a look
-    const patch = !sc.walk;
-    const sets = { offEdges, hsrEdges, crossovers, oneWays, joins, limits, ramps };
-    for (const [k, v] of Object.entries(sets)) { if (patch) StateRows.moved(this.lastSets.get("e" + k), v, sc.edges); this.lastSets.set("e" + k, v); }
     for (let i = 0; i < ei.length; i += 10) {
       const id = ei[i];
-      if (patch && !sc.edges.has(id)) {
-        const r = kept.get(id);
-        if (r && StateRows.edgeBulkSame(r, ei, i)) { seen.add(id); out.push(r); continue; }
-      }
       const off = offEdges.has(id), hsr = hsrEdges.has(id), crossover = crossovers.has(id), partner = crossovers.get(id) ?? -1;
       const tracks = ei[i + 3] as 1 | 2, built = ei[i + 4] === 1, oneWay = oneWays.get(id) ?? 0, join = joins.get(id) ?? 0, limit = limits.get(id) ?? 0, ramp = ramps.get(id) ?? 0;
       let r = kept.get(id);
       // T-4113: the edge's own calls where the read takes it again, or anything bulk about it moved
       const deep = !r || sc.all || sc.edges.has(id) || (r.a !== ei[i + 1] || r.b !== ei[i + 2] || r.tracks !== tracks || r.built !== built || r.off !== off || r.hsr !== hsr || r.oneWay !== oneWay || r.join !== join || r.limit !== limit || r.ramp !== ramp || r.crossover !== crossover || r.partner !== partner);
       if (deep) this.work.edges++;
-      const kind = !deep ? r!.kind : a.edge_kind(id) >= 2 ? a.edge_kind(id) : 0 /* T-3078: 1 is high speed, which is rail */;
-      const setWay = (!deep ? r!.setWay : tracks === 1 ? a.edge_oneway(id) : 0) as 0 | 1 | 2 | 3, autoWay = (!deep ? r!.autoWay : tracks === 1 ? a.edge_infer(id) : 0) as 0 | 1 | 2;
-      if (!r || r.a !== ei[i + 1] || r.b !== ei[i + 2] || r.tracks !== tracks || r.built !== built || r.off !== off || r.hsr !== hsr || r.kind !== kind || r.oneWay !== oneWay || r.join !== join || r.limit !== limit || r.ramp !== ramp || r.setWay !== setWay || r.autoWay !== autoWay || r.crossover !== crossover || r.partner !== partner
-        || !Object.is(r.lengthM, ei[i + 5]) || !Object.is(r.cost, ei[i + 6]) || !Object.is(r.vminKmh, ei[i + 7]) || r.levelMin !== ei[i + 8] || r.levelMax !== ei[i + 9]) {
-        r = { id, a: ei[i + 1], b: ei[i + 2], tracks, built, off, hsr, kind, oneWay, join, setWay, autoWay, crossover, partner, lengthM: ei[i + 5], cost: ei[i + 6], vminKmh: ei[i + 7], limit, ramp, levelMin: ei[i + 8], levelMax: ei[i + 9] };
+      const { kind, setWay, autoWay } = !deep ? r! : StateRows.edgeOwn(a, id, tracks);
+      if (!r || !StateRows.edgeSame(r, ei, i, sets, kind, setWay, autoWay)) {
+        r = StateRows.edgeRow(id, ei, i, sets, kind, setWay, autoWay);
         kept.set(id, r);
       }
       seen.add(id);
@@ -473,10 +766,8 @@ export class StateRows {
     return out;
   }
 
-  nodes(a: TrackApi, env: RowEnv, ups: Map<number, number>): ClockNode[] {
-    const sc = this.scoped(a);
-    this.syncNames(a);
-    const ni = sc.ni;
+  /** the model's sets a node row reads, each read whole */
+  static nodeSets(a: TrackApi, ups: Map<number, number>) {
     const offStations = new Set<number>(a.off_stations());
     const namedStations = new Set<number>(a.named_stations());
     const unbound = new Set<number>(a.unbound_stations());
@@ -490,22 +781,156 @@ export class StateRows {
     // T-3922: the upkeep of what is bought on each station, US$ a game day
     const uu = a.station_upgrade_upkeep(), upUpkeep = new Map<number, number>();
     for (let k = 0; k + 1 < uu.length; k += 2) upUpkeep.set(uu[k], uu[k + 1] * 1e6);
+    return { offStations, namedStations, unbound, ones, onePlatforms, fares, upUpkeep, ups };
+  }
+
+  /** a node's own calls (T-2194: a port has no track, so no platform line) */
+  private static nodeOwnOf(a: TrackApi, env: RowEnv, id: number, ni: ArrayLike<number>, i: number, one: number, changed?: ReadonlyMap<number, readonly [number, number] | null>) {
+    const platform = ni[i + 7];
+    const port = platform > 0 && a.is_port(id);
+    const brtStation = platform > 0 && !port && a.is_brt_station(id);
+    const kind = a.node_kind(id) >= 2 ? a.node_kind(id) : 0;
+    const oneHeading = one === 1 ? a.station_one_heading(id) : undefined;
+    const line = platform > 0 && !port ? (changed ? env.platformLineNow?.(a, id, ni[i + 1], ni[i + 2], platform, changed) : env.platformLine?.(a, id, ni[i + 1], ni[i + 2], platform)) : undefined;
+    return { port, brtStation, kind, oneHeading, line };
+  }
+
+  /** a node's row from its `nodes_info` numbers at `ni[i]`, before names are folded (T-4214: the one place a row is made) */
+  private static nodeRow(a: TrackApi, env: RowEnv, id: number, ni: ArrayLike<number>, i: number, f: { stationOff: boolean; upgrades: number; name: string; named: boolean; own: string; one: 0 | 1 | 2; onePlatform: boolean; fare: number; upgradeUpkeep: number },
+    o: { port: boolean; brtStation: boolean; kind: number; oneHeading: number | undefined; line: Float32Array | undefined }): ClockNode {
+    const flying = (ni[i + 6] & 1) === 1, crosses = (ni[i + 6] & 2) === 2, unusable = ((ni[i + 6] >> 2) & 3) as 0 | 1 | 2 | 3;
+    const { stationOff, upgrades, name, named, own, one, onePlatform, fare, upgradeUpkeep } = f, { port, brtStation, kind, oneHeading, line } = o;
+    const [lng, lat] = env.lngLat(ni[i + 1], ni[i + 2]);
+    const berth = port ? a.port_berth(id) : null;
+    return { id, x: ni[i + 1], y: ni[i + 2], lng, lat, level: ni[i + 3], ports: ni[i + 4], builtPorts: ni[i + 5], flying, ...(crosses ? { crosses: true as const } : {}), ...(unusable ? { unusable } : {}), platform: ni[i + 7], stationBuilt: ni[i + 8] === 1, stationOff, upgrades, ...(fare ? { fare } : {}), name, heading: ni[i + 9], ...(named ? { named: true as const } : {}), ...(own ? { own } : {}), ...(line ? { line } : {}), ...(kind ? { kind } : {}),
+      ...(one ? { one } : {}), ...(oneHeading !== undefined ? { oneHeading } : {}), ...(onePlatform ? { onePlatform: true as const } : {}), ...(upgradeUpkeep ? { upgradeUpkeep } : {}),
+      ...(berth && berth.length === 2 ? { port: env.lngLat(berth[0], berth[1]) } : {}), ...(brtStation ? { brtStation: true as const } : {}) };
+  }
+
+  nodes(a: TrackApi, env: RowEnv, given?: Map<number, number>): ClockNode[] {
+    const sc = this.scoped(a);
+    this.syncNames(a);
+    const patch = !sc.walk;
+    let sets: NodeSets;
+    // (with what moved since `begin`: an older save's stations unbound between two reads of the nodes, `adopt_old_names`)
+    this.oweFlags(a.take_flag_changes());
+    const owed = this.flagsOwed;
+    if (sc.walk || owed.nodesAll || !this.nSets) {
+      sets = StateRows.nodeSets(a, given ?? upgradesOf(a));
+      for (const [k, v] of Object.entries(sets)) { if (patch) StateRows.moved(this.lastSets.get("n" + k), v, sc.nodes); this.lastSets.set("n" + k, v); }
+    } else {
+      // T-4299: the sets as last read, patched by the nodes the model says moved
+      sets = this.nSets;
+      const ids = [...owed.nodes];
+      StateRows.patchNodeSets(sets, a.node_flags_of(Uint32Array.from(ids)), ids);
+      for (const id of ids) sc.nodes.add(id);
+    }
+    this.nSets = sets;
+    owed.nodesAll = false;
+    owed.nodes.clear();
+    const ups = sets.ups;
+    for (const id of this.namesMoved) sc.nodes.add(id);
+    this.namesMoved = [];
+    const kept = this.nodeRows;
+    /** the ids whose row (names not folded) is another object or gone */
+    const rows = new Set<number>();
+    let order = false;
+    if (sc.walk) this.rawNodes = this.walkNodes(a, env, sc, sets, ups);
+    else {
+      // T-4291: the nodes in the read's scope alone, as the model has them now; every other node's row is as last read
+      const ids = Uint32Array.from([...sc.nodes].sort((x, y) => x - y));
+      const ni = a.nodes_info_of(ids), live = new Set<number>();
+      for (let i = 0; i < ni.length; i += 10) {
+        const id = ni[i];
+        live.add(id);
+        this.work.nodes++;
+        const r0 = kept.get(id), r = this.nodeRead(a, env, id, ni, i, sets, ups, r0);
+        if (r === r0) continue;
+        kept.set(id, r);
+        rows.add(id);
+        if (!r0) order = true;
+      }
+      for (const id of ids) {
+        if (live.has(id) || !kept.delete(id)) continue;
+        rows.add(id);
+        order = true;
+        this.nodeOwn.delete(id);
+        // a station no longer there keeps no name
+        this.names.delete(id);
+      }
+      this.rawNodes = patchList(this.rawNodes, kept, rows, order);
+    }
+    // T-4300: the names folded again only for the complexes this read's rows and the patches since the last read changed,
+    // and for the stations whose rows did (a name, a binding, a type); a read that walks folds every one
+    const tf = performance.now();
+    const inp = env.complexInputs?.(a), shown = new Set(rows);
+    const cx = this.lastNodes && !sc.walk && inp && this.cxb.ready(inp.frame) ? this.cxb.patch(this.stationChanges(rows), inp.links, inp.kAt, inp.frame, inp.apart, inp.buildings) : null;
+    this.cxLive.clear();
+    const ch = cx ? complexChanges(this.readCx, cx) : null;
+    if (ch && !rows.size && !ch.size) { this.work.foldMs = performance.now() - tf; return this.lastNodes!.slice(); }
+    let out: ClockNode[];
+    if (cx && ch) {
+      this.foldSome(cx, [...rows, ...Array.from(ch, Number)], shown);
+      this.readCx = cx;
+      const by = new Map<number, ClockNode>();
+      for (const id of shown) { const r = this.folded.get(id)?.row ?? this.nodeRows.get(id); if (r) by.set(id, r); }
+      out = patchList(this.lastNodes!, by, shown, order);
+    } else {
+      out = this.rawNodes.slice();
+      this.foldAll(out, inp, shown);
+    }
+    this.work.foldMs = performance.now() - tf;
+    for (const id of shown) this.chg[1].add(id);
+    if (order) this.ord[1] = true;
+    this.lastNodes = out;
+    return out.slice();
+  }
+
+  /** T-4300: the stations among the rows a read changed, and those a patch gave from the model since the last read, as
+   * the rows have them now (null where no station) */
+  private stationChanges(rows: ReadonlySet<number>): [string, StationGeo | null][] {
+    const out: [string, StationGeo | null][] = [];
+    const put = (id: number) => { const r = this.nodeRows.get(id); out.push([String(id), isStation(r) ? rowGeo(r) : null]); };
+    for (const id of rows) put(id);
+    for (const id of this.cxLive) if (!rows.has(id)) put(id);
+    return out;
+  }
+
+  /** a node in the read's scope: its own calls made, and its row, the kept one `r` where that is what it would be now */
+  private nodeRead(a: TrackApi, env: RowEnv, id: number, ni: ArrayLike<number>, i: number, sets: ReturnType<typeof StateRows.nodeSets>, ups: Map<number, number>, r: ClockNode | undefined): ClockNode {
+    const { offStations, namedStations, unbound, ones, onePlatforms, fares, upUpkeep } = sets;
+    const platform = ni[i + 7];
+    const stationOff = offStations.has(id), upgrades = ups.get(id) ?? 0;
+    const name = platform > 0 ? this.name(a, id) : "";
+    const named = platform > 0 && namedStations.has(id);
+    const own = platform > 0 && unbound.has(id) ? this.own(a, id) : "";
+    const onePlatform = onePlatforms.has(id), one = ones.get(id) ?? 0;
+    const fare = fares.get(id) ?? 0, upgradeUpkeep = upUpkeep.get(id) ?? 0;
+    const o = StateRows.nodeOwnOf(a, env, id, ni, i, one);
+    this.nodeOwn.set(id, o);
+    const f: NodeFields = { stationOff, upgrades, name, named, own, one, onePlatform, fare, upgradeUpkeep };
+    return r && StateRows.nodeSame(r, ni, i, f, o) ? r : StateRows.nodeRow(a, env, id, ni, i, f, o);
+  }
+
+  /** whether kept row `r` is what `nodeRow` would make now from these */
+  private static nodeSame(r: ClockNode, ni: ArrayLike<number>, i: number, f: NodeFields,
+    o: { port: boolean; brtStation: boolean; kind: number; oneHeading: number | undefined; line: Float32Array | undefined }): boolean {
+    const flags = ni[i + 6];
+    return r.x === ni[i + 1] && r.y === ni[i + 2] && r.level === ni[i + 3] && r.ports === ni[i + 4] && r.builtPorts === ni[i + 5] && r.flying === ((flags & 1) === 1) && !!r.crosses === ((flags & 2) === 2)
+      && (r.unusable ?? 0) === ((flags >> 2) & 3) && r.platform === ni[i + 7] && r.stationBuilt === (ni[i + 8] === 1) && r.stationOff === f.stationOff && r.upgrades === f.upgrades && r.name === f.name && !!r.named === f.named
+      && (r.own ?? "") === f.own && Object.is(r.heading, ni[i + 9]) && r.line === o.line && !!r.port === o.port && !!r.brtStation === o.brtStation && (r.kind ?? 0) === o.kind && (r.one ?? 0) === f.one
+      && r.oneHeading === o.oneHeading && !!r.onePlatform === f.onePlatform && (r.fare ?? 0) === f.fare && (r.upgradeUpkeep ?? 0) === f.upgradeUpkeep;
+  }
+
+  /** every node visited (its bulk numbers compared), as before T-4291: a load, `?patch=walk`, repricing */
+  private walkNodes(a: TrackApi, env: RowEnv, sc: ReadScope, sets: ReturnType<typeof StateRows.nodeSets>, ups: Map<number, number>): ClockNode[] {
+    const ni = sc.ni;
+    const { offStations, namedStations, unbound, ones, onePlatforms, fares, upUpkeep } = sets;
     const out: ClockNode[] = [];
     const kept = this.nodeRows;
     const seen = new Set<number>();
-    const patch = !sc.walk;
-    const sets = { offStations, namedStations, unbound, ones, onePlatforms, fares, upUpkeep, ups };
-    for (const [k, v] of Object.entries(sets)) { if (patch) StateRows.moved(this.lastSets.get("n" + k), v, sc.nodes); this.lastSets.set("n" + k, v); }
-    for (const id of this.namesMoved) sc.nodes.add(id);
-    this.namesMoved = [];
-    let rebuilt = !patch || !this.lastNodes;
     for (let i = 0; i < ni.length; i += 10) {
       const id = ni[i];
-      if (patch && !sc.nodes.has(id)) {
-        const r = kept.get(id);
-        if (r && StateRows.nodeBulkSame(r, ni, i)) { seen.add(id); out.push(r); continue; }
-      }
-      const was0 = kept.get(id);
       const platform = ni[i + 7];
       const stationBuilt = ni[i + 8] === 1, stationOff = offStations.has(id), upgrades = ups.get(id) ?? 0, flying = (ni[i + 6] & 1) === 1, crosses = (ni[i + 6] & 2) === 2;
       const unusable = ((ni[i + 6] >> 2) & 3) as 0 | 1 | 2 | 3;
@@ -519,41 +944,24 @@ export class StateRows {
       const was = this.nodeOwn.get(id);
       const deep = !r || !was || sc.all || sc.nodes.has(id) || (r.x !== ni[i + 1] || r.y !== ni[i + 2] || r.level !== ni[i + 3] || r.ports !== ni[i + 4] || r.builtPorts !== ni[i + 5] || r.flying !== flying || !!r.crosses !== crosses || (r.unusable ?? 0) !== unusable || r.platform !== platform
         || r.stationBuilt !== stationBuilt || r.stationOff !== stationOff || r.upgrades !== upgrades || r.name !== name || !!r.named !== named || (r.own ?? "") !== own || !Object.is(r.heading, ni[i + 9]) || (r.one ?? 0) !== one || !!r.onePlatform !== onePlatform || (r.fare ?? 0) !== fare || (r.upgradeUpkeep ?? 0) !== upgradeUpkeep);
-      let port: boolean, brtStation: boolean, kind: number, oneHeading: number | undefined, line: Float32Array | undefined;
+      let o: { port: boolean; brtStation: boolean; kind: number; oneHeading: number | undefined; line: Float32Array | undefined };
       if (deep) {
         this.work.nodes++;
-        // T-2194: a port has no track, so no platform line
-        port = platform > 0 && a.is_port(id);
-        brtStation = platform > 0 && !port && a.is_brt_station(id);
-        kind = a.node_kind(id) >= 2 ? a.node_kind(id) : 0;
-        oneHeading = one === 1 ? a.station_one_heading(id) : undefined;
-        line = platform > 0 && !port ? env.platformLine?.(a, id, ni[i + 1], ni[i + 2], platform) : undefined;
-        this.nodeOwn.set(id, { port, brtStation, kind, oneHeading, line });
-      } else ({ port, brtStation, kind, oneHeading, line } = was!);
-      if (!r || r.x !== ni[i + 1] || r.y !== ni[i + 2] || r.level !== ni[i + 3] || r.ports !== ni[i + 4] || r.builtPorts !== ni[i + 5] || r.flying !== flying || !!r.crosses !== crosses || (r.unusable ?? 0) !== unusable || r.platform !== platform
-        || r.stationBuilt !== stationBuilt || r.stationOff !== stationOff || r.upgrades !== upgrades || r.name !== name || !!r.named !== named || (r.own ?? "") !== own || !Object.is(r.heading, ni[i + 9]) || r.line !== line || !!r.port !== port || !!r.brtStation !== brtStation || (r.kind ?? 0) !== kind
-        || (r.one ?? 0) !== one || r.oneHeading !== oneHeading || !!r.onePlatform !== onePlatform || (r.fare ?? 0) !== fare || (r.upgradeUpkeep ?? 0) !== upgradeUpkeep) {
-        const [lng, lat] = env.lngLat(ni[i + 1], ni[i + 2]);
-        const berth = port ? a.port_berth(id) : null;
-        r = { id, x: ni[i + 1], y: ni[i + 2], lng, lat, level: ni[i + 3], ports: ni[i + 4], builtPorts: ni[i + 5], flying, ...(crosses ? { crosses: true as const } : {}), ...(unusable ? { unusable } : {}), platform, stationBuilt, stationOff, upgrades, ...(fare ? { fare } : {}), name, heading: ni[i + 9], ...(named ? { named: true as const } : {}), ...(own ? { own } : {}), ...(line ? { line } : {}), ...(kind ? { kind } : {}),
-          ...(one ? { one } : {}), ...(oneHeading !== undefined ? { oneHeading } : {}), ...(onePlatform ? { onePlatform: true as const } : {}), ...(upgradeUpkeep ? { upgradeUpkeep } : {}),
-          ...(berth && berth.length === 2 ? { port: env.lngLat(berth[0], berth[1]) } : {}), ...(brtStation ? { brtStation: true as const } : {}) };
+        o = StateRows.nodeOwnOf(a, env, id, ni, i, one);
+        this.nodeOwn.set(id, o);
+      } else o = was!;
+      const f: NodeFields = { stationOff, upgrades, name, named, own, one, onePlatform, fare, upgradeUpkeep };
+      if (!r || !StateRows.nodeSame(r, ni, i, f, o)) {
+        r = StateRows.nodeRow(a, env, id, ni, i, f, o);
         kept.set(id, r);
       }
       seen.add(id);
       out.push(r);
-      if (r !== was0) rebuilt = true;
     }
-    if (kept.size !== seen.size) { rebuilt = true; for (const id of kept.keys()) if (!seen.has(id)) kept.delete(id); }
+    if (kept.size !== seen.size) for (const id of kept.keys()) if (!seen.has(id)) kept.delete(id);
     if (this.nodeOwn.size > seen.size) for (const id of this.nodeOwn.keys()) if (!seen.has(id)) this.nodeOwn.delete(id);
     // a station no longer there keeps no name
     if (this.names.size > seen.size) for (const id of this.names.keys()) if (!seen.has(id)) this.names.delete(id);
-    // T-4113: no station row new and the links and buildings as before: the names shown are the last read's
-    const key = env.complexKey?.(a) ?? "";
-    if (!rebuilt && this.lastNodes && key === this.lastFoldKey) return this.lastNodes.slice();
-    this.foldNames(out, env.complexes);
-    this.lastNodes = out.slice();
-    this.lastFoldKey = key;
     return out;
   }
 
@@ -561,55 +969,172 @@ export class StateRows {
    * a bound one its complex's (`nameSource`: the oldest typed name, else the oldest station's, over
    * every member, bound or not). The model keeps every station's stored name, its part in the complex's;
    * a split complex gives each part's stations theirs back. The replaced rows are kept, so an unchanged
-   * one is the same object as before. */
-  private foldNames(out: ClockNode[], complexesOf: RowEnv["complexes"]) {
-    const stations = out.filter((r) => r.platform > 0 && !r.port);
-    const cx = complexesOf?.(stations);
-    const groups = new Map<number, ClockNode[]>();
-    if (cx) for (const r of stations) {
-      const c = cx.of.get(String(r.id));
-      if (c === undefined) continue;
-      const g = groups.get(c);
-      if (g) g.push(r);
-      else groups.set(c, [r]);
-    }
-    const source = new Map<number, ClockNode>();
+   * one is the same object as before. Every station's, from the complexes of every station row. */
+  private foldAll(out: ClockNode[], inp: ComplexInputs | undefined, shown: Set<number>) {
+    const stations = out.filter(isStation);
+    const cx = inp ? this.cxb.update(stations.map(rowGeo), inp.links, inp.kAt, inp.frame, inp.apart, inp.buildings) : null;
     this.complexNames.clear();
     this.heads.clear();
     this.sizes.clear();
-    this.apart = [];
-    for (const [c, g] of groups) {
-      const s = nameSource(g, (r) => r.id, (r) => !!r.named)!;
-      // a station alone is its own complex: the complex is called what the station shows
-      if (g.length === 1) {
-        this.complexNames.set(s.id, s.own || s.name);
-        this.heads.set(s.id, s.id);
-        this.sizes.set(s.id, 1);
-        continue;
-      }
-      source.set(c, s);
-      for (const r of g) {
-        this.complexNames.set(r.id, s.name);
-        this.heads.set(r.id, s.id);
-        this.sizes.set(r.id, g.length);
-        if (r.named && !r.own && r !== s && r.name !== s.name) this.apart.push(r.id);
+    this.apart.clear();
+    if (cx) for (const ids of cx.members.values()) this.foldComplex(ids, shown);
+    else for (const r of stations) this.foldComplex([String(r.id)], shown);
+    for (const id of [...this.folded.keys()]) if (!isStation(this.nodeRows.get(id))) this.unfold(id, shown);
+    for (let k = 0; k < out.length; k++) { const f = this.folded.get(out[k].id); if (f && f.from === out[k]) out[k] = f.row; }
+    this.readCx = cx;
+  }
+
+  /** T-4300: the names folded again for the complexes of stations `ids` (`cx` as they are now), and taken off those no
+   * longer stations: a complex no station of it changed in, joined or left keeps its names */
+  private foldSome(cx: Complexes, ids: Iterable<number>, shown: Set<number>) {
+    const done = new Set<number>();
+    for (const id of ids) {
+      if (!isStation(this.nodeRows.get(id))) { this.unfold(id, shown); continue; }
+      const c = cx.of.get(String(id)), m = c === undefined ? undefined : cx.members.get(c);
+      if (!m) { this.foldComplex([String(id)], shown); continue; }
+      if (done.has(c!)) continue;
+      done.add(c!);
+      this.foldComplex(m, shown);
+    }
+  }
+
+  /** the names of one complex's stations (`ids`, in node order), and what renames read of it */
+  private foldComplex(ids: readonly string[], shown: Set<number>) {
+    const g: ClockNode[] = [];
+    for (const m of ids) { const r = this.nodeRows.get(Number(m)); if (isStation(r)) g.push(r); }
+    if (!g.length) return;
+    // a station alone is its own complex: the complex is called what the station shows
+    if (g.length === 1) {
+      const s = g[0];
+      this.complexNames.set(s.id, s.own || s.name);
+      this.heads.set(s.id, s.id);
+      this.sizes.set(s.id, 1);
+      this.apart.delete(s.id);
+      this.show(s, undefined, shown);
+      return;
+    }
+    const s = nameSource(g, (r) => r.id, (r) => !!r.named)!;
+    for (const r of g) {
+      this.complexNames.set(r.id, s.name);
+      this.heads.set(r.id, s.id);
+      this.sizes.set(r.id, g.length);
+      if (r.named && !r.own && r !== s && r.name !== s.name) this.apart.add(r.id);
+      else this.apart.delete(r.id);
+      this.show(r, s.name, shown);
+    }
+  }
+
+  /** station row `r` as shown with its complex's name `complex` (when it has other stations); `shown` is told when its
+   * row in the list is another object */
+  private show(r: ClockNode, complex: string | undefined, shown: Set<number>) {
+    const { name, hub } = shows(r, complex);
+    const f = this.folded.get(r.id);
+    if (name === r.name && hub === undefined) {
+      if (f) { this.folded.delete(r.id); shown.add(r.id); }
+      return;
+    }
+    if (!f || f.from !== r || f.name !== name || f.hub !== hub) {
+      this.folded.set(r.id, { from: r, name, hub, row: { ...r, name, ...(hub !== undefined ? { hub } : {}) } });
+      shown.add(r.id);
+    }
+  }
+
+  /** a node no longer a station: no name of a complex's */
+  private unfold(id: number, shown: Set<number>) {
+    this.complexNames.delete(id);
+    this.heads.delete(id);
+    this.sizes.delete(id);
+    this.apart.delete(id);
+    if (this.folded.delete(id)) shown.add(id);
+  }
+
+  /** `?patch=check` (T-4300): the complexes the last read folded by against a whole build of its station rows; what
+   * differs, or null */
+  complexesDiffer(a: TrackApi, env: RowEnv): string | null {
+    const inp = env.complexInputs?.(a);
+    if (!inp || !this.readCx) return null;
+    const geo = this.rawNodes.filter(isStation).map(rowGeo);
+    const members = buildingMembers(inp.buildings, geo, inp.kAt);
+    const b = inp.buildings.findIndex((x, i) => this.buildingFirst(x.id) !== (members[i].length ? Number(members[i][0]) : undefined));
+    if (b >= 0) return `building ${inp.buildings[b].id}'s first member ${this.buildingFirst(inp.buildings[b].id)} against ${members[b][0]}`;
+    return complexesDiffer(this.readCx, geo, inp.links, inp.kAt, inp.apart, inp.buildings);
+  }
+
+  /** T-4214: fresh rows for the live edges and nodes among `edgeIds` and `nodeIds` (workers/clockPatch.ts), made as `edges` and
+   * `nodes` make a record they read again, leaving the rows this keeps for the next read as they are. The stations show
+   * the names the next read folds for them, and the stations not among `nodeIds` whose shown names that read moves come
+   * after the nodes (`patchNames`). */
+  touchedRows(a: TrackApi, env: RowEnv, edgeIds: Uint32Array, nodeIds: Uint32Array, ups: Map<number, number> = upgradesOf(a)): { edges: ClockEdge[]; nodes: ClockNode[] } {
+    const edges: ClockEdge[] = [], live: ClockNode[] = [];
+    /** the touched edges' ends now, null when gone (a platform line is laid along the edges at its node) */
+    const changed = new Map<number, readonly [number, number] | null>(Array.from(edgeIds, (id) => [id, null]));
+    if (edgeIds.length) {
+      const ei = a.edges_info_of(edgeIds), sets = StateRows.edgeSets(a);
+      for (let i = 0; i < ei.length; i += 10) {
+        const id = ei[i];
+        const { kind, setWay, autoWay } = StateRows.edgeOwn(a, id, ei[i + 3]);
+        edges.push(StateRows.edgeRow(id, ei, i, sets, kind, setWay, autoWay));
+        changed.set(id, [ei[i + 1], ei[i + 2]]);
       }
     }
-    const seen = new Set<number>();
-    for (let k = 0; k < out.length; k++) {
-      const r = out[k];
-      if (r.platform <= 0 || r.port) continue;
-      const c = cx?.of.get(String(r.id));
-      const complex = c === undefined ? undefined : source.get(c)?.name;
-      const name = r.own || complex || r.name;
-      const hub = complex !== undefined && complex !== name ? complex : undefined;
-      if (name === r.name && hub === undefined) continue;
-      let f = this.folded.get(r.id);
-      if (!f || f.from !== r || f.name !== name || f.hub !== hub) this.folded.set(r.id, (f = { from: r, name, hub, row: { ...r, name, ...(hub !== undefined ? { hub } : {}) } }));
-      seen.add(r.id);
-      out[k] = f.row;
+    if (nodeIds.length) {
+      const ni = a.nodes_info_of(nodeIds), s = StateRows.nodeSets(a, ups);
+      for (let i = 0; i < ni.length; i += 10) {
+        const id = ni[i], platform = ni[i + 7];
+        const name = platform > 0 ? a.node_name(id) : "", own = platform > 0 && s.unbound.has(id) ? a.station_own(id) : "";
+        const one: 0 | 1 | 2 = s.ones.get(id) ?? 0;
+        const f = { stationOff: s.offStations.has(id), upgrades: ups.get(id) ?? 0, name, named: platform > 0 && s.namedStations.has(id), own, one, onePlatform: s.onePlatforms.has(id), fare: s.fares.get(id) ?? 0, upgradeUpkeep: s.upUpkeep.get(id) ?? 0 };
+        live.push(StateRows.nodeRow(a, env, id, ni, i, f, StateRows.nodeOwnOf(a, env, id, ni, i, one, changed)));
+      }
     }
-    if (this.folded.size !== seen.size) for (const id of this.folded.keys()) if (!seen.has(id)) this.folded.delete(id);
+    return { edges, nodes: this.patchNames(a, env, nodeIds, live) };
+  }
+
+  /** T-4271: `live` (the touched nodes' rows) with each station showing the name the next read folds for it (`foldNames`),
+   * then every other station whose shown name or complex name that read moves: a station added, moved, resized or removed,
+   * or a link, building or separated pair changed, can join or split a complex, or change the station it is named after,
+   * for members no edit touched. T-4300: the complexes are the last read's with the touched stations as they are now
+   * (kept: the next read gives them again), and only those a change since that read worked out again are named. A
+   * station sent so is sent in every patch until the next read: the page lays each on the last. */
+  private patchNames(a: TrackApi, env: RowEnv, nodeIds: Uint32Array, live: ClockNode[]): ClockNode[] {
+    const inp = env.complexInputs?.(a);
+    if (!inp || !this.readCx || !this.cxb.ready(inp.frame)) return live;
+    const ids = new Set(nodeIds), now = new Map(live.map((r) => [r.id, r]));
+    const changes: [string, StationGeo | null][] = [];
+    for (const id of ids) {
+      const r = now.get(id);
+      changes.push([String(id), isStation(r) ? rowGeo(r) : null]);
+      this.cxLive.add(id);
+    }
+    const cx = this.cxb.patch(changes, inp.links, inp.kAt, inp.frame, inp.apart, inp.buildings);
+    const ch = complexChanges(this.readCx, cx);
+    const touched = live.some(isStation) || Array.from(nodeIds).some((id) => isStation(this.nodeRows.get(id)));
+    if (!touched && !this.nameSent.size && ch?.size === 0) return live;
+    const rowOf = (id: number) => (ids.has(id) ? now.get(id) : this.nodeRows.get(id));
+    // the complexes to name: the touched stations' and every station's a change since the read worked out again
+    const which = new Set<number>();
+    const put = (id: string) => { const c = cx.of.get(id); if (c !== undefined) which.add(c); };
+    if (ch) for (const id of ch) put(id);
+    else for (const c of cx.members.keys()) which.add(c);
+    for (const r of live) if (isStation(r)) put(String(r.id));
+    const nameOf = new Map<number, string>(), others: ClockNode[] = [];
+    for (const c of which) {
+      const g: ClockNode[] = [];
+      for (const m of cx.members.get(c) ?? []) { const r = rowOf(Number(m)); if (isStation(r)) g.push(r); }
+      if (g.length > 1) nameOf.set(c, nameSource(g, (r) => r.id, (r) => !!r.named)!.name);
+      for (const r of g) if (!ids.has(r.id)) others.push(r);
+    }
+    const fold = (r: ClockNode): ClockNode => {
+      const c = cx.of.get(String(r.id));
+      const { name, hub } = shows(r, c === undefined ? undefined : nameOf.get(c));
+      return name === r.name && hub === undefined ? r : { ...r, name, ...(hub !== undefined ? { hub } : {}) };
+    };
+    const out = live.map((r) => (isStation(r) ? fold(r) : r));
+    for (const r of others) {
+      const f = fold(r), was = this.folded.get(r.id);
+      if (this.nameSent.has(r.id) || f.name !== (was?.name ?? r.name) || f.hub !== was?.hub) { out.push(f); this.nameSent.add(r.id); }
+    }
+    return out;
   }
 
   /** The name a station shows when that is not its stored one (`foldNames`), if it does. */
@@ -630,7 +1155,24 @@ export class StateRows {
   /** T-3759: the typed stations that are bound but whose stored name is not their complex's, as the last
    * rows read them: an older save's, which showed their own names (`TrackApi.adopt_old_names`). */
   oldApart(): number[] {
-    return this.apart;
+    return [...this.apart].sort((x, y) => x - y);
+  }
+
+  /** `?patch=check` (T-4300): what renames and buildings read of the complexes (`headOf`, `complexSize`, `complexName`,
+   * `oldApart`) where it differs from `o`'s, a whole read's; null when the same */
+  namesDiffer(o: StateRows): string | null {
+    for (const [k, x, y] of [["complex names", this.complexNames, o.complexNames], ["name sources", this.heads, o.heads], ["sizes", this.sizes, o.sizes]] as const) {
+      if (x.size !== y.size) return `${k}: ${x.size} against ${y.size}`;
+      for (const [id, v] of y as Map<number, unknown>) if ((x as Map<number, unknown>).get(id) !== v) return `${k}: station ${id}`;
+    }
+    if (this.apart.size !== o.apart.size || [...o.apart].some((id) => !this.apart.has(id))) return "older names kept apart";
+    return null;
+  }
+
+  /** T-3750: station building `id`'s first member (by node number), as the last rows read them; undefined for none. */
+  buildingFirst(id: number): number | undefined {
+    const f = this.cxb.buildingFirst(id);
+    return f === undefined ? undefined : Number(f);
   }
 
   /** The name of the complex station `id` is in (`nameSource`), as the last rows read it. */
@@ -649,23 +1191,23 @@ export class StateRows {
     const kept = this.lineKept;
     const seen = new Set<number>();
     const read: LineRead[] = [];
+    const deepIds: number[] = [];
     const refresh = new Set<number>();
-    // a bus line's stops that are no station join the nodes once each, after the model's (T-1464)
-    const nodeIds = new Set<number>();
-    if (nodes) for (const n of nodes) nodeIds.add(n.id);
+    /** T-4291: the rows in `lines_info`'s order; a line no edit moved is its kept row with no more asked */
+    const out: ClockLine[] = new Array(li.length / 22);
     for (let i = 0; i < li.length; i += 22) {
       const id = li[i];
       seen.add(id);
       const ok = li[i + 2] === 1, running = li[i + 3] === 1;
       const bus = busOf.get(id) ?? (a.is_bus(id) || a.is_ferry(id));
       const prev = kept.get(id);
-      const raw = li.slice(i, i + 22);
+      const raw = li.subarray(i, i + 22);
       let busRow: ClockLine["bus"];
       let fresh = freshSet.has(id);
       if (bus) {
         // T-4113: a bus or ferry line's row again where its route or stops are in the regions read again
         const bk = this.busKept.get(id);
-        const again = all || !StateRows.bounded || !bk || fresh || dirty.has(id) || !sameNumbers(raw, bk.raw) || this.reaches(sc.taken, bk.pts);
+        const again = all || !StateRows.bounded || !bk || fresh || dirty.has(id) || !sameNumbers(raw, bk.raw) || this.reaches(sc.taken, bk);
         if (again) {
           this.work.buses++;
           this.work.busWhy += all ? "a" : !bk ? "n" : fresh ? "f" : dirty.has(id) ? "d" : !sameNumbers(raw, bk.raw) ? "r" : "t";
@@ -677,22 +1219,29 @@ export class StateRows {
           this.busKept.set(id, { raw, row: busRow, stopNodes: own, pts: Float64Array.from(pts) });
           if (!fresh) { fresh = true; heavies.set(id, this.heavy(a, id, ok)); }
         } else busRow = bk.row;
-        for (const n of this.busKept.get(id)!.stopNodes) if (!nodeIds.has(n.id)) { nodeIds.add(n.id); nodes?.push(n); }
       }
       if (fresh) refresh.add(id);
       const heavy = fresh ? heavies.get(id) ?? this.heavy(a, id, ok) : prev!.heavy;
       const deep = all || !StateRows.bounded || fresh || !prev || deepLines.has(id) || !sameNumbers(raw, prev.raw);
-      if (deep) this.work.lines++;
-      const own: LineOwn = deep ? {
-        auto: a.line_auto(id), fast: a.line_fast(id), tram: a.line_tram(id), loopKind: a.line_loop(id), oneWay: a.line_one_way(id), oneWayByTrack: a.line_one_way_by_track(id), limit: a.line_limit(id), fareDist: a.line_fare_dist(id), weekend: weekendOf(a, id), restTph: [...a.line_tph_rest(id)], shift: a.line_shift(id),
-        ...periodsOf(a, id),
-        busRow,
-        pairs: bus ? 0 : a.line_pairs(id), twinOf: bus ? -1 : a.line_twin_of(id),
-      } : { ...prev!.own, busRow };
-      read.push({ i, id, ok, running, bus, prev, fresh, heavy, upkeep: upkeepOf.get(id) ?? 0, ...own });
+      const upkeep = upkeepOf.get(id) ?? 0;
+      // (its own calls and heavy parts as kept: its row is the kept one but for the upkeep, worked out for every line at once)
+      if (!deep && prev!.extra[0] === upkeep && prev!.row.bus === busRow) { out[i / 22] = prev!.row; continue; }
+      if (deep) { this.work.lines++; deepIds.push(id); }
+      read.push({ i, id, ok, running, bus, prev, fresh, heavy, upkeep: upkeepOf.get(id) ?? 0, ...(deep ? NO_OWN : prev!.own), busRow });
+    }
+    // the deep lines' own calls, their weekends read in one call for all of them
+    const weekends = weekendsOf(a, deepIds);
+    for (const r of read) {
+      const w = weekends.get(r.id);
+      if (!w) continue;
+      const id = r.id;
+      Object.assign(r, {
+        auto: a.line_auto(id), fast: a.line_fast(id), tram: a.line_tram(id), loopKind: a.line_loop(id), oneWay: a.line_one_way(id), oneWayByTrack: a.line_one_way_by_track(id), limit: a.line_limit(id), fareDist: a.line_fare_dist(id), weekend: weekendOf(w[0]), restTph: [...a.line_tph_rest(id)], shift: a.line_shift(id),
+        ...periodsOf(a, id, w[1]),
+        pairs: r.bus ? 0 : a.line_pairs(id), twinOf: r.bus ? -1 : a.line_twin_of(id),
+      } satisfies Omit<LineOwn, "busRow">);
     }
     if (this.busKept.size) for (const id of this.busKept.keys()) if (!seen.has(id) || !busOf.get(id)) this.busKept.delete(id);
-    const out: ClockLine[] = [];
     for (const r of read) {
       const { i, id, ok, running, prev, fresh, heavy, auto, fast, tram, loopKind, oneWay, oneWayByTrack, limit, fareDist, weekend, restTph, shift, upkeep, pairs, twinOf, tphP, periods, periodsOwn, hours, hoursOwn, rows } = r;
       // the numbers behind the cheap fields: when all are as kept (and the heavy parts are), the row is the kept one
@@ -701,7 +1250,7 @@ export class StateRows {
         ...tphP, periods, periodsOwn, ...hours, hoursOwn ? 1 : 0, ...(rows ? [rows.figs.length, ...rows.figs, rows.set.length, ...rows.set, rows.auto?.length ?? -1, ...(rows.auto ?? []), rows.weekend.length, ...rows.weekend] : [])];
       const { i: _i, id: _id, ok: _ok, running: _running, bus: _bus, prev: _prev, fresh: _fresh, heavy: _heavy, upkeep: _upkeep, ...own } = r;
       if (!fresh && prev && prev.row.bus === r.busRow && sameNumbers(raw, prev.raw) && sameNumbers(extra, prev.extra)) {
-        out.push(prev.row);
+        out[i / 22] = prev.row;
         continue;
       }
       const t3 = (k: number) => [li[i + k], li[i + k + 1], li[i + k + 2]] as [number, number, number];
@@ -739,12 +1288,40 @@ export class StateRows {
         ...(r.busRow ? { bus: r.busRow } : {}),
       };
       kept.set(id, { row, raw, heavy, extra, own });
-      out.push(row);
+      out[i / 22] = row;
     }
-    if (kept.size > seen.size) for (const id of kept.keys()) if (!seen.has(id)) kept.delete(id);
+    // T-4291: the lines whose row is another object, and those gone
+    const chg = this.chg[2];
+    for (const r of read) if (out[r.i / 22] !== r.prev?.row) { chg.add(r.id); if (!r.prev) this.ord[2] = true; }
+    if (kept.size > seen.size) for (const id of kept.keys()) if (!seen.has(id)) { kept.delete(id); chg.add(id); this.ord[2] = true; }
     for (const id of refresh) this.phasePending.add(id);
     this.phaseSeen = seen;
+    if (nodes) this.putBusTail(li, nodes);
+    this.commit();
     return out;
+  }
+
+  /** A bus line's stops that are no station join the nodes once each, after the model's (T-1464), in line order; T-4291:
+   * those that came, went, moved in the list or are other objects than the last read's go in the read's changes. */
+  private putBusTail(li: ArrayLike<number>, nodes: ClockNode[]) {
+    const tail: ClockNode[] = [], ids = new Set<number>();
+    for (let i = 0; i < li.length; i += 22) {
+      const bk = this.busKept.get(li[i]);
+      if (bk) for (const n of bk.stopNodes) if (!ids.has(n.id) && !this.nodeRows.has(n.id)) { ids.add(n.id); tail.push(n); }
+    }
+    const was = this.busTail, chg = this.chg[1];
+    if (tail.length !== was.length || tail.some((n, k) => n !== was[k])) {
+      const before = new Map(was.map((n, k) => [n.id, k] as const));
+      tail.forEach((n, k) => {
+        const at = before.get(n.id);
+        if (at === undefined || at !== k) this.ord[1] = true;
+        if (at === undefined || was[at] !== n) chg.add(n.id);
+      });
+      for (const n of was) if (!ids.has(n.id)) { chg.add(n.id); this.ord[1] = true; }
+      this.busTailOf = new Map(tail.map((n) => [n.id, n]));
+    }
+    this.busTail = tail;
+    for (const n of tail) nodes.push(n);
   }
 
   /** the touched nodes and edges (`take_touched`), for the regions to move */
@@ -755,18 +1332,6 @@ export class StateRows {
     return { nodes, edges };
   }
 
-  /** T-4130: whether a kept row still holds what `edges_info` (`nodes_info`) gives it at offset `i`. Some of those numbers
-   * derive from every line (a junction's crossing moves), so a record outside the read's scope can still move. */
-  private static edgeBulkSame(r: ClockEdge, ei: ArrayLike<number>, i: number): boolean {
-    return r.a === ei[i + 1] && r.b === ei[i + 2] && r.tracks === ei[i + 3] && r.built === (ei[i + 4] === 1) && Object.is(r.lengthM, ei[i + 5]) && Object.is(r.cost, ei[i + 6])
-      && Object.is(r.vminKmh, ei[i + 7]) && r.levelMin === ei[i + 8] && r.levelMax === ei[i + 9];
-  }
-  private static nodeBulkSame(r: ClockNode, ni: ArrayLike<number>, i: number): boolean {
-    const f = ni[i + 6];
-    return r.x === ni[i + 1] && r.y === ni[i + 2] && r.level === ni[i + 3] && r.ports === ni[i + 4] && r.builtPorts === ni[i + 5] && r.flying === ((f & 1) === 1)
-      && !!r.crosses === ((f & 2) === 2) && (r.unusable ?? 0) === ((f >> 2) & 3) && r.platform === ni[i + 7] && r.stationBuilt === (ni[i + 8] === 1) && Object.is(r.heading, ni[i + 9]);
-  }
-
   /** T-4113: a set or map from a bulk call against the last read's: the ids whose membership or value moved */
   private static moved(was: Map<number, unknown> | Set<number> | undefined, now: Map<number, unknown> | Set<number>, into: Set<number>) {
     if (!was) return;
@@ -775,15 +1340,65 @@ export class StateRows {
     for (const k of was.keys()) if (!now.has(k)) into.add(k);
   }
   private lastSets = new Map<string, Map<number, unknown> | Set<number>>();
-  /** the last read's model nodes, folded, and whether this read changed any */
-  private lastNodes: ClockNode[] | null = null;
-  private lastFoldKey = "";
+  /** T-4299: the sets the last read read, patched in place by the records the model says moved */
+  private eSets: EdgeSets | null = null;
+  private nSets: NodeSets | null = null;
+  /** T-4299: the records whose list flags the model said moved (`take_flag_changes`, taken by `begin`) and the sets have
+   * not been patched by yet, or every one: `edges` and `nodes` take them, so a read that stops before them (it threw)
+   * leaves them to the next one, as the model's log no longer has them */
+  private flagsOwed = { edgesAll: true, nodesAll: true, edges: new Set<number>(), nodes: new Set<number>() };
 
-  /** whether any of these points (x, y each) is in a region the read takes again */
-  private reaches(t: Taken, pts: Float64Array): boolean {
+  private oweFlags(fl: Uint32Array) {
+    const o = this.flagsOwed;
+    if (fl.length && fl[0] === ALL) { o.edgesAll = o.nodesAll = true; o.edges.clear(); o.nodes.clear(); return; }
+    for (let k = 1; k <= fl[0]; k++) o.edges.add(fl[k]);
+    for (let k = 1 + fl[0]; k < fl.length; k++) o.nodes.add(fl[k]);
+  }
+
+  /** T-4299: `edge_flags_of`'s rows (id, off, high speed, crossover, partner, way, joins, limit, ramp) into the sets, for
+   * `ids` (a gone edge has no row) */
+  private static patchEdgeSets(s: EdgeSets, f: ArrayLike<number>, ids: readonly number[]) {
+    for (const id of ids) { s.offEdges.delete(id); s.hsrEdges.delete(id); s.crossovers.delete(id); s.oneWays.delete(id); s.joins.delete(id); s.limits.delete(id); s.ramps.delete(id); }
+    for (let k = 0; k + 8 < f.length; k += 9) {
+      const id = f[k];
+      if (f[k + 1]) s.offEdges.add(id);
+      if (f[k + 2]) s.hsrEdges.add(id);
+      if (f[k + 3]) s.crossovers.set(id, f[k + 4] === 0xffffffff ? -1 : f[k + 4]);
+      if (f[k + 5]) s.oneWays.set(id, f[k + 5] as 1 | 2);
+      if (f[k + 6]) s.joins.set(id, f[k + 6]);
+      if (f[k + 7]) s.limits.set(id, f[k + 7]);
+      if (f[k + 8]) s.ramps.set(id, f[k + 8]);
+    }
+  }
+
+  /** T-4299: `node_flags_of`'s rows (id, off, named, unbound, one track, one platform, fare zone, upgrades, upgrade upkeep)
+   * into the sets, for `ids` */
+  private static patchNodeSets(s: NodeSets, f: ArrayLike<number>, ids: readonly number[]) {
+    for (const id of ids) { s.offStations.delete(id); s.namedStations.delete(id); s.unbound.delete(id); s.ones.delete(id); s.onePlatforms.delete(id); s.fares.delete(id); s.ups.delete(id); s.upUpkeep.delete(id); }
+    for (let k = 0; k + 8 < f.length; k += 9) {
+      const id = f[k];
+      if (f[k + 1]) s.offStations.add(id);
+      if (f[k + 2]) s.namedStations.add(id);
+      if (f[k + 3]) s.unbound.add(id);
+      if (f[k + 4]) s.ones.set(id, f[k + 4] as 1 | 2);
+      if (f[k + 5]) s.onePlatforms.add(id);
+      if (f[k + 6]) s.fares.set(id, f[k + 6]);
+      if (f[k + 7]) s.ups.set(id, f[k + 7]);
+      if (f[k + 8] > 0) s.upUpkeep.set(id, f[k + 8] * 1e6);
+    }
+  }
+  /** the last read's model nodes, folded */
+  private lastNodes: ClockNode[] | null = null;
+  /** T-4271: stations a patch since the last read sent for their shown name alone (`patchNames`) */
+  private nameSent = new Set<number>();
+
+  /** whether any of a bus line's points (`bk.pts`, x, y each) is in a region the read takes again; T-4291: by the regions they
+   * are in, worked out again only once a region splits or merges */
+  private reaches(t: Taken, bk: BusKept): boolean {
     if (t.all) return true;
-    for (let k = 0; k + 1 < pts.length; k += 2) if (this.regions.isTaken(t, pts[k], pts[k + 1])) return true;
-    return false;
+    const R = this.regions;
+    if (bk.keys?.cells !== R.cells) bk.keys = { cells: R.cells, keys: R.keysOf(bk.pts) };
+    return R.takesAny(t, bk.keys.keys);
   }
 
   /** Every line's phase tables laid end to end, as `TrackApi.phases` answers, read after `lines`
@@ -799,7 +1414,7 @@ export class StateRows {
     if (moved.length && moved[0] === ALL) for (const id of this.phaseSeen) ids.add(id);
     else for (const id of moved) if (this.phaseSeen.has(id)) ids.add(id);
     this.phaseReads = ids.size;
-    if (ids.size > StateRows.wholePhases) this.splitPhases(a);
+    if (ids.size > (StateRows.alternate && this.phaseCalls++ % 2 ? -1 : StateRows.wholePhases)) this.splitPhases(a, true);
     else {
       for (const id of ids) this.readPhases(a, id);
       for (const id of this.phaseTables.keys()) if (!this.phaseSeen.has(id)) this.dropPhases(id);
@@ -834,6 +1449,7 @@ export class StateRows {
     if (old ? sameNumbers(old, t) : t.length === 0) return;
     this.phaseStale = true;
     this.phaseDirty.add(id);
+    this.phasesMoved.add(id);
     if (old?.length !== t.length) this.phaseLayout = true;
     if (t.length) this.phaseTables.set(id, t); else this.phaseTables.delete(id);
   }
@@ -841,12 +1457,14 @@ export class StateRows {
   private dropPhases(id: number) {
     this.phaseTables.delete(id);
     this.phaseStale = this.phaseLayout = true;
+    this.phasesMoved.add(id);
   }
 
   /** All the lines' tables in one call, for an edit that changed many of them (a call each costs
-   * more past `wholePhases`): the answer is that array, and each line's table a view of it. */
-  private splitPhases(a: TrackApi) {
-    const whole = a.phases(), meta = a.profile_meta();
+   * more past `wholePhases`): the answer is that array, and each line's table a view of it. `named`: the lines whose
+   * tables differ from the last are named as changed (T-4280), else every line is. */
+  private splitPhases(a: TrackApi, named = false) {
+    const whole = a.phases(), meta = a.profile_meta(), was = new Map(this.phaseTables);
     this.phaseTables.clear();
     for (const id of this.phaseSeen) {
       const m = id * META_PER_LINE;
@@ -855,6 +1473,10 @@ export class StateRows {
       for (let p = 0; p < PROFILES_PER_LINE; p++) count += meta[m + p * 4 + 1];
       if (count > 0) this.phaseTables.set(id, whole.subarray(meta[m] * 4, (meta[m] + count) * 4));
     }
+    // (as `readPhases` names them; this read is a pass over every table anyway)
+    if (!named) this.phasesAll = true;
+    else for (const [id, t] of this.phaseTables) if (!sameNumbers(was.get(id) ?? NO_TABLE, t)) this.phasesMoved.add(id);
+    for (const id of was.keys()) if (!this.phaseTables.has(id)) this.phasesMoved.add(id);
     this.phaseAll = whole;
     this.phaseStale = this.phaseLayout = false;
     this.phaseDirty.clear();

@@ -19,21 +19,23 @@ import { takeDiagramCities } from "../game/diagramCities";
 import { hiddenZones, setGameStart } from "../game/realms";
 import { home } from "../game/home";
 import { clockStepNow, fitView, holdForGameLoad, loadCannotFinish, markAlive, networkInWithoutTrips, noteClockStep, noteLoad, noteLoadSlot, tripsOff } from "../game/loading";
-import { incomeByDay, lastSaved, liveMoney, moneyState, moneyTerms, moneyWorld, setMoneyState } from "../game/money";
+import { incomeByDay, lastSaved, liveMoney, moneyState, moneyTerms, moneyWorld, setMoneyState, type LineMoney } from "../game/money";
 import { zonesLoaded } from "../game/zones";
 import { chargeShares, lineShares, upkeepShares } from "../game/regionMoney";
 import { linePoints } from "../game/points";
 import { goalsDue } from "../game/goalRules";
 import { AVERAGE_DAY, AWAY_DAY, awaySoon, BACK_DAY, DAY_KINDS, OUT_DAY, rushSoon } from "../game/days";
-import { demandByDay, demandView, marketIn, platformTransfers, zoneViews } from "../game/demand";
+import { mainDemandByDay, demandView, marketIn, platformTransfers, zoneViews } from "../game/demand";
 import { linesPending } from "../game/lineFigures";
 import { accountVersion, packArrivals, packRiders } from "../game/boarding";
 import { ask, designSpeed, guideFinished, lineDraft, marketOff, selection, tool } from "../game/ui";
 import { modelStopped } from "../game/modelStopped";
 import { afterStopEdits, flipSites, rightHand, say, setEditSink, stopsQueued, world, worldIsRows } from "../game/world";
+import { ascendingBy, checkPatches, freshNow, noteSide, noteStep, sameBuilt } from "../game/worldDiff";
+import { timed } from "../game/stepTimes";
 import type { LineInput, LineStats, RowFigs, StationInput, StopOnly, TrackEdge, TrackNode, WorldView } from "../game/types";
 import type { ClockLine, ClockState, EditOp, FromClock, MoneyPatch, MoneyState, NetworkSnapshot, PaidFor, PiInput, RouteAsk, StationAt, ToClock } from "./protocol";
-import { applyPatch } from "./valuePatch";
+import { applyPatch, sameValueDeep } from "./valuePatch";
 import { anchorVersion } from "../map/anchorVersion";
 import { mergeNet, type NetworkBuffers } from "../map/network";
 import { bandTry } from "../perfFlags";
@@ -53,7 +55,9 @@ import { afterPaint, BUSY_MS, expectedMs, hideBusy, learnBusy, showBusy } from "
 import { addTerrainGrid, dropTerrainGrids, groundNet, setTerrainIndex } from "../game/terrain";
 import { addTownOutline, clearTownOutlines } from "../map/townArea";
 import { letterOf } from "../game/lineLetter";
-import { pendingAnswer, pendingClear, pendingSent, pendingTaken, pendingWord } from "../game/pending";
+import { breakRun, pendingAnswer, pendingClear, pendingPatchIn, pendingSent, pendingTaken, pendingWord } from "../game/pending";
+import type { MapPatch } from "./protocol";
+import { clickNetClear, setClickWorld } from "../map/clickMap";
 
 /** Text from the clock worker: it sends message keys (docs/localization.md "Workers"), worded here; anything else as it is. */
 /** T-3542: a line of four or five rows' figures (`ClockLine.rows`) as the panels read them. */
@@ -180,6 +184,16 @@ export function onNetAhead(f: (key: string) => void) {
 
 
 type StateKind = "load" | "redraw" | "network" | "state";
+/** DEV (T-4284): the table the worker merges from the last one posted (`was`) and the entries `sent`, as clock.worker.ts does,
+ * against the whole one (`now`) */
+function checkMerged<T extends { line: number }>(what: string, was: readonly T[], sent: readonly T[], now: readonly T[]) {
+  if (!checkPatches()) return;
+  const held = new Map(was.map((x) => [x.line, x])), got = new Map(sent.map((x) => [x.line, x]));
+  const merged = now.map((x) => got.get(x.line) ?? held.get(x.line));
+  if (!sameBuilt(merged, now)) console.error(`T-4284 check: the ${what} table the worker merges from the lines sent differs from the whole one`);
+}
+/** T-293: a line's fare income and train rides an hour, per kind of day, as posted to the worker */
+type IncomePost = { line: number; perHour: number[][]; rides: number[][] };
 /** T-1200: ms a state takes on the main thread per edge and node, before this page has taken one of
  * its kind; New York's real save unthrottled (notes/T-1200.md). Learnt from then on (game/busy.ts). */
 const STATE_MS_GUESS: Record<StateKind, number> = { load: 0.06, redraw: 0.012, network: 0.01, state: 0.006 };
@@ -201,11 +215,16 @@ function pairsOf(flat: number[]): [string, string][] {
 const stationViews = new WeakMap<object, StationInput>();
 const lineViews = new WeakMap<object, LineInput>();
 const statsViews = new WeakMap<object, LineStats>();
+/** T-4150: `zoneViews` of a day's figures, for the stars */
+const starViews = new WeakMap<object, { intercity: unknown; views: ReturnType<typeof zoneViews> }>();
+/** T-4150: a node's view kept while its row is the same, so readers can tell changed nodes by identity (game/worldDiff.ts) */
+const nodeViews = new WeakMap<object, TrackNode>();
 let lastStations: StationInput[] = [];
 let lastLines: LineInput[] = [];
 let lastNodeRows: readonly object[] = [];
 let lastNodeMap = new Map<number, TrackNode>();
 function sameObjects<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) return true;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
@@ -234,58 +253,174 @@ function samePaths(a: readonly ClockState["lines"][number][], b: readonly ClockS
   }
   return true;
 }
-let lastEdgeRows: readonly object[] = [];
+let lastEdgeRows: readonly ClockState["edges"][number][] = [];
 let lastEdgeViews: TrackEdge[] = [];
-/** The UI's track edges from the state's rows and lines (T-2576): an edge row that was in the last state gives
- * its old view while the lines over it are the same, and the lists of lines are kept while every line
- * runs the same path (an edit of a line's trains changes its row, not its path). */
-function edgesOf(s: ClockState): TrackEdge[] {
-  let edgeLines = lastEdgeLines;
-  let linesSame = true;
-  if (!sameObjects(s.lines, lastEdgeLineRows)) {
-    if (samePaths(s.lines, lastEdgeLineRows)) lastEdgeLineRows = s.lines;
-    else {
-      linesSame = false;
-      edgeLines = new Map<number, string[]>();
-      for (const l of s.lines) {
-        let ids = lineEdgeIds.get(l);
-        // T-3101: a way back that takes other track counts too
-        if (!ids) lineEdgeIds.set(l, ids = [...new Set(planPathOf(l).concat(l.back ?? []).map((p) => p >> 1))]);
-        const id = String(l.id);
-        for (const p of ids) {
-          const v = edgeLines.get(p);
-          if (v) v.push(id);
-          else edgeLines.set(p, [id]);
-        }
-      }
-      lastEdgeLineRows = s.lines;
-      lastEdgeLines = edgeLines;
+/** T-4150 stage 2: the edges whose lines `edgesOf` changed in the last kept world (null: it worked out every edge's) */
+let edgeLinesMoved: Set<number> | null = null;
+/** More lines than this share of all ran elsewhere: every edge's lines are listed again. */
+const LINES_REDONE_SHARE = 4;
+/** T-2576: every edge's lines (ids, in line order) */
+function edgeLinesOf(lines: readonly ClockState["lines"][number][]): Map<number, string[]> {
+  const edgeLines = new Map<number, string[]>();
+  for (const l of lines) {
+    const id = String(l.id);
+    for (const p of lineEdgesOf(l)) {
+      const v = edgeLines.get(p);
+      if (v) v.push(id);
+      else edgeLines.set(p, [id]);
     }
   }
+  return edgeLines;
+}
+function lineEdgesOf(l: ClockState["lines"][number]): number[] {
+  let ids = lineEdgeIds.get(l);
+  // T-3101: a way back that takes other track counts too
+  if (!ids) lineEdgeIds.set(l, ids = [...new Set(planPathOf(l).concat(l.back ?? []).map((p) => p >> 1))]);
+  return ids;
+}
+/** T-4150 stage 2: the lines over each edge of `to` from `was`, those of `from`: new arrays for the edges of the lines
+ * that run elsewhere, came or went (null: none left; `was` itself is not changed), or null when many did or the lines
+ * both have are in another order, to be worked out whole. */
+function edgeLinesPatched(was: Map<number, string[]>, from: readonly ClockState["lines"][number][], to: readonly ClockState["lines"][number][]): Map<number, string[] | null> | null {
+  const old = new Map(from.map((l, i) => [l.id, { l, i }]));
+  const pos = new Map<string, number>();
+  // the lines whose edges are listed again, and their rows before and after
+  const redo = new Set<string>(), rows: ClockState["lines"][number][] = [];
+  let prev = -1, reordered = false;
+  to.forEach((l, i) => {
+    const id = String(l.id), o = old.get(l.id);
+    pos.set(id, i);
+    if (!o) { redo.add(id); rows.push(l); return; }
+    old.delete(l.id);
+    if (o.i < prev) reordered = true;
+    prev = o.i;
+    if (o.l !== l && !samePaths([o.l], [l])) { redo.add(id); rows.push(o.l, l); }
+  });
+  for (const { l } of old.values()) { redo.add(String(l.id)); rows.push(l); }
+  if (reordered || redo.size * LINES_REDONE_SHARE > to.length + LINES_REDONE_SHARE) return null;
+  const now = new Map<number, string[]>();
+  for (const l of to) {
+    const id = String(l.id);
+    if (redo.has(id)) for (const p of lineEdgesOf(l)) (now.get(p) ?? now.set(p, []).get(p)!).push(id);
+  }
+  const out = new Map<number, string[] | null>(), seen = new Set<number>();
+  for (const l of rows) for (const p of lineEdgesOf(l)) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    const had = was.get(p), ids = (had ?? []).filter((id) => !redo.has(id)).concat(now.get(p) ?? []);
+    ids.sort((x, y) => pos.get(x)! - pos.get(y)!);
+    // T-4284: an edge whose lines are the same as before is not one that moved (most of a re-run line's own edges)
+    if (had && sameObjects(had, ids)) continue;
+    out.set(p, ids.length ? ids : null);
+  }
+  return out;
+}
+/** The UI's track edges from the state's rows and lines (T-2576): an edge row that was in the last state gives
+ * its old view while the lines over it are the same, and the lists of lines are kept while every line
+ * runs the same path (an edit of a line's trains changes its row, not its path). T-4150 stage 2: a line that runs
+ * elsewhere changes the lists of its edges only. */
+function edgesOf(s: ClockState, keep: boolean, step?: ReadonlySet<number> | null): TrackEdge[] {
+  let edgeLines = lastEdgeLines;
+  /** the lines over an edge: `edgeLines`'s, or for a world not kept (the tools'), the patch's over the kept map's (T-4284:
+   * not a copy of the map) */
+  let linesAt = (id: number) => edgeLines.get(id);
+  let linesSame = true;
+  // the edges whose lines changed, when not every edge's could have
+  let moved: Set<number> | null = new Set();
+  if (!sameObjects(s.lines, lastEdgeLineRows)) {
+    if (samePaths(s.lines, lastEdgeLineRows)) { if (keep) lastEdgeLineRows = s.lines; }
+    else {
+      linesSame = false;
+      const patch = freshNow() ? null : edgeLinesPatched(edgeLines, lastEdgeLineRows, s.lines);
+      if (patch) {
+        // (the kept world's map is changed in place: the views hold the arrays, never the map)
+        if (keep) for (const [p, ids] of patch) { if (ids) edgeLines.set(p, ids); else edgeLines.delete(p); }
+        else { const base = edgeLines; linesAt = (id) => (patch.has(id) ? patch.get(id) ?? undefined : base.get(id)); }
+        moved = new Set(patch.keys());
+        if (import.meta.env.DEV && checkPatches()) {
+          const got = keep ? edgeLines : new Map(edgeLines);
+          if (!keep) for (const [p, ids] of patch) { if (ids) got.set(p, ids); else got.delete(p); }
+          if (!sameBuilt(got, edgeLinesOf(s.lines))) console.error("T-4150 check: the lines over each edge patched by the lines that moved differ from a whole build");
+        }
+      } else {
+        edgeLines = edgeLinesOf(s.lines);
+        moved = null;
+      }
+      if (keep) {
+        lastEdgeLineRows = s.lines;
+        lastEdgeLines = edgeLines;
+      }
+    }
+  }
+  if (keep) edgeLinesMoved = moved;
   if (linesSame && s.edges === lastEdgeRows) return lastEdgeViews;
   const none: string[] = [];
-  // where the row at i stood in the last state: usually i, one more or less after an edge was
-  // removed or added; a row not found there gets a new view
-  let shift = 0;
-  const lastRows = lastEdgeRows, lastViews = lastEdgeViews;
-  const out = s.edges.map((e, i) => {
-    let j = i + shift;
-    if (lastRows[j] !== e) {
-      if (lastRows[j + 1] === e) j = i + ++shift;
-      else if (j > 0 && lastRows[j - 1] === e) j = i + --shift;
-      else j = -1;
-    }
-    if (j >= 0 && linesSame) return lastViews[j];
-    const ls = edgeLines.get(e.id) ?? none;
+  // where the row stood in the last state: both lists in id order (the model's) are walked side by side, so any number
+  // of edges added or removed leaves the others their views (T-4150 stage 2); else by position, one more or less
+  const lastRows = lastEdgeRows as readonly ClockState["edges"][number][], lastViews = lastEdgeViews;
+  const byId = ascendingBy(s.edges, (e) => e.id) && ascendingBy(lastRows, (e) => e.id);
+  /** the view of row `e`, the `j`th of the last rows (-1: none was this row) */
+  const viewOf = (e: ClockState["edges"][number], j: number): TrackEdge => {
+    if (j >= 0 && (linesSame || (moved && !moved.has(e.id)))) return lastViews[j];
+    const ls = linesAt(e.id) ?? none;
     const v = j >= 0 ? lastViews[j] : undefined;
     if (v && sameObjects(v.lines, ls)) return v;
     return {
       id: e.id, a: e.a, b: e.b, tracks: e.tracks, built: e.built, off: e.off, hsr: e.hsr, kind: e.kind || undefined, oneWay: e.oneWay || undefined, join: e.join || undefined, setWay: e.setWay || undefined, autoWay: e.autoWay || undefined, crossover: e.crossover, partner: e.partner, lengthM: e.lengthM, cost: e.cost * 1e6, vminKmh: e.vminKmh, limit: e.limit || undefined, ramp: e.ramp || undefined,
       levelMin: e.levelMin as any, levelMax: e.levelMax as any, lines: ls === none ? [] : ls,
     };
-  });
-  lastEdgeRows = s.edges;
-  lastEdgeViews = out;
+  };
+  const whole = () => {
+    let shift = 0, at = 0;
+    return s.edges.map((e, i) => {
+      let j: number;
+      if (byId) {
+        while (at < lastRows.length && lastRows[at].id < e.id) at++;
+        j = lastRows[at] === e ? at : -1;
+      } else {
+        j = i + shift;
+        if (lastRows[j] !== e) {
+          if (lastRows[j + 1] === e) j = i + ++shift;
+          else if (j > 0 && lastRows[j - 1] === e) j = i + --shift;
+          else j = -1;
+        }
+      }
+      return viewOf(e, j);
+    });
+  };
+  // T-4284: with the rows that may differ named (`step`) and the edges whose lines moved, the last views with only those laid in
+  const laid = byId && step && (linesSame || moved) && !freshNow() ? laidEdges(s.edges, lastRows, lastViews, step, moved, viewOf) : null;
+  if (import.meta.env.DEV && laid && checkPatches()) {
+    const w = whole(), was = new Set(lastViews);
+    if (w.length !== laid.length || w.some((v, i) => v !== laid[i] && !(!was.has(v) && !was.has(laid[i]) && sameBuilt(v, laid[i])))) console.error("T-4284 check: the edges laid on the last world's differ from a whole build");
+  }
+  const out = laid ?? whole();
+  if (keep) {
+    lastEdgeRows = s.edges;
+    lastEdgeViews = out;
+  }
+  return out;
+}
+/** the index of the item with id `id` in `list` (ascending by id), or where it would go as `~index` */
+function idAt<T extends { id: number }>(list: readonly T[], id: number): number {
+  let lo = 0, hi = list.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].id < id) lo = m + 1; else hi = m; }
+  return lo < list.length && list[lo].id === id ? lo : ~lo;
+}
+/** T-4284: the last views (of `lastRows`, both in id order) with the edges `step` names (rows changed or gone) and those whose
+ * lines `moved` given their views from `rows`: a few binary searches an edge, no pass over the others */
+function laidEdges(rows: readonly ClockState["edges"][number][], lastRows: readonly ClockState["edges"][number][], lastViews: readonly TrackEdge[], step: ReadonlySet<number>, moved: ReadonlySet<number> | null, viewOf: (e: ClockState["edges"][number], j: number) => TrackEdge): TrackEdge[] {
+  const ids = new Set(step);
+  if (moved) for (const id of moved) ids.add(id);
+  const out = lastViews.slice();
+  for (const id of [...ids].sort((a, b) => a - b)) {
+    const r = idAt(rows, id), k = idAt(out, id);
+    if (r < 0) { if (k >= 0) out.splice(k, 1); continue; }
+    const e = rows[r], j = idAt(lastRows, id);
+    const v = viewOf(e, j >= 0 && lastRows[j] === e ? j : -1);
+    if (k >= 0) out[k] = v;
+    else out.splice(~k, 0, v);
+  }
   return out;
 }
 /** The UI's world view from the worker's state. */
@@ -300,20 +435,224 @@ function turnLimitsOf(v: Float64Array | undefined): Map<string, Map<number, numb
   return out;
 }
 
-function toWorld(s: ClockState): WorldView {
-  let stations: StationInput[] = s.nodes
-    .filter((n) => n.platform > 0)
-    .map((n) => {
-      let v = stationViews.get(n);
-      if (!v) stationViews.set(n, v = {
-        id: String(n.id), num: n.id, name: n.name, lng: n.lng, lat: n.lat, x: n.x, y: n.y, level: n.level as any, length: n.platform, built: n.stationBuilt, off: n.stationOff, upgrades: n.upgrades, heading: n.heading, ...(n.fare ? { fare: n.fare } : {}), ...(n.named ? { named: true as const } : {}), ...(n.own ? { unbound: true as const } : {}), ...(n.hub !== undefined ? { hub: n.hub } : {}), ...(n.line ? { line: n.line } : {}), ...(n.port ? { port: n.port } : {}), ...(n.brtStation ? { brt: true as const } : {}), ...(n.kind === 2 || n.kind === 3 ? { tram: true as const } : {}),
-        ...(n.one ? { one: n.one } : {}), ...(n.oneHeading !== undefined ? { oneHeading: n.oneHeading } : {}), ...(n.onePlatform ? { onePlatform: true as const } : {}),
-        ...(n.upgradeUpkeep ? { upgradeUpkeep: n.upgradeUpkeep } : {}),
-      });
-      return v;
-    });
+/** T-4214: `base` (a state's rows, in the model's order: by id, a bus line's stops that are no station last) with `rows` in
+ * place of theirs or added by id, and those `gone` left out; a new array. T-4284: a copy with each changed row found by a
+ * binary search (the bus stops' tail by a scan), not a pass over every row; the pass when the rows before the tail are
+ * not in id order. */
+function patchRows<T extends { id: number; bus?: boolean }>(base: readonly T[], rows: readonly T[], gone: readonly number[]): T[] {
+  const tail = busTail(base as readonly { bus?: boolean }[] as readonly NodeRow[]);
+  if (!headAscends(base, tail)) return patchRowsWhole(base, rows, gone);
+  const out = base.slice();
+  let t = tail;
+  const at = (id: number) => {
+    let lo = 0, hi = t;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (out[m].id < id) lo = m + 1; else hi = m; }
+    if (lo < t && out[lo].id === id) return lo;
+    for (let k = t; k < out.length; k++) if (out[k].id === id) return k;
+    return -1;
+  };
+  for (const id of gone) { const k = at(id); if (k >= 0) { out.splice(k, 1); if (k < t) t--; } }
+  const added: T[] = [];
+  for (const r of rows) { const k = at(r.id); if (k >= 0) out[k] = r; else added.push(r); }
+  // (as the pass did: before the bus stops that end the list once the others are in)
+  let end = out.length;
+  while (end > 0 && out[end - 1].bus) end--;
+  for (const r of added) {
+    let lo = 0, hi = end;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (out[m].id < r.id) lo = m + 1; else hi = m; }
+    out.splice(lo, 0, r);
+    end++;
+  }
+  if (import.meta.env.DEV && checkPatches() && !sameObjects(out, patchRowsWhole(base, rows, gone))) console.error("T-4284 check: the rows patched by binary search differ from a whole pass");
+  return out;
+}
+/** T-4284: the index of the row with id `id` in `rows` (the model's order: by id, perhaps a tail that is not), -1 if none */
+function rowAt(rows: readonly { id: number }[], id: number): number {
+  let lo = 0, hi = rows.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (rows[m].id < id) lo = m + 1; else hi = m; }
+  if (lo < rows.length && rows[lo].id === id) return lo;
+  for (let k = rows.length - 1; k >= 0; k--) if (rows[k].id === id) return k;
+  return -1;
+}
+/** T-4284: `last` (a state's rows as held) with the delta's `rows` in place of theirs; with `ids` (every id, in order) the
+ * new ones (`added`) put where `ids` has them and those left out dropped, their ids pushed on `gone`. A walk of both id
+ * lists and no lookup a row; null when the held rows do not follow `ids` in order (the caller looks every row up). */
+function laidRows<T extends { id: number }>(last: readonly T[], rows: readonly T[], ids: readonly number[] | null, added: ReadonlySet<number>, gone: number[]): T[] | null {
+  if (!ids) {
+    const out = last.slice();
+    for (const r of rows) { const k = rowAt(last, r.id); if (k >= 0) out[k] = r; }
+    return out;
+  }
+  const fresh = new Map<number, T>();
+  for (const r of rows) if (added.has(r.id)) fresh.set(r.id, r);
+  const out: T[] = new Array(ids.length);
+  let j = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    if (j < last.length && last[j].id === id) { out[i] = last[j++]; continue; }
+    const r = fresh.get(id);
+    if (r) { out[i] = r; continue; }
+    while (j < last.length && last[j].id !== id) gone.push(last[j++].id);
+    if (j >= last.length) return null;
+    out[i] = last[j++];
+  }
+  while (j < last.length) gone.push(last[j++].id);
+  // the rows that changed in place, found by id
+  for (const r of rows) {
+    if (fresh.has(r.id)) continue;
+    const k = rowAt(out, r.id);
+    if (k < 0) return null;
+    out[k] = r;
+  }
+  return out;
+}
+/** whether a list's rows before `tail` ascend by id, found once per list */
+const headsUp = new WeakMap<readonly unknown[], boolean>();
+function headAscends(rows: readonly { id: number }[], tail: number): boolean {
+  let up = headsUp.get(rows);
+  if (up === undefined) {
+    up = true;
+    for (let i = 1; i < tail; i++) if (!(rows[i - 1].id < rows[i].id)) { up = false; break; }
+    headsUp.set(rows, up);
+  }
+  return up;
+}
+function patchRowsWhole<T extends { id: number; bus?: boolean }>(base: readonly T[], rows: readonly T[], gone: readonly number[]): T[] {
+  const by = new Map(rows.map((r) => [r.id, r])), drop = new Set(gone), used = new Set<number>();
+  const out: T[] = [];
+  for (const r of base) {
+    if (drop.has(r.id)) continue;
+    const n = by.get(r.id);
+    if (n) used.add(r.id);
+    out.push(n ?? r);
+  }
+  let end = out.length;
+  while (end > 0 && out[end - 1].bus) end--;
+  for (const r of rows) {
+    if (used.has(r.id)) continue;
+    let lo = 0, hi = end;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (out[m].id < r.id) lo = m + 1; else hi = m; }
+    out.splice(lo, 0, r);
+    end++;
+  }
+  return out;
+}
+
+/** T-4150 stage 2: the passages, separated pairs and buildings as last given, so a world whose lists are the same has the
+ * same arrays (readers skip their work on them by identity: the bus layer's, the complexes') */
+const sameLists = { links: { flat: [] as number[], pairs: [] as [string, string][] }, apart: { flat: [] as number[], pairs: [] as [string, string][] }, buildings: undefined as ClockState["buildings"] };
+function pairsKept(flat: number[], k: "links" | "apart", keep: boolean): [string, string][] {
+  const was = sameLists[k];
+  if (flat.length === was.flat.length && flat.every((v, i) => v === was.flat[i])) return was.pairs;
+  const pairs = pairsOf(flat);
+  if (keep) sameLists[k] = { flat, pairs };
+  return pairs;
+}
+/** T-4080: the named bus stops as last given: the same array while the names and places are the same */
+let keepsLast: ClockState["keeps"];
+function keepsKept(k: ClockState["keeps"], keep: boolean): ClockState["keeps"] {
+  if (!k?.length) return undefined;
+  if (keepsLast && keepsLast.length === k.length && k.every((x, i) => x.id === keepsLast![i].id && x.x === keepsLast![i].x && x.y === keepsLast![i].y && x.name === keepsLast![i].name)) return keepsLast;
+  if (keep) keepsLast = k;
+  return k;
+}
+function buildingsKept(b: ClockState["buildings"], keep: boolean): ClockState["buildings"] {
+  if (!b?.length) return undefined;
+  if (sameLists.buildings && sameBuilt(sameLists.buildings, b)) return sameLists.buildings;
+  if (keep) sameLists.buildings = b;
+  return b;
+}
+
+/** T-4150 stage 2: each period's track at capacity as last made: the same map while the state's figures are the same */
+const fullTrackLast: { v: Float64Array; m: Map<number, { rho: number; tph: number }> }[] = [];
+function fullTrackKept(v: Float64Array, p: number, keep: boolean): Map<number, { rho: number; tph: number }> {
+  const was = fullTrackLast[p];
+  if (was && was.v.length === v.length && was.v.every((x, i) => x === v[i] || (x !== x && v[i] !== v[i]))) return was.m;
+  const m = new Map<number, { rho: number; tph: number }>();
+  for (let k = 0; k + 2 < v.length; k += 3) m.set(v[k], { rho: v[k + 1], tph: v[k + 2] });
+  if (keep) fullTrackLast[p] = { v, m };
+  return m;
+}
+
+/** T-4284: the node rows a state or click world may differ by from the last kept world's (`lastNodeRows`), by id */
+type NodeStep = ReadonlySet<number>;
+/** T-4284: the edge and node rows a state or click world may differ by from the last kept world's */
+type RowStep = { edges: ReadonlySet<number>; nodes: NodeStep };
+type NodeRow = ClockState["nodes"][number];
+const stationOf = (n: NodeRow): StationInput => {
+  let v = stationViews.get(n);
+  if (!v) stationViews.set(n, v = {
+    id: String(n.id), num: n.id, name: n.name, lng: n.lng, lat: n.lat, x: n.x, y: n.y, level: n.level as any, length: n.platform, built: n.stationBuilt, off: n.stationOff, upgrades: n.upgrades, heading: n.heading, ...(n.fare ? { fare: n.fare } : {}), ...(n.named ? { named: true as const } : {}), ...(n.own ? { unbound: true as const } : {}), ...(n.hub !== undefined ? { hub: n.hub } : {}), ...(n.line ? { line: n.line } : {}), ...(n.port ? { port: n.port } : {}), ...(n.brtStation ? { brt: true as const } : {}), ...(n.kind === 2 || n.kind === 3 ? { tram: true as const } : {}),
+    ...(n.one ? { one: n.one } : {}), ...(n.oneHeading !== undefined ? { oneHeading: n.oneHeading } : {}), ...(n.onePlatform ? { onePlatform: true as const } : {}),
+    ...(n.upgradeUpkeep ? { upgradeUpkeep: n.upgradeUpkeep } : {}),
+  });
+  return v;
+};
+const nodeOf = (n: NodeRow): TrackNode => {
+  let v = nodeViews.get(n);
+  if (!v) nodeViews.set(n, v = { id: n.id, x: n.x, y: n.y, lng: n.lng, lat: n.lat, level: n.level as any, ports: n.ports, builtPorts: n.builtPorts, flying: n.flying, platform: n.platform, ...(n.bus ? { bus: true as const } : {}), ...(n.port ? { port: true as const } : {}), ...(n.brtStation ? { brtStation: true as const } : {}), ...(n.kind ? { kind: n.kind } : {}) });
+  return v;
+};
+/** whether `lastStations` ascend by number (a laid list does when the one it was laid on did) */
+let lastStationsUp = true;
+/** T-4284: the row of node `id` in `rows` (the model's order: by id, the bus stops that are no station last), where its
+ * bus stops start */
+function rowIn(rows: readonly NodeRow[], tail: number, id: number): NodeRow | undefined {
+  let lo = 0, hi = tail;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (rows[m].id < id) lo = m + 1; else hi = m; }
+  if (lo < tail && rows[lo].id === id) return rows[lo];
+  for (let k = tail; k < rows.length; k++) if (rows[k].id === id) return rows[k];
+  return undefined;
+}
+const busTail = (rows: readonly NodeRow[]) => { let t = rows.length; while (t > 0 && rows[t - 1].bus) t--; return t; };
+/** T-4284: the last kept world's stations with the rows `ids` names laid in; null when the order cannot be kept so */
+function laidStations(rows: readonly NodeRow[], ids: NodeStep): StationInput[] | null {
+  if (!lastStationsUp) return null;
+  const out = lastStations.slice(), t = busTail(rows);
+  for (const id of [...ids].sort((a, b) => a - b)) {
+    const r = rowIn(rows, t, id);
+    if (r?.bus && r.platform > 0) return null;
+    const v = r && r.platform > 0 ? stationOf(r) : null;
+    let lo = 0, hi = out.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (out[m].num < id) lo = m + 1; else hi = m; }
+    const has = lo < out.length && out[lo].num === id;
+    if (v) { if (has) out[lo] = v; else out.splice(lo, 0, v); }
+    else if (has) out.splice(lo, 1);
+  }
+  return out;
+}
+/** T-4284: the last kept world's nodes with the rows `ids` names laid in, in the rows' order; null when that order needs
+ * the map made again (a bus stop changed, or a new node not after the others by id) */
+function laidNodes(rows: readonly NodeRow[], ids: NodeStep): Map<number, TrackNode> | null {
+  const m = new Map(lastNodeMap), t = busTail(rows), added: number[] = [];
+  for (const id of ids) {
+    const r = rowIn(rows, t, id);
+    if (r?.bus || lastNodeMap.get(id)?.bus) return null;
+    if (!r) { m.delete(id); continue; }
+    if (!m.has(id)) added.push(id);
+    m.set(id, nodeOf(r));
+  }
+  if (added.length) {
+    added.sort((a, b) => a - b);
+    for (let k = 0; k < added.length; k++) if (rows[t - added.length + k]?.id !== added[k]) return null;
+    // (the bus stops stay last)
+    for (let k = t; k < rows.length; k++) { const id = rows[k].id, v = m.get(id)!; m.delete(id); m.set(id, v); }
+  }
+  return m;
+}
+
+/** `keep` false (T-4214, the tools' patched world): the views made are not kept for the next state's to reuse. `step`
+ * (T-4284): the edge and node ids its rows may differ by from the last kept world's, whose edges, stations and nodes it is
+ * then laid on */
+function toWorld(s: ClockState, keep = true, step?: RowStep | null): WorldView {
+  const laidS = step ? laidStations(s.nodes, step.nodes) : null;
+  let stations: StationInput[] = laidS ?? s.nodes.filter((n) => n.platform > 0).map(stationOf);
+  if (import.meta.env.DEV && laidS && checkPatches() && !sameObjects(laidS, s.nodes.filter((n) => n.platform > 0).map(stationOf))) console.error("T-4284 check: the stations laid on the last world's differ from a whole build");
   if (sameObjects(stations, lastStations)) stations = lastStations;
-  else lastStations = stations;
+  else if (keep) {
+    lastStationsUp = laidS ? lastStationsUp : ascendingBy(stations, (x) => x.num);
+    lastStations = stations;
+  }
   // T-3333: a line run on both pairs and its hidden twin keep a row each, so every sum counts both; the twin
   // is marked for the lists to leave out, its line for its panel to add it in
   const twinOfLine = new Map<number, number>(), twins = new Map<string, string>();
@@ -331,7 +670,7 @@ function toWorld(s: ClockState): WorldView {
     return v;
   });
   if (sameObjects(lines, lastLines)) lines = lastLines;
-  else lastLines = lines;
+  else if (keep) lastLines = lines;
   const lineStats: Record<string, LineStats> = {};
   for (const l of s.lines) {
     const had = statsViews.get(l), twin = twinOfLine.has(l.id) ? String(twinOfLine.get(l.id)) : undefined;
@@ -389,28 +728,29 @@ function toWorld(s: ClockState): WorldView {
       ...(l.bus ? { bus: l.bus } : {}),
     };
   }
-  const edges = edgesOf(s);
+  const edges = timed("world.edges", () => edgesOf(s, keep, step?.edges));
   // the last map while the rows are the same, so the snap's node grid (map/snapIndex.ts) stays
   let nodes = lastNodeMap;
   if (!sameObjects(s.nodes, lastNodeRows)) {
-    nodes = new Map<number, TrackNode>(
-      s.nodes.map((n) => [n.id, { id: n.id, x: n.x, y: n.y, lng: n.lng, lat: n.lat, level: n.level as any, ports: n.ports, builtPorts: n.builtPorts, flying: n.flying, platform: n.platform, ...(n.bus ? { bus: true as const } : {}), ...(n.port ? { port: true as const } : {}), ...(n.brtStation ? { brtStation: true as const } : {}), ...(n.kind ? { kind: n.kind } : {}) }]),
-    );
-    lastNodeRows = s.nodes;
-    lastNodeMap = nodes;
+    const laid = step ? laidNodes(s.nodes, step.nodes) : null;
+    nodes = laid ?? new Map<number, TrackNode>(s.nodes.map((n) => [n.id, nodeOf(n)]));
+    if (import.meta.env.DEV && laid && checkPatches()) {
+      const whole = [...s.nodes.map((n) => [n.id, nodeOf(n)] as const)], got = [...laid];
+      if (whole.length !== got.length || whole.some(([id, v], i) => got[i][0] !== id || got[i][1] !== v)) console.error("T-4284 check: the nodes laid on the last world's differ from a whole build");
+    }
+    if (keep) {
+      lastNodeRows = s.nodes;
+      lastNodeMap = nodes;
+    }
   }
   return {
     version: s.version,
     periods: s.periods,
     hours: s.hours,
     capacity: s.markers,
-    fullTrack: (s.fullTrack ?? []).map((v) => {
-      const m = new Map<number, { rho: number; tph: number }>();
-      for (let k = 0; k + 2 < v.length; k += 3) m.set(v[k], { rho: v[k + 1], tph: v[k + 2] });
-      return m;
-    }),
+    fullTrack: (s.fullTrack ?? []).map((v, p) => fullTrackKept(v, p, keep)),
     turnLimits: turnLimitsOf(s.turnLimits),
-    save: { cash: s.cash * 1e6, stations, lines, links: pairsOf(s.links ?? []), ...(s.buildings?.length ? { buildings: s.buildings } : {}) },
+    save: { cash: s.cash * 1e6, stations, lines, links: pairsKept(s.links ?? [], "links", keep), ...(s.apart?.length ? { apart: pairsKept(s.apart, "apart", keep) } : {}), ...(s.buildings?.length ? { buildings: buildingsKept(s.buildings, keep) } : {}), ...(s.keeps?.length ? { keeps: keepsKept(s.keeps, keep) } : {}) },
     lineStats,
     twins,
     edges,
@@ -715,6 +1055,9 @@ export class ClockClient {
   private loadedInto = "";
   /** the renderer's hooks, set by main.ts */
   onState: (s: ClockState) => void = () => {};
+  /** T-4214: lay an edit's edges on the network the tools pick on (map/clickMap.ts), the `order`th message to arrive; false
+   * when it cannot be (no network drawn, or drawn at another anchor) */
+  onPatch: (set: Map<number, Float32Array>, gone: number[], order: number, anchor: number) => boolean = () => false;
   /** T-2159: the network diagram's graph, while the diagram is shown (diagram/view.ts) */
   /** T-3409: `cut`: the graphs are of the chosen cities alone; `whole`: the whole network's too, when a share asked */
   onDiagram: (graphs: DiagramGraph[], cut: boolean, whole?: DiagramGraph[]) => void = () => {};
@@ -906,44 +1249,62 @@ export class ClockClient {
     sendClock();
     // Fare income from the riders (game/money.ts), whenever riders, fares or lines change.
     // One table per kind of day (T-260): the worker settles each hour by its own day's.
-    let lastIncome = "";
+    // (T-4150 stage 2: compared by value, not as JSON text)
+    let lastIncome: { per: number[][]; rides: number[][]; lines: IncomePost[] } | null = null;
     // T-2848: bumped after a rebuild, which cleared the worker's figures for a network that gets no new solve
     const resend = signal(0);
     // T-2773: a line whose riders are being worked out again is paid what it last earned settled, not a
     // half-done answer's (a local solve reads a long line far low): its entries stand in for the new ones
     const settledIncome = new Map<string, { perHour: number[]; rides: number[] }[]>();
+    /** T-4284: each line's entry, kept while the money it was made from is the same objects (an edit's lines make new ones) */
+    let incomeEntries = new Map<string, { refs: (LineMoney | undefined)[]; was: unknown; entry: IncomePost }>();
+    const NO_MONEY = { perHour: [] as number[], rides: [] as number[] };
     effect(() => {
       void resend.value;
       const inc = incomeByDay.value, pend = linesPending.value;
-      const days = inc.map((i) => ({ ...i, perHour: [...i.perHour], rides: [...i.rides], lines: new Map(i.lines) }));
-      const live = new Set(days.flatMap((i) => [...i.lines.keys()]));
+      const per = inc.map((i) => [...i.perHour]), rides = inc.map((i) => [...i.rides]);
+      // every line, in the order the days list them (a kind of day standing in for another is the same object)
+      const ids: string[] = [], live = new Set<string>();
+      inc.forEach((i, d) => { if (inc.indexOf(i) === d) for (const id of i.lines.keys()) if (!live.has(id)) { live.add(id); ids.push(id); } });
       for (const id of [...settledIncome.keys()]) if (!live.has(id)) settledIncome.delete(id);
-      for (const id of live) {
-        const was = settledIncome.get(id);
-        if (!pend.has(id) || !was) { settledIncome.set(id, days.map((i) => ({ perHour: i.lines.get(id)?.perHour ?? [], rides: i.lines.get(id)?.rides ?? [] }))); continue; }
-        days.forEach((i, d) => {
-          const cur = i.lines.get(id), old = was[d];
+      const next: typeof incomeEntries = new Map(), lines: IncomePost[] = [];
+      for (const id of ids) {
+        const was = settledIncome.get(id), held = pend.has(id) && !!was;
+        const e = incomeEntries.get(id);
+        let same = !!e && e.was === (held ? was : null);
+        for (let d = 0; same && d < inc.length; d++) if (e!.refs[d] !== inc[d].lines.get(id)) same = false;
+        if (!held) {
+          if (!same) settledIncome.set(id, inc.map((i) => i.lines.get(id) ?? NO_MONEY));
+        } else inc.forEach((i, d) => {
+          const cur = i.lines.get(id), old = was![d];
           if (!cur || !old) return;
-          for (let p = 0; p < i.perHour.length; p++) {
-            i.perHour[p] += (old.perHour[p] ?? 0) - (cur.perHour[p] ?? 0);
-            if (i.rides[p] !== undefined) i.rides[p] += (old.rides[p] ?? 0) - (cur.rides[p] ?? 0);
+          for (let p = 0; p < per[d].length; p++) {
+            per[d][p] += (old.perHour[p] ?? 0) - (cur.perHour[p] ?? 0);
+            if (rides[d][p] !== undefined) rides[d][p] += (old.rides[p] ?? 0) - (cur.rides[p] ?? 0);
           }
-          i.lines.set(id, { ...cur, perHour: old.perHour, rides: old.rides });
         });
+        // T-293: each line's too, for its fares taken today
+        const got = same ? e! : {
+          refs: inc.map((i) => i.lines.get(id)), was: held ? was : null,
+          entry: {
+            line: Number(id),
+            perHour: inc.map((i, d) => { const cur = i.lines.get(id); return (cur && held ? was![d].perHour : cur?.perHour) ?? (per[0] ?? []).map(() => 0); }),
+            rides: inc.map((i, d) => { const cur = i.lines.get(id); return (cur && held ? was![d].rides : cur?.rides) ?? (per[0] ?? []).map(() => 0); }),
+          },
+        };
+        next.set(id, got);
+        lines.push(got.entry);
       }
-      const per = days.map((i) => i.perHour);
-      // T-293: each line's too, for its fares taken today
-      const ids = new Set(days.flatMap((i) => [...i.lines.keys()]));
-      const lines = [...ids].map((id) => ({
-        line: Number(id),
-        perHour: days.map((i) => i.lines.get(id)?.perHour ?? (per[0] ?? []).map(() => 0)),
-        rides: days.map((i) => i.lines.get(id)?.rides ?? (per[0] ?? []).map(() => 0)),
-      }));
-      const rides = days.map((i) => i.rides);
-      const key = JSON.stringify([per, rides, lines]);
-      if (key !== lastIncome) {
-        lastIncome = key;
-        this.post({ kind: "income", perHour: per, rides, lines });
+      incomeEntries = next;
+      const was = lastIncome;
+      if (was && sameBuilt(per, was.per) && sameBuilt(rides, was.rides) && was.lines.length === lines.length && lines.every((x, k) => x === was.lines[k] || sameBuilt(x, was.lines[k]))) return;
+      lastIncome = { per, rides, lines };
+      // T-4284: the lines whose entries changed, with every line's number in order, once the worker holds a table
+      if (!was) this.post({ kind: "income", perHour: per, rides, lines });
+      else {
+        const had = new Set(was.lines), sent = lines.filter((x) => !had.has(x));
+        this.post({ kind: "income", perHour: per, rides, lines: sent, order: lines.map((x) => x.line) });
+        if (import.meta.env.DEV) checkMerged("income", was.lines, sent, lines);
       }
     });
     // T-531: each line's money by region, whenever lines, riders or zone boundaries change it
@@ -962,28 +1323,33 @@ export class ClockClient {
     };
     effect(() => {
       // what the two shares read; they are worked out later
-      void moneyWorld.value, moneyTerms.value, zonesLoaded.value, demandByDay.value, world.value;
+      void moneyWorld.value, moneyTerms.value, zonesLoaded.value, mainDemandByDay.value, world.value;
       if (sharesSoon) return;
       sharesSoon = true;
       if (typeof requestIdleCallback === "function") requestIdleCallback(postShares, { timeout: 2000 });
       else setTimeout(postShares, 100);
     });
     // T-684: each line's points by region, whenever riders, lines or zone boundaries change them
-    let lastPoints = "";
+    let lastPoints: typeof linePoints.value | null = null;
     effect(() => {
       void resend.value;
-      const lines = linePoints.value;
-      const key = JSON.stringify(lines);
-      if (key !== lastPoints) {
-        lastPoints = key;
-        this.post({ kind: "points", lines });
+      const lines = linePoints.value, was = lastPoints;
+      // (T-4150 stage 2: an unchanged line's entry is the same object, `linePoints`)
+      if (was && was.length === lines.length && lines.every((x, k) => x === was[k] || sameBuilt(x, was[k]))) return;
+      lastPoints = lines;
+      // T-4284: the lines whose entries changed, with every line's number in order, once the worker holds a table
+      if (!was) this.post({ kind: "points", lines });
+      else {
+        const had = new Set(was), sent = lines.filter((x) => !had.has(x));
+        this.post({ kind: "points", lines: sent, order: lines.map((x) => x.line) });
+        if (import.meta.env.DEV) checkMerged("points", was, sent, lines);
       }
     });
     // the view each kind of day's riders were last sent from; the same view is not sent again (T-1209)
     let ridersSent: unknown[] = [];
     // T-715: a load clears the worker's income, shares and points; the next round sends them again
     // even when they match the last game's
-    this.forgetSent = () => { lastIncome = lastShares = lastPoints = ""; ridersSent = []; };
+    this.forgetSent = () => { lastIncome = lastPoints = null; lastShares = ""; ridersSent = []; };
     // T-685: a region's star, the first time its rail share on the average day (never the day
     // shown, so switching it earns nothing) reaches the mark in a final result
     effect(() => {
@@ -991,9 +1357,12 @@ export class ClockClient {
       if (!m) return;
       // (T-3509: the trips within the zone, those between its far-apart parts included, so never
       // from figures before the market's result while the game has one)
-      const d = demandByDay.value[AVERAGE_DAY];
+      const d = mainDemandByDay.value[AVERAGE_DAY];
       if (!marketIn(d) && !marketOff()) return;
-      for (const g of goalsDue(zoneViews(d), m)) this.post({ kind: "star", ...g });
+      // T-4150: the zones' views once per day's figures, not again with every state's money
+      let zv = d ? starViews.get(d.cities) : undefined;
+      if (d && (!zv || zv.intercity !== d.intercity)) starViews.set(d.cities, zv = { intercity: d.intercity, views: zoneViews(d) });
+      for (const g of goalsDue(zv?.views ?? zoneViews(d), m)) this.post({ kind: "star", ...g });
     });
     // Demand's riders for the boarding account (T-164): each new result, every kind of day's
     // (T-260); the trains and platforms of each hour read their own day's.
@@ -1002,7 +1371,7 @@ export class ClockClient {
       // so the account reads the ordinary day's (track/boarding.rs `kind`)
       void resend.value;
       const soon = awaySoon.value, rush = rushSoon.value;
-      demandByDay.value.slice(0, DAY_KINDS.length).forEach((d0, day) => {
+      mainDemandByDay.value.slice(0, DAY_KINDS.length).forEach((d0, day) => {
         const own = day === AWAY_DAY ? soon : day === OUT_DAY || day === BACK_DAY ? rush : null;
         const d = own === false ? { view: null } : d0;
         if (own !== null && !d.view) {
@@ -1061,6 +1430,13 @@ export class ClockClient {
   private cityId: string;
   /** the world before the last state, for the edit that state answers (T-531) */
   private worldBefore: WorldView | null = null;
+  /** T-4214: the last state taken, and its rows as patched since for the tools' world (map/clickMap.ts `clickWorld`;
+   * the client's delta base, `rows`, is left as the worker posted it) */
+  private taken: ClockState | null = null;
+  private patched: { edges: ClockState["edges"]; nodes: ClockState["nodes"]; lines: ClockState["lines"]; n: number } | null = null;
+  /** the patches laid on since the last state taken, and the words that came with none (`p` null), by arrival order: a
+   * state taken drops those that came before it (it holds their edits) and lays the rest on its rows again */
+  private patchLog: { order: number; p: MapPatch | null }[] = [];
   /** `?new=1`, `?synth=1` or `?demandTest=1`: no autosave until a copy is saved (T-320) */
   private testPage = false;
   private forgetSent = () => {};
@@ -1134,19 +1510,40 @@ export class ClockClient {
    * false when they cannot be (the worker is then asked for a whole state). */
   private takeRows(st: ClockState): boolean {
     const d = st.delta;
+    // T-4150 stage 2: the ids of the rows each kind posted changed or dropped (null: posted whole)
+    const named: Record<"edges" | "nodes", number[] | null> = { edges: null, nodes: null };
     const put = <K extends "edges" | "nodes" | "lines">(k: K, last: ClockState[K], delta: { ids: number[] | null; rows: ClockState[K] } | undefined): ClockState[K] | null => {
       const by = this.rows[k] as Map<number, ClockState[K][number]>;
       if (!delta) {
+        // T-4150 stage 2: a row posted whole that equals the one held keeps the held object, so its views and every
+        // reader keyed on them stay (a load's later states, a whole state asked for)
+        const out = (st[k] as ClockState[K][number][]).map((r) => { const o = by.get(r.id); return o && sameValueDeep(o, r) ? o : r; });
         by.clear();
-        for (const r of st[k]) by.set(r.id, r);
-        return st[k];
+        for (const r of out) by.set(r.id, r);
+        return out as ClockState[K];
       }
+      if (k !== "lines") named[k as "edges" | "nodes"] = delta.rows.map((r) => r.id);
       if (!delta.ids && !delta.rows.length) return last;
-      for (const r of delta.rows) by.set(r.id, r);
+      type Row = ClockState[K][number];
+      const added = new Set<number>();
+      for (const r of delta.rows) { if (!by.has(r.id)) added.add(r.id); by.set(r.id, r); }
+      // T-4284: the held rows with the changed ones laid in by position, not every row looked up
+      const gone: number[] = [];
+      const laid = laidRows<Row>(last as readonly Row[], delta.rows as readonly Row[], delta.ids, added, gone);
+      if (import.meta.env.DEV && laid && checkPatches()) {
+        const ids = delta.ids ?? last.map((r) => r.id), whole = ids.map((id) => by.get(id)), now = new Set(ids);
+        if (!sameObjects(whole, laid) || !sameBuilt(new Set(gone), new Set(last.filter((r) => !now.has(r.id)).map((r) => r.id)))) console.error(`T-4284 check: the ${k} rows laid by position differ from those looked up`);
+      }
+      if (laid) {
+        for (const id of gone) by.delete(id);
+        if (k !== "lines") named[k as "edges" | "nodes"]!.push(...gone);
+        return laid as ClockState[K];
+      }
       const ids = delta.ids ?? last.map((r) => r.id);
       const out = ids.map((id) => by.get(id));
       if (out.some((r) => !r)) return null;
       if (delta.ids) {
+        if (k !== "lines") { const now = new Set(delta.ids); for (const r of last) if (!now.has(r.id)) named[k as "edges" | "nodes"]!.push(r.id); }
         by.clear();
         for (const r of out) by.set(r!.id, r!);
       }
@@ -1162,13 +1559,94 @@ export class ClockClient {
       if (bad.length) console.error(`T-1029 check: the ${bad.join(", ")} rebuilt from changes differ from the whole state's`);
       delete st.checkRows;
     }
+    // T-4150 stage 2: what it changed, for the world built from it: its delta's rows (the state's `touched` names the same
+    // ids, and with `all` none, since every drawn position moves; the rows' delta stays exact); posted whole: anything
+    if (this.since && named.edges && named.nodes) {
+      for (const id of named.edges) this.since.edges.add(id);
+      for (const id of named.nodes) this.since.nodes.add(id);
+    } else this.since = null;
     delete st.delta;
     return true;
+  }
+  /** T-4150 stage 2: the edges and nodes the states taken since the last world name as touched; null: any may differ */
+  private since: { edges: Set<number>; nodes: Set<number> } | null = null;
+
+  /** T-4214: an edit's patch (workers/clockPatch.ts) laid on the map the tools click on: its edges on the drawn network
+   * (`onPatch`), its rows on the last state's for the tools' world (`clickWorld`), whose other parts (lines, money,
+   * marks) stay the state's. `world` waits for the state, so nothing subscribed to it runs for a patch. False when it
+   * cannot be, and the clicks waiting for the edit then wait for its network as before. */
+  private takePatch(p: MapPatch, order: number): boolean {
+    const st = this.taken;
+    if (!st || !world.peek() || p.anchor !== anchor().version) return false;
+    // nothing on the map moved (a group or look edit): the tools' map holds the edit as it is
+    if (!p.edges.length && !p.nodes.length && !p.goneEdges.length && !p.goneNodes.length && !p.lines?.length) return true;
+    // (a station's name alone moves no edge: the drawn network's points stand)
+    if ((p.edges.length || p.goneEdges.length) && !timed("patch.onPatch", () => this.onPatch(new Map(p.edges.map((e, i) => [e.id, p.pts[i]])), p.goneEdges, order, p.anchor))) return false;
+    this.patchLog.push({ order, p });
+    timed("patch.layPatch", () => this.layPatch(p));
+    return true;
+  }
+  /** `p`'s rows laid on the tools' world (the last state's rows, as patched since) */
+  private layPatch(p: MapPatch) {
+    const st = this.taken!, base = this.patched ?? { edges: st.edges, nodes: st.nodes, lines: st.lines, n: 0 };
+    // (a line's paths in place of its row's, which say what runs on the touched track: its other figures wait for the state)
+    const paths = new Map((p.lines ?? []).map((l) => [l.id, l]));
+    const lines = paths.size ? base.lines.map((l) => { const q = paths.get(l.id); if (!q) return l; const { back: _b, ...rest } = l; return { ...rest, path: q.path, ...(q.planPath ? { planPath: q.planPath } : {}), ...(q.back ? { back: q.back } : {}) }; }) : base.lines;
+    this.patched = timed("patch.rows", () => ({ edges: patchRows(base.edges, p.edges, p.goneEdges), nodes: patchRows(base.nodes, p.nodes, p.goneNodes), lines, n: base.n + 1 }));
+    // (a version of its own: the tools' caches keyed on it are read again; the next state's is the next whole number)
+    // T-4284: the rows it may differ by from the state's world (the patches laid since), for its views, the readers' diffs
+    // and the grids
+    const ids = { edges: new Set<number>(), nodes: new Set<number>() };
+    for (const x of this.patchLog) if (x.p) {
+      for (const e of x.p.edges) ids.edges.add(e.id);
+      for (const id of x.p.goneEdges) ids.edges.add(id);
+      for (const n of x.p.nodes) ids.nodes.add(n.id);
+      for (const id of x.p.goneNodes) ids.nodes.add(id);
+    }
+    const w = toWorld({ ...st, edges: this.patched.edges, nodes: this.patched.nodes, lines, version: st.version + this.patched.n / 1000 }, false, ids);
+    const from = world.peek();
+    if (from) noteSide(from, w, ids);
+    setClickWorld(w);
+  }
+
+  /** DEV (T-4214): the rows the patches that arrived before the state taken now (the `order`th message) gave, against that
+   * state's, when every edit whose word came before it came with a patch. A difference is a kind of edit not patched
+   * exactly (notes/T-4214.md "Stage C"). */
+  private checkPatched(st: ClockState, order: number) {
+    const before = this.patchLog.filter((x) => x.order < order);
+    if (before.length && before.every((x) => x.p)) {
+      const pr = { edges: new Map<number, object | null>(), nodes: new Map<number, object | null>(), lines: new Map<number, object>() };
+      for (const { p } of before) {
+        for (const l of p!.lines ?? []) pr.lines.set(l.id, { path: l.path, planPath: l.planPath, back: l.back ?? [] });
+        for (const r of p!.edges) pr.edges.set(r.id, r);
+        for (const id of p!.goneEdges) pr.edges.set(id, null);
+        for (const r of p!.nodes) pr.nodes.set(r.id, r);
+        for (const id of p!.goneNodes) pr.nodes.set(id, null);
+      }
+      const bad: string[] = [];
+      for (const k of ["edges", "nodes"] as const) {
+        const now = new Map<number, object>((st[k] as { id: number }[]).map((r) => [r.id, r]));
+        for (const [id, r] of pr[k]) {
+          const s = now.get(id);
+          if (!r || !s) { if (!r !== !s) bad.push(`${k} ${id} ${r ? "patched in, not in the state" : "patched out, in the state"}`); continue; }
+          const x = r as unknown as Record<string, unknown>, y = s as Record<string, unknown>;
+          const fields = Object.keys({ ...x, ...y }).filter((f) => JSON.stringify(x[f]) !== JSON.stringify(y[f]));
+          if (fields.length) bad.push(`${k} ${id}: ${fields.join(", ")}`);
+        }
+      }
+      for (const [id, l] of pr.lines) {
+        const s = st.lines.find((x) => x.id === id);
+        if (s && JSON.stringify(l) !== JSON.stringify({ path: s.path, planPath: s.planPath, back: s.back ?? [] })) bad.push(`line ${id}'s paths`);
+      }
+      if (bad.length) console.error(`T-4214 check: the patched rows differ from the state's: ${bad.slice(0, 8).join("; ")}`);
+    }
   }
 
   /** The state's network made whole from the last (`mergeNet`); false when it cannot be. */
   private takeNet(st: ClockState): boolean {
     if (st.service) {
+      // (T-4280: its phase tables are posted as the lines changed since the last posted, which needs that network)
+      if (!this.lastNet) return false;
       this.lastService = { phases: st.render.phases, meta: st.render.meta };
       return true;
     }
@@ -1269,7 +1747,20 @@ export class ClockClient {
     this.worldBefore = world.value;
     worldIsRows.value = !!msg.state.rows;
     if (msg.state.rightHand !== undefined) rightHand.value = msg.state.rightHand;
-    world.value = toWorld(msg.state);
+    const order = this.orderOf(msg);
+    if (import.meta.env.DEV) timed("dev.checkPatched", () => this.checkPatched(msg.state, order));
+    // T-4150 stage 2: the world says which of its records may differ from the last, for the readers' diffs
+    const ids = this.since, next = timed("take.toWorld", () => toWorld(msg.state, true, ids));
+    this.since = { edges: new Set(), nodes: new Set() };
+    if (ids && edgeLinesMoved) for (const p of edgeLinesMoved) ids.edges.add(p);
+    noteStep(this.worldBefore, next, ids && { edges: edgeLinesMoved ? ids.edges : null, nodes: ids.nodes });
+    world.value = next;
+    this.taken = msg.state;
+    this.patched = null;
+    setClickWorld(null);
+    // (a patch that arrived after this state, when it is taken late: laid on it again)
+    this.patchLog = this.patchLog.filter((x) => x.order > order);
+    for (const x of this.patchLog) if (x.p) this.layPatch(x.p);
     // T-4145: the panels and money of every edit whose word came before this state are in it
     pendingTaken(this.orderOf(msg), { rows: true, money: true });
     if (world.value && !msg.state.rows) noteLoad("network in the page", { stations: world.value.save.stations.length, lines: world.value.save.lines.length });
@@ -1312,6 +1803,9 @@ export class ClockClient {
         break;
       case "ready":
         pendingClear(); // a worker started again answers nothing it had
+        clickNetClear();
+        this.patched = null;
+        this.patchLog = [];
         clockWorkerStatus.value = `ready in ${msg.initMs.toFixed(0)} ms`; // i18n-ignore
         this.wasmReady = true;
         noteClockStep("track model ready"); // i18n-ignore
@@ -1327,6 +1821,7 @@ export class ClockClient {
       case "recovered":
         console.error("clock worker:", msg.detail);
         this.lastTrouble = msg.detail;
+        breakRun(); // T-4311: a rebuilt model may lack the node a track run goes on from
         if (msg.down) {
           clockWorkerStatus.value = "track model down after a panic"; // i18n-ignore
           modelStopped.value = true; // T-4109: its notice says it
@@ -1347,6 +1842,7 @@ export class ClockClient {
         if (!this.takeMoney(st) || !this.takeRows(st) || !this.takeNet(st)) {
           console.error("T-1029: a state could not be taken as changes to the last; asking for it whole");
           this.lastNet = null;
+          this.since = null;
           this.post({ kind: "wholeState" });
           break;
         }
@@ -1530,9 +2026,19 @@ export class ClockClient {
         this.tripsAt = performance.now();
         this.onTrips(msg.epoch, msg.version, msg.trips, msg.board, msg.ends, msg.nexts, msg.bays);
         break;
-      case "applied":
-        pendingWord(msg.seq, msg.word, this.orderOf(msg), !!msg.noNet);
+      case "named":
+        // T-4214 stage A: stations named after their edit: the tools' map takes their rows (the state's names follow)
+        if (!(msg.patch && this.takePatch(msg.patch, this.orderOf(msg)))) this.patchLog.push({ order: this.orderOf(msg), p: null });
         break;
+      case "applied": {
+        // T-4214: the map the tools click on holds the edit now, so the clicks waiting for it go; laid before the word is
+        // read, which may draw from that map (stage E, game/pending.ts `atWord`)
+        const laid = !!msg.patch && this.takePatch(msg.patch, this.orderOf(msg));
+        pendingWord(msg.seq, msg.word, this.orderOf(msg), !!msg.noNet, laid);
+        if (laid) pendingPatchIn(msg.seq);
+        else if (!msg.noNet) this.patchLog.push({ order: this.orderOf(msg), p: null });
+        break;
+      }
       case "edited": {
         // T-4145: what it showed ahead goes in the frame a refusal lands (before the notice, which waits for the promise)
         pendingAnswer(msg.seq, msg.ok, this.orderOf(msg));
@@ -1703,9 +2209,10 @@ export class ClockClient {
   }
 
   /** Send an edit; the promise resolves with the worker's answer. `early` "rows": a stop click's (T-2766), answered
-   * once the world holds it, its network a moment after the clicks stop. `game`: the `gameStamp` it was made under,
+   * once the world holds it, its network a moment after the clicks stop; "click" (T-4214): a station or delete clicked on
+   * the map, answered once the tools' map holds it (its patch), before `world` does. `game`: the `gameStamp` it was made under,
    * for an edit sent later than made (T-3734); else the one now (T-4214: every edit is refused in a game it was not made in). */
-  edit(op: EditOp, early: boolean | "rows" = false, game?: number): Promise<EditAnswer> {
+  edit(op: EditOp, early: boolean | "rows" | "click" = false, game?: number): Promise<EditAnswer> {
     const seq = ++this.seq, stamp = { game: game ?? gameStamp.peek() };
     // T-4145: an undo names the newest edit still out, so it takes back nothing when that one is refused
     if ((op.op === "undo" || op.op === "redo") && op.after === undefined && this.pending.size) op = { ...op, after: Math.max(...this.pending.keys()) };
@@ -1716,7 +2223,7 @@ export class ClockClient {
       this.post({ kind: "edit", seq, op, rows: true, ...stamp });
       return new Promise((res) => this.pending.set(seq, (a) => { this.stopsOut--; this.lastStopAt = performance.now(); res(a); }));
     }
-    this.post(early ? { kind: "edit", seq, op, early, ...stamp } : { kind: "edit", seq, op, ...stamp });
+    this.post(early === true ? { kind: "edit", seq, op, early, ...stamp } : early === "click" ? { kind: "edit", seq, op, click: true, ...stamp } : { kind: "edit", seq, op, ...stamp });
     this.sent.set(seq, { what: op.op, at: performance.now() });
     return new Promise((res) => this.pending.set(seq, res));
   }

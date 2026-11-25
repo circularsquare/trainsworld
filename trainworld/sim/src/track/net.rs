@@ -367,6 +367,18 @@ impl Default for Weekend {
     }
 }
 
+/// T-4227: what a line runs on one kind of day, as a slot its hours share between rows shares its
+/// rate out by (`Network::place_tph_in`): its whole trains and headways at its five places, and its
+/// rates and pacing per slot. The weekdays' (or what a weekend settle swaps in) are
+/// `Network::fleet`, the weekends' `Service::rest_fleet`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DayFleet {
+    pub trains: [u32; 5],
+    pub auto: Option<[u32; 5]>,
+    pub tph: [f32; SLOTS],
+    pub pace: [f32; SLOTS],
+}
+
 /// T-3542: the slots `period_slot` uses, in order, and how many (`Network::slots`).
 fn slot_list(p: [usize; 5]) -> ([usize; SLOTS], usize) {
     let (mut l, mut n) = ([0; SLOTS], 0);
@@ -491,6 +503,8 @@ pub enum Issue {
     Crossing { e1: u32, e2: u32, x: f64, y: f64, overlap: bool },
     NoSuchNode { node: u32 },
     NoSuchEdge { edge: u32 },
+    /// T-4080: no such kept bus stop, or one placed outside the world.
+    NoSuchKeep { keep: u32 },
     /// T-2797: the piece is only the track a station stands on; removing it would lay it back.
     StationTrack { edge: u32 },
     NoSuchLine { line: u32 },
@@ -605,6 +619,14 @@ pub struct Touch {
     pub paths_changed: bool,
     /// T-3378: a busway was added, changed or removed, so every bus line is timed again
     pub busways: bool,
+    /// T-4080: where kept bus stops were made, moved or removed: the bus lines passing near place their stops again
+    pub keeps: Vec<[f64; 2]>,
+    /// T-4249: where a station was made or removed, built, made a BRT station or moved (from and to), and whether it
+    /// was constructed before or after: what a bus line's stops read of it (`bus::lines_touched`)
+    pub station_places: Vec<([f64; 2], bool)>,
+    /// T-4249: the routes of bus lines set, as they were and as they are, where the route or its stops' rules
+    /// changed or the line came or went: the bus lines crossing one place their stops again
+    pub bus_routes: Vec<Vec<[f64; 2]>>,
 }
 
 /// What `derive` rebuilt.
@@ -824,9 +846,20 @@ pub struct Network {
     /// Not part of the undo history (a setting, like fares); a pair whose node is no longer a
     /// station is ignored (`links_live`) and not saved.
     pub links: Vec<[u32; 2]>,
+    /// Stations the player separated (T-4048): node pairs, smaller id first, that the distance rule
+    /// (`near_enough`) does not join; a link or a building still does. In the undo history
+    /// (`Op::Apart`); a pair whose node is no longer a station is ignored (`apart_live`) and not saved.
+    pub apart: Vec<[u32; 2]>,
     /// The station buildings (T-2217, `building.rs`) by id, None where one was removed. Outside the
     /// undo history, like the links; saved in `BLD1`, renumbered densely.
     pub buildings: Vec<Option<super::building::Building>>,
+    /// T-4080: the kept bus stops (`bus::keep`) by id, None where one was removed; set only through `set_keep`.
+    /// Saved in `LBK1`, renumbered densely.
+    pub keeps: Vec<Option<super::bus::keep::KeptStop>>,
+    keep_free: Vec<u32>,
+    /// T-4080: counts the changes to the kept stops (names and connections too), for the clock worker to read
+    /// them again after an edit, undo or redo; not saved.
+    pub keep_epoch: u32,
 
     pub crossings: Vec<Crossing>,
     pub grid: Grid,
@@ -853,6 +886,8 @@ pub struct Network {
     names_all: bool,
     /// Edge prices worked out again outside an edit (water or terrain installed), since `take_repriced`.
     repriced: bool,
+    /// T-4299: the edges whose price moved outside an edit (a road tile, water, terrain), since `take_priced`
+    priced: Vec<u32>,
     /// T-1540: whether each node lies on water, kept as (x, y, mask epoch, answer) and used only
     /// while the node is where it was and the mask the one it was asked of (`node_is_wet`).
     node_wet: std::cell::RefCell<Vec<(f64, f64, u32, bool)>>,
@@ -993,3 +1028,6 @@ mod derive;
 mod validate;
 mod costs;
 mod paths;
+#[cfg(feature = "track-api")]
+pub(crate) use paths::PathTree;
+mod keeps;

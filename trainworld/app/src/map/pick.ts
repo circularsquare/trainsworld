@@ -20,6 +20,7 @@ import { floorAt } from "./buildingFloors";
 import { buildingMembersById } from "../game/buildingView";
 import { hidden, levelHidden, pickSkip } from "./visibility";
 import { profileLine } from "./profiles";
+import { timed } from "../game/stepTimes";
 
 export const SLOP_PX = 7;
 /** projected points, reused (topSeg runs over every segment on each pointer move) */
@@ -72,15 +73,15 @@ const widest = new WeakMap<Float32Array, number>();
 export function carryGrids(was: NetworkBuffers | null, n: NetworkBuffers, check = false) {
   const p = n.patch;
   if (!was || !p || was.serial !== p.base) return;
-  for (const [name, a, b, runs] of [["track", was.track, n.track, p.track], ["lines", was.lines, n.lines, p.lines]] as const) {
+  for (const [name, a, b, runs] of [["track", was.track, n.track, p.track], ["lines", was.lines, n.lines, p.lines]] as const) timed("net.grids." + name, () => {
     const g = grids.get(a.seg);
-    if (!g || g.count !== a.count || grids.has(b.seg)) continue;
+    if (!g || g.count !== a.count || grids.has(b.seg)) return;
     const seg = b.seg;
     const levels = CellLevels.carried(g.levels, runs, () => seg, b.count);
     grids.set(seg, { count: b.count, levels });
     const bad = check ? levels.verify() : [];
     if (bad.length) console.error(`T-1030 check: the ${name} pick grid carried over differs from one built anew at ${bad.join(", ")}`);
-  }
+  });
 }
 
 /** Every segment whose box comes within `reach` (local units) of (lx, ly), into NEAR highest index
@@ -94,7 +95,8 @@ function segsNear(seg: Float32Array, count: number, lx: number, ly: number, reac
   }
   let g = grids.get(seg);
   if (!g || g.count !== count) grids.set(seg, (g = { count, levels: new CellLevels(() => seg, count) }));
-  const grid = g.levels.for(reach);
+  const lv = g.levels;
+  const grid = timed("pick.level", () => lv.for(reach));
   if (!grid) return -1;
   let n = 0;
   grid.near(lx, ly, reach, (i) => {
@@ -445,8 +447,9 @@ export function pick(ov: Overlay, px: number, py: number, trainsShown: boolean, 
     for (let k = r.tripCount - (first >= 0 ? 0 : 1); k >= 0; k--) {
       const i = k === r.tripCount ? first : k;
       if (k < r.tripCount && i === first) continue;
-      // drawn where the guard holds it (T-1965)
-      const prof = trips[i * 2], dep = trips[i * 2 + 1] + r.tripsEpoch + r.tripLag(i);
+      // drawn where the guard holds it (T-1965); the selection keeps the timetable's departure, which its readers find
+      // the trip by and add the lag to
+      const prof = trips[i * 2], sel = trips[i * 2 + 1] + r.tripsEpoch, dep = sel + r.tripLag(i);
       if (marked && !tripMayBeNear(n, marked, prof, dep, t)) continue;
       if (hidden.lines.has(profileLine(prof))) continue; // T-3420
       const at = tripAt(n, prof, dep, t, r.tripEnds ? r.tripEnds[i] + r.tripsEpoch : -Infinity, r.laneShiftM, r.bandShiftM, r.sampleBand, r.bandOn, r.passShiftM, r.tripBays ?? undefined, i * BAY_STRIDE);
@@ -460,7 +463,7 @@ export function pick(ov: Overlay, px: number, py: number, trainsShown: boolean, 
           const u = Math.max(0, Math.min(1, ((px - x0) * dx + (py - y0) * dy) / (len * len)));
           const d = (x0 + u * dx - px) ** 2 + (y0 + u * dy - py) ** 2;
           if (d < best) {
-            return { kind: "train", line: String(at.line), profile: prof, dep };
+            return { kind: "train", line: String(at.line), profile: prof, dep: sel };
           }
         }
         continue;
@@ -468,7 +471,7 @@ export function pick(ov: Overlay, px: number, py: number, trainsShown: boolean, 
       const [x, y] = ov.toScreen(at.x, at.y);
       const d = (x - px) ** 2 + (y - py) ** 2;
       if (d < best) {
-        return { kind: "train", line: String(at.line), profile: prof, dep };
+        return { kind: "train", line: String(at.line), profile: prof, dep: sel };
       }
     }
   }

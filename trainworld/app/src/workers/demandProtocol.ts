@@ -3,6 +3,7 @@ import type { CorridorBook, CorridorRows } from "../game/demand";
 import type { FrameSpec } from "../game/frame";
 import type { FareArea } from "../game/fareCurve";
 import { PERIODS } from "../game/periods";
+import type { AsideAnswer, AsideShown, Snapshot } from "./demandShown";
 
 /** `DemandApi.trip`'s answer layout (sim/src/demand/trip.rs `HEAD`, `PAIR_LEN`, `LEG_LEN`). */
 export const TRIP_LAYOUT = { HEAD: 48, PAIR_LEN: 20, LEG_LEN: 16 } as const;
@@ -34,6 +35,8 @@ export interface DemandNetwork {
   ups?: Uint8Array;
   /** station pairs joined by a passage, flat (T-1281, `DemandApi.set_passages`), absent where none */
   passages?: Uint32Array;
+  /** station pairs the player separated, flat (T-4048, `DemandApi.set_apart`), absent where none */
+  apart?: Uint32Array;
   /** stops per line */
   lineN: Uint32Array;
   /** station index of every stop, line after line */
@@ -187,17 +190,19 @@ export type ToDemand =
    * aux worker, which never opens one, gets empty bytes). `bare` (T-325, aux worker only): a zone
    * no station reaches, opened for its bubbles and city figures alone (no rail, so no solve needs
    * it); a later `open` of the same pack without `bare` adds it to the solves as well. `drives`
-   * (T-279): the routed drives (market-drives.bin), with the rows. `first` (T-1533): the zone in
+   * (T-279): the routed drives (market-drives.bin), with the rows, and `corridors` (T-4199) the corridor file. `first` (T-1533): the zone in
    * view's pack, opened ahead of the opens waiting and on its own. A pack's `level` (T-1223, `lod::COARSE` 1;
    * fine when absent): a solving worker holding the zone at another level opens it again at this one
    * (once the solve in hand ends, if it covers the zone); the aux worker opens every zone fine */
-  | { kind: "open"; packs: { id: CityId; header: string; bin: ArrayBuffer; level?: number }[]; intercity?: MarketPack[]; rows?: MarketRows; drives?: Uint8Array; bare?: boolean; first?: boolean }
+  | { kind: "open"; packs: { id: CityId; header: string; bin: ArrayBuffer; level?: number }[]; intercity?: MarketPack[]; rows?: MarketRows; drives?: Uint8Array; corridors?: Uint8Array; bare?: boolean; first?: boolean }
   /** T-301: close city packs and zones' market packs (`markets`) no longer needed, freeing their
    * WASM memory for the next pack; `bare`: the aux worker's bare copies. A pack the solve in hand
    * covers closes when that solve ends, unless an `open` of it comes first. Answered by `closed`. */
   | { kind: "close"; ids: CityId[]; markets?: CityId[]; bare?: boolean }
   /** solve every period of this worker on `net`: free flow, then `rounds` crowding rounds */
   | { kind: "solve"; version: number; net: DemandNetwork; rounds: number;
+      /** T-4343: a load's crowding rounds each take this much of the first round's time (the browser's last measured ratio), sizing the units no passes time yet */
+      later?: number;
       /** T-327: start each crowding round only once `go` allows it */
       barrier?: boolean;
       /** T-326 `?perfOff=clusters`: solve the network as one cluster */
@@ -252,7 +257,18 @@ export type ToDemand =
       ids?: { lines: string[]; stations: string[] };
       /** T-3373 B stage 3 (`?split=1`): this worker solves only the zones and market it holds, every period, and
        * trades each round's loads with the other holders of a cluster through the page */
-      split?: SplitPlan }
+      split?: SplitPlan;
+      /** T-2188: the idle refresh, a whole solve of the network solved last: the clusters holding a period from a
+       * local solve (an edit's that ended there, a T-1609 refine) are solved whole in those periods */
+      refresh?: boolean;
+      /** T-4220: before its whole solve's first set-up, send what is on screen (`shown`) */
+      snap?: boolean;
+      /** T-4220 stage 4, a focus worker: a side job, the zones `aside` plans fresh for `net` against the figures on screen
+       * (the snapshot of generation `gen`, `shown` when the worker does not hold it; `cities` as `aside`'s) solved here
+       * in the periods it solves, each period's `result` sent as it ends (`cluster.aside`), then the fresh zones' `sums`
+       * and `asideDone`. Of the other fields it takes `version`, `net`, `ids`, `rounds`, `fresh`, `exactMarket` and
+       * `nearChunks` */
+      aside?: { gen: number; cities: CityId[]; shown?: AsideShown } }
   /** T-327: every worker has finished `round - 1` of `version`, so this worker may start `round`.
    * A worker ahead waits at the boundary holding its last round, so every worker holds the round
    * after the published one at some moment, and a question about it can be answered (the final
@@ -260,7 +276,13 @@ export type ToDemand =
    * clusters the round is of, as `plan.ahead` says (0 the cluster solved ahead, 1 the rest) */
   | { kind: "go"; version: number; round: number; group?: number }
   /** T-1733: every worker's local result after an edit is shown and a moment has passed: the whole solve of `version` may start */
-  | { kind: "whole"; version: number }
+  | { kind: "whole"; version: number;
+      /** T-4220 stage 8: sent as the plans came in (a worker solves nothing locally, T-1733): no local result of the
+       * solve is shown */
+      early?: true }
+  /** T-2188: every solving worker's local stage of `version` opens no market window (`plan.final`): each ends the
+   * solve at its local results, its edited clusters left holding them, with no whole solve after */
+  | { kind: "endLocal"; version: number }
   /** T-1533: the zone in view changed: its pack, if still waiting to open, goes ahead of the others */
   | { kind: "first"; id: CityId }
   /** T-1904: the kind of day shown (`day` as a query's) and the zones whose bubbles are drawn (the
@@ -278,6 +300,10 @@ export type ToDemand =
   | { kind: "periods"; periods: number[]; groups?: number[][]; markets?: number[]; share?: boolean }
   /** T-1607: a period's loads from the worker solving the other side of it (`FromDemand` "loads") */
   | Loads
+  /** T-4220 stage 3, a focus worker: plan a side job for `net` (the newest network) against the figures on screen,
+   * answered by `asidePlan`. `cities`: the zones the main pool's solve of `net` covers, in the registry's order; `gen`:
+   * the snapshot's (`shown`, sent when the worker does not hold that generation); `fresh` as `solve.fresh` */
+  | { kind: "aside"; version: number; net: DemandNetwork; ids: { lines: string[]; stations: string[] }; rounds: number; cities: CityId[]; gen: number; shown?: AsideShown; fresh?: boolean }
   | Zones
   // Queries for the demand views (T-078, notes/T-078.md, `QUERY_KINDS`), answered between periods.
   // `id` matches the reply; `version` is the solve they ask about: a worker that has moved on to a
@@ -474,7 +500,10 @@ export type FromDemand =
        * solved, against the others' frozen loads, ahead of its whole solve; its lines' figures carry
        * every population's riders, the market's as last solved. T-2624 `step`: one period's final of an edit's
        * whole solve of the cluster, sent as it lands, before the cluster's others */
-      cluster?: { cities: CityId[]; market: boolean; lines: Uint32Array; local?: boolean; step?: boolean };
+      cluster?: { cities: CityId[]; market: boolean; lines: Uint32Array; local?: boolean; step?: boolean;
+        /** T-4220 stage 4: a side job's, with `local`: the fresh zones solved against the figures on screen, every other
+         * population's figures as shown */
+        aside?: true };
       /** T-2045: in a solve of `only` zones, the lines it gives figures (indices into the network's) */
       onlyLines?: Uint32Array;
       /** T-1543: one worker's part k of n of the period's origins (`solve.part`): every figure is the
@@ -496,7 +525,9 @@ export type FromDemand =
    * through its rounds alone (group 0) before the other clusters together (group 1) */
   | { kind: "plan"; version: number; solving: CityId[][]; kept: CityId[]; ahead?: CityId[];
       /** T-1733: how many clusters this worker solves locally first, after an edit */
-      local?: number }
+      local?: number;
+      /** T-2188: none of those opens a market window (T-1735: a city edit), so its local result may be final */
+      final?: boolean }
   /** `clusters` (T-326): how many kept their result, and how many were solved; `periods` (T-124):
    * of this worker's periods in the clusters solved, how many were kept and how many solved */
   /** T-2729: an edit's solve's units on this worker, done and planned by stage (0 its local solve, 1
@@ -504,17 +535,27 @@ export type FromDemand =
    * stage's mean unit time, ms (0: not known). T-3599: `left`, each stage's units not ended by their
    * expected ms from the last passes; `blind`, the size (populations) of those with none; `cur`, the unit
    * in hand's (null: none), `curSize` its size; `sizeMs`, this solve's ms a population (from its units with
-   * none once one has ended); `ran`, `ranExp` and `ranN`, this solve's units ended with one, their ms as run
+   * none once one has ended); T-4343: `blindLate`, `viewBlindLate`, `curLate` and `sizeMsLate` the same for the units of the crowding rounds after the first, each timed by its own round once one has ended; `ran`, `ranExp` and `ranN`, this solve's units ended with one, their ms as run
    * and as expected and how many; `viewLeft`, `viewBlind` and `curView` the same for the units before the
    * zone in view's figures; `leftQ`, `ranQ`, `expQ`, `nQ` and `curQ` the whole solve's by period */
   /** T-3781: a barrier solve's period `period` of round `round` started here (its `result` ends it); a report's
    * diagnosis names the period a quiet worker is in */
   | { kind: "unit"; version: number; round: number; period: number }
-  | { kind: "work"; version: number; stage: 0 | 1; busy: boolean; done: [number, number]; of: [number, number]; unitMs: [number, number]; left: [number, number]; blind: [number, number]; cur: number | null; curSize: number; sizeMs: [number, number]; ran: [number, number]; ranExp: [number, number]; ranN: [number, number]; viewLeft: [number, number]; viewBlind: [number, number]; curView: boolean; leftQ: number[]; ranQ: number[]; expQ: number[]; nQ: number[]; curQ: number }
-  | { kind: "done"; version: number; memBytes: number; heap?: Heap; clusters?: [number, number]; periods?: [number, number]; local?: CityId[] }
+  | { kind: "work"; version: number; stage: 0 | 1; busy: boolean; done: [number, number]; of: [number, number]; unitMs: [number, number]; left: [number, number]; blind: [number, number]; cur: number | null; curSize: number; sizeMs: [number, number]; blindLate: [number, number]; viewBlindLate: [number, number]; curLate: boolean; sizeMsLate: [number, number]; ran: [number, number]; ranExp: [number, number]; ranN: [number, number]; viewLeft: [number, number]; viewBlind: [number, number]; curView: boolean; leftQ: number[]; ranQ: number[]; expQ: number[]; nQ: number[]; curQ: number }
+  /** `localHeld` (T-2188): a cluster here holds a period from a local solve no whole solve has replaced since */
+  | { kind: "done"; version: number; memBytes: number; heap?: Heap; clusters?: [number, number]; periods?: [number, number]; local?: CityId[]; localHeld?: boolean }
+  /** T-4220 (`solve.snap`): what this worker holds of the figures on screen, before the whole solve sets any of it up */
+  | { kind: "shown"; version: number; snap: Snapshot }
+  /** T-4220 stage 3: a side job's plan (`aside`) */
+  | { kind: "asidePlan"; version: number; gen: number; plan: AsideAnswer }
+  /** T-4220 stage 4: a side job (`solve.aside`) has ended: as planned (`plan.refused` absent; `sums`, the zones whose
+   * bubble sums it sent), refused, or `stale` (a newer job came first); `ms` from its start here */
+  | { kind: "asideDone"; version: number; gen: number; plan: AsideAnswer; ms: number; stale?: true; sums?: CityId[] }
   /** a worker's `sub_sums` for one city once all its periods have `round` (sent unasked, T-119);
    * `local` (T-2532): an edit's local result's, which its whole solve's of the same round replace */
-  | { kind: "sums"; version: number; round: number; city: CityId; mask: number; sums: Float32Array; everyday: Float32Array | null; day?: number; local?: true }
+  | { kind: "sums"; version: number; round: number; city: CityId; mask: number; sums: Float32Array; everyday: Float32Array | null; day?: number; local?: true;
+      /** T-4220 stage 4: a side job's (`solve.aside`) */
+      aside?: true }
   | { kind: "cells"; id: number; city: CityId; xy: Float32Array; h3: BigUint64Array; zone: Uint32Array; zoneXY: Float32Array }
   /** T-2136: null when this worker holds no market with that book */
   | { kind: "rows"; id: number; rows: CorridorRows | null }

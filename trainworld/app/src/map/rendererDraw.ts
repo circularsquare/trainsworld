@@ -11,7 +11,7 @@ import { StrokeCache } from "./strokeCache";
 import { STENCIL_BIT } from "./buildingFloors";
 import { backBaseOf, type NetworkBuffers } from "./network";
 import { BAND_GAP_PX } from "./lineBands";
-import { DOUBLE_WIDTH, HOT_STATIONS, SEL_MAX, SEL_STRIDE, SINGLE_WIDTH, TEX_W, TRAM_WIDTH } from "./rendererShaders";
+import { DOUBLE_WIDTH, HOT_STATIONS, SEL_MAX, SEL_STRIDE, SINGLE_WIDTH, TRAM_WIDTH } from "./rendererShaders";
 import { hidden as vis } from "./visibility";
 import { TRACK_RGB, BAD_RGB, BP_MID_RGB, BP_RAIL_RGB, BP_RAIL_SHARE, BP_NARROW, TRAIN_PX, LINE_PX, HSR_WIDTH, HSR_STRIPE_PX, setSelLines, GHOST_MIN_PX, LANE_M, BAND_FOLD_PX, MUTE, BAND_GAP, smoothstep, laneState, passingState, CONFLICT_ZOOM, CROWD_RGB, TRACK_IN_BOX, StationGroups, DrawOptions, StrokeVao, GHOST_OUTLINE_PX } from "./rendererParts";
 import type { NetworkRenderer } from "./renderer";
@@ -27,6 +27,7 @@ function frameSetup(rnd: NetworkRenderer, cam: Camera, time: number, zoom: numbe
   rnd.releaseStaged(time);
   const n = rnd.net;
   if (!n) return null;
+  rnd.freshFill();
   if (rnd.hiddenFor !== n || rnd.hiddenV !== vis.v) rnd.applyHidden(n);
   const uTime = rnd.sync(time);
   rnd.bubbles.hide();
@@ -108,7 +109,9 @@ function beginStrokes(rnd: NetworkRenderer, c: Ctx1) {
   if (redraw && buses) {
     const sh = shadeColours();
     rnd.buses.draw(lc, a, vp, zoom, dpr, { wLine, casing, wSel, rail: BP_RAIL_RGB, railShare: BP_RAIL_SHARE, sel: opt.selLine, hot: opt.hotLine ?? -1, lit: opt.hotBuses ?? [], litStops: opt.hotStops ?? [], dim: opt.dimOthers ?? 1, shades: sh, fill: rgbf(sh.casing), casingRgb: rgbf(sh.casing),
-      paint: opt.byLevel ? "level" : opt.bySpeed ? "speed" : opt.byProfit ? "profit" : null, phases: n.phases, meta: n.meta, trackRgb: TRACK_RGB });
+      paint: opt.byLevel ? "level" : opt.bySpeed ? "speed" : opt.byProfit ? "profit" : null, phases: n.phases, meta: n.meta, trackRgb: TRACK_RGB,
+      // (the strokes' cache has a stencil; the canvas has one when `hasStencil`; another target is asked)
+      stencil: !rnd.keepGl ? undefined : cache ? true : c.view ? undefined : rnd.hasStencil });
   }
 }
 
@@ -208,6 +211,7 @@ function strokeDraws(rnd: NetworkRenderer, c: Ctx2) {
   const picked = new Map<StrokeVao, { vao: StrokeVao; ranges: number[] | null }>();
   if (redraw) {
     rnd.strokeInstances = 0;
+    rnd.strokeRedraws++;
     for (const [s, src, isLines] of [[rnd.track, n.track, false], [rnd.lines, n.lines, true]] as const) {
       const p = pickStrokes(rnd, s, src, isLines, zoom, dpr, lanes.grow, project, vp[0] / dpr, vp[1] / dpr);
       if (s && p) picked.set(s, p);
@@ -224,8 +228,9 @@ function strokeDraws(rnd: NetworkRenderer, c: Ctx2) {
     gl.bindVertexArray(s.vao);
     const drawAll = () => {
       if (!ranges) {
-        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, s.count);
-        rnd.strokeInstances += s.count;
+        // (a network's set in slots: every slot up to its last segment's, the holes drawing nothing, T-4262)
+        gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, s.drawn ?? s.count);
+        rnd.strokeInstances += s.drawn ?? s.count;
         return;
       }
       for (let r = 0; r < ranges.length; r += 2) {
@@ -679,7 +684,7 @@ function trainsPass(rnd: NetworkRenderer, c: Ctx3) {
     gl.uniform1f(rnd.trainU.u_keep, rnd.net?.keep ?? 1);
     // T-3420: cars on a hidden level, by their sample's height
     gl.uniform1i(rnd.trainU.u_level_hide, vis.levels);
-    if (vis.levels && !rnd.tex.slevel) rnd.putTexture("slevel", rnd.sampleLevels(n), "r32f", TEX_W);
+    if (vis.levels && !rnd.tex.slevel) rnd.putLevels(rnd.sampleLevels(n));
     gl.activeTexture(gl.TEXTURE13);
     gl.bindTexture(gl.TEXTURE_2D, rnd.tex.slevel);
     gl.uniform1i(rnd.trainU.u_slevel, 13);
@@ -837,10 +842,13 @@ export function syncGroups(rnd: NetworkRenderer, n: NetworkBuffers, groups: Stat
     const index = new Map(n.stationIds.map((id, i) => [id, i]));
     // T-4079: a BRT station's joins with no passage are the bus layer's dashed lines (`brtJoins`)
     brt = new Set((world.peek()?.save.stations ?? []).filter((s) => s.brt).map((s) => s.id));
+    // T-4260: no connector across a pair the player separated
+    const apart = new Set((world.peek()?.save.apart ?? []).map(([a, b]) => (a < b ? `${a}|${b}` : `${b}|${a}`)));
     groups.members.forEach((ids, k) => {
       const m = ids.map((id) => index.get(id)).filter((i): i is number => i !== undefined);
       for (const i of m) groupOf[i] = k;
-      for (const [a, b] of spanningPairs(m.map(mid))) if (!brt.has(n.stationIds[m[a]]) && !brt.has(n.stationIds[m[b]])) pairs.push(m[a], m[b]);
+      const sep = (a: number, b: number) => { const x = n.stationIds[m[a]], y = n.stationIds[m[b]]; return apart.has(x < y ? `${x}|${y}` : `${y}|${x}`); };
+      for (const [a, b] of spanningPairs(m.map(mid), apart.size ? sep : undefined)) if (!brt.has(n.stationIds[m[a]]) && !brt.has(n.stationIds[m[b]])) pairs.push(m[a], m[b]);
     });
   }
   const idx = n.stationLinkIdx;

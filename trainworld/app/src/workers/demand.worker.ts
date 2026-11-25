@@ -38,6 +38,7 @@ import { addIntercity } from "./demandSums";
 import { CRUSH_SCALE, FARE_SCALE, LOAD_SCALE, addInto, stepOf, toF32 } from "./exactSum";
 import { VIEW_TOLERANCE, sameView } from "./demandView";
 import { cellBox, cityReach, clusterView, reachView, splitClusters, type Box, type Cluster, type PopView } from "./demandClusters";
+import { ASIDE_MAX_ZONES, SNAP_MAX_BYTES, ShownPop, type AsideAnswer, type AsideRefusal, type AsideShown, type SnapFares, type SnapIds, type SnapOn, type SnapPeriod, type SnapPop, type Snapshot } from "./demandShown";
 
 /** WASM started (and the market opened if `init` carried it): `open` and solves wait for this. */
 let started = false;
@@ -56,8 +57,9 @@ const everyday = new Map<CityId, EverydayApi>();
 let marketPacks: MarketPacks | null = null;
 /** T-776: the world market's rows until `marketPacks` is made from them */
 let marketRows: MarketRows | null = null;
-/** T-279: the routed drives that came with them */
+/** T-279: the routed drives that came with them, and (T-4199) the corridor file */
 let marketDrives: Uint8Array | null = null;
+let corridorFile: Uint8Array | null = null;
 let intercity: IntercityApi | null = null;
 /** T-409: the market's parts by `Cluster.marketKey`, one per cluster the market reaches, each on its
  * cluster's network alone (`IntercityApi.beside`). A part keeps the composition it was made from
@@ -102,26 +104,40 @@ const roundsHeld: number[] = [];
  */
 const sumsByRound = new Map<string, { mask: number; sums: Float32Array; everyday: Float32Array | null }>();
 type Sums = { mask: number; sums: Float32Array; everyday: Float32Array | null };
+/** T-4265: per commute population, the first and the last version it was set on since its layout (station access, its
+ * subzones) last changed: bubble sums of any version between map onto its cells as they are now */
+const layoutSpan = new WeakMap<DemandApi, { from: number; to: number }>();
+function layoutAt(a: DemandApi, version: number) {
+  const s = layoutSpan.get(a);
+  if (s && a.layout_kept()) s.to = version;
+  else layoutSpan.set(a, { from: version, to: version });
+}
 /** T-1904: the kind of day the page shows and the zones whose bubbles it draws (`view`) */
 let viewDay = 0;
 let viewZones = new Set<CityId>();
 /**
  * A city's bubble sums for `rounds` of a solve, kept for `subSums` and sent unasked with the last
- * round (`kept`: the weekday's, already worked out). The weekday's always; the day shown as well for
- * the zones on screen, since a day other than a
+ * round (`kept`: by day, already worked out). The day shown's always, since a day other than a
  * weekday is otherwise read from the live state, which is a round ahead by the time it is asked
- * (T-1904: the average day's bubbles waited a whole round, the cached result's for the final).
+ * (T-1904: the average day's bubbles waited a whole round, the cached result's for the final), and
+ * T-4265: the page keeps a final's while a whole solve after an edit leaves no worker holding them.
+ * The zones on screen the weekday's as well.
  */
-function keepSums(version: number, rounds: number[], id: CityId, a: DemandApi, kept?: Sums, local?: true) {
-  const days = viewDay !== 0 && viewZones.has(id) ? [0, viewDay] : [0];
-  for (const day of days) {
-    const k: Sums = day === 0 ? kept ?? { mask: a.solved_mask(), sums: a.sub_sums(), everyday: everydayModes(everyday.get(id), 0) }
-      : { mask: a.solved_mask(), sums: a.sub_sums_day(day), everyday: everydayModes(everyday.get(id), day) };
+function keepSums(version: number, rounds: number[], id: CityId, a: DemandApi, kept?: Map<number, Sums>, local?: true) {
+  for (const day of sumsDays(id)) {
+    const k: Sums = kept?.get(day) ?? sumsNow(id, a, day);
     for (const r of rounds) sumsByRound.set(day === 0 ? `${id}:${r}` : `${id}:${r}:${day}`, k);
     const copy = k.sums.slice();
     const extra = k.everyday?.slice() ?? null;
     sendMessage({ kind: "sums", version, round: rounds[rounds.length - 1], city: id, mask: k.mask, sums: copy, everyday: extra, ...(day ? { day } : {}), ...(local ? { local } : {}) }, [copy.buffer, ...(extra ? [extra.buffer] : [])]);
   }
+}
+/** the kinds of day a city's bubble sums are sent for (`keepSums`) */
+const sumsDays = (id: CityId) => (viewDay !== 0 && viewZones.has(id) ? [0, viewDay] : [viewDay]);
+/** a city's bubble sums on kind of day `day` as its populations stand */
+function sumsNow(id: CityId, a: DemandApi, day: number): Sums {
+  return day === 0 ? { mask: a.solved_mask(), sums: a.sub_sums(), everyday: everydayModes(everyday.get(id), 0) }
+    : { mask: a.solved_mask(), sums: a.sub_sums_day(day), everyday: everydayModes(everyday.get(id), day) };
 }
 /** T-2215: six mode blocks per cell with the two No route blocks (trips no way serves, home end
  * and far end, T-2214) after them: the eight blocks every `cellModes`-like answer carries */
@@ -139,7 +155,7 @@ let stageRound = -1;
 /** T-327: questions marked `wait` about a round (or version) this worker has not reached yet,
  * answered the moment it has, before it starts the next round */
 let waiting: Query[] = [];
-type Query = Exclude<ToDemand, { kind: "init" | "open" | "solve" | "go" | "whole" | "close" | "corridorsAgain" | "rows" | "debugPanic" | "periods" | "first" | "view" | "loads" | "zones" }>;
+type Query = Exclude<ToDemand, { kind: "init" | "open" | "solve" | "go" | "whole" | "endLocal" | "close" | "corridorsAgain" | "rows" | "debugPanic" | "periods" | "first" | "view" | "loads" | "zones" | "aside" }>;
 /** T-327: the round every worker may start, by version and group (a solve marked `barrier` waits
  * for it) */
 let go = { version: -1, group: 0, round: 0 };
@@ -150,7 +166,7 @@ const goAllows = (version: number, group: number, round: number) =>
  * being solved; `ready` the clusters set up on the network in hand */
 const groupOf = new Map<JobCluster, number>();
 let stageGroup = 0;
-const ready = new Set<JobCluster>();
+const ready = new Set<JobCluster<Reader>>();
 /** the group the city's cluster is solved in (undefined: kept, or in no cluster) */
 const cityGroup = (city: CityId) => { const c = jobClusters.find((c) => c.cities.includes(city)); return c ? groupOf.get(c) : undefined; };
 /** `day_factors()`, read once */
@@ -160,11 +176,16 @@ let wake: (() => void) | null = null;
 /** the questions whose answer reads the periods' state at a round (the others read none) */
 const BY_ROUND = new Set<Query["kind"]>(["station", "flowRail", "purposes", "icSel", "icStation", "transfers", "trip", "icTrip", "tripLengths", "airLegs", "regLegs"]);
 type Population = DemandApi | EverydayApi | IntercityApi;
+/** T-4220: a population, or a stand-in for one frozen as on screen (`ShownPop`): what the calls reading figures take */
+type Reader = Population | ShownPop;
+/** T-4220: a population's kind, a stand-in's too */
+const kindOf = (p: Reader): ShownPop["kind"] => (p instanceof ShownPop ? p.kind : p instanceof IntercityApi ? "market" : p instanceof EverydayApi ? "everyday" : "commute");
+const isEveryday = (p: Reader): p is EverydayApi | ShownPop => kindOf(p) === "everyday";
 /** T-1607: which of a cluster's populations a worker solves a period of: all, the cities' alone
  * (the market's in another worker) or the market's alone */
 /** (T-3373 B "held": under `solve.split`, every population this worker holds, with the cluster's others elsewhere) */
 type Side = "all" | "cities" | "market" | "held";
-const onSide = (side: Side, a: Population) => side === "all" || side === "held" || (side === "market") === (a instanceof IntercityApi);
+const onSide = (side: Side, a: Reader) => side === "all" || side === "held" || (side === "market") === (kindOf(a) === "market");
 /** T-326: the network in hand's clusters, each with its populations (cities, their everyday
  * layers, the market: the order their loads are added in), and the whole network's route nodes */
 /** `pops` in the order their figures are added up; `solveOrder` the same populations in the order
@@ -173,12 +194,13 @@ const onSide = (side: Side, a: Population) => side === "all" || side === "held" 
 /** `part`: the market's part for the cluster's network (T-409), among `pops` */
 /** `views`: the network each population is set on (T-756: a city's stations within its reach, the
  * market's the cluster's) and its maps to the whole network's stations and route nodes */
-type JobCluster = Cluster & { pops: Population[]; solveOrder: Population[]; reuse: number; part: IntercityApi | null; views: Map<Population, PopView> };
-const viewOf = (c: JobCluster, p: Population) => c.views.get(p)!;
+/** (T-4220 `P` Reader: a cluster some of whose populations are stand-ins, for the readers alone: `figures`, `localSolve`) */
+type JobCluster<P extends Reader = Population> = Cluster & { pops: P[]; solveOrder: P[]; reuse: number; part: IntercityApi | Extract<P, ShownPop> | null; views: Map<P, PopView> };
+const viewOf = (c: JobCluster<Reader>, p: Reader) => c.views.get(p)!;
 /** T-1255: a population's boardings per period, on its own route nodes, from its last solve: the
  * free-flow pass's, and the last crowding round's before the cap. */
-const boards = new WeakMap<Population, { free: (Float32Array | undefined)[]; rounds: (Float32Array | undefined)[] }>();
-const boardsOf = (p: Population) => {
+const boards = new WeakMap<Reader, { free: (Float32Array | undefined)[]; rounds: (Float32Array | undefined)[] }>();
+const boardsOf = (p: Reader) => {
   let b = boards.get(p);
   if (!b) boards.set(p, (b = { free: [], rounds: [] }));
   return b;
@@ -189,7 +211,7 @@ const boardsOf = (p: Population) => {
  * round by round as the whole solve did, so with nothing changed it repeats the whole solve: priced
  * on the others' final loads instead, a 3-round solve with the market frozen took another path and
  * moved lines by 6-16% on all of Japan. */
-const trail = new WeakMap<Population, (Float32Array | undefined)[][]>();
+const trail = new WeakMap<Reader, (Float32Array | undefined)[][]>();
 function keepTrail(p: Population, q: number, r: number) {
   let t = trail.get(p);
   if (!t) trail.set(p, (t = []));
@@ -213,7 +235,7 @@ function keepTrails(saved: Map<Population, (Float32Array | undefined)[][] | unde
 const passMs = new WeakMap<Population, number[]>();
 /** T-3599: a population's ms of each period's pass in each round, as last solved whole here (a round
  * overwritten only by the same round, so a solve cut short leaves the others as they were) */
-const passByRound = new WeakMap<Population, number[][]>();
+const passByRound = new WeakMap<Reader, number[][]>();
 function addPass(p: Population, q: number, round: number, ms: number) {
   let v = passMs.get(p);
   if (!v) passMs.set(p, (v = []));
@@ -227,7 +249,7 @@ const ROUND_DECAY = 0.75;
 /** T-3599: the expected ms of round `round` of period q over `pops`, from their last passes; null when under
  * half have one. A population with none counts as nothing (after a load on the Asia save 2 of 213 had none,
  * or 212: then only the market, a small share, had one) */
-function passPrior(pops: readonly Population[], q: number, round: number | "all", rounds: number): number | null {
+function passPrior(pops: readonly Reader[], q: number, round: number | "all", rounds: number): number | null {
   let sum = 0, known = 0;
   for (const p of pops) {
     const b = passByRound.get(p)?.[q];
@@ -269,6 +291,11 @@ const heldQ = new Map<Population, string[]>();
 /** T-1609: a period solved alone against its cluster's frozen loads (`heldQ` psig plus this), which
  * a later solve may refine against again but never keeps as a whole solve's */
 const LOCAL = "~local"; // i18n-ignore
+/** T-3512: the periods of `periods` (bits) every population of c holds solved for c's `psig`, in a whole solve or a
+ * local one (`LOCAL`); a stand-in from the snapshot (`ShownPop.psig`) */
+function keptIn(c: JobCluster<Reader>, periods: readonly number[]): number {
+  return periods.reduce((m, q) => (c.pops.every((p) => { const h = p instanceof ShownPop ? p.psig(q) : heldQ.get(p)?.[q]; return p.solved_mask() & (1 << q) && (h === c.psig[q] || h === c.psig[q] + LOCAL); }) ? m | (1 << q) : m), 0);
+}
 /** T-1609: per cluster `sig` and period, the last whole solve's loads before the capacity fit over
  * those after it, where they differ (route nodes of the whole network, the three blocks as `step`'s
  * totals): the frozen loads a local refine crowds on are the populations' capped loads times this */
@@ -286,7 +313,7 @@ function keepCapRatio(sig: string, q: number, before: Float32Array, after: Float
  * hold them, re-keyed by a keep within noise), its `shape`, and the network it was solved on */
 const heldOn = new WeakMap<Population, { sig: string; psig: string[]; shape: string; net: DemandNetwork }>();
 /** T-3753: each city population's multiples of the curve as set (`countryFareScales`), the fares its riders pay */
-const popScales = new WeakMap<Population, { base: number; rate: number }>();
+const popScales = new WeakMap<Reader, { base: number; rate: number }>();
 /** T-1862: the settle moves lines no edit touched by float noise (0.12 s and 0.08% seen, T-1850);
  * one train on a line of under 500 an hour is past 0.2%. Span is compared exactly */
 const NOISE_RUN_S = 0.5;
@@ -303,6 +330,11 @@ function withinNoise(was: DemandNetwork, now: DemandNetwork): boolean {
 /** T-1733: the page's `whole` for this version: the edit's local results are shown (and a moment
  * has passed for the next edit), so the whole solve may start */
 let wholeGo = -1;
+/** T-4220 stage 8: the last solve whose `whole` came as its plans came in (`early`): none of its local results is shown */
+let wholeEarly = -1;
+/** T-2188: the page's `endLocal` for this version: every worker's local stage is a city edit's, so each ends the
+ * solve at its local results instead of waiting for `whole` */
+let endLocalGo = -1;
 /** T-1733: at most this long waiting for `whole` (a worker that never sends its local result) */
 const WHOLE_WAIT_MS = 300_000;
 /** T-1733: a route node with no counterpart in the network now (a write there is dropped) */
@@ -334,8 +366,28 @@ function localOrder(lines: ArrayLike<number>, a: NetIds | null, b: NetIds | null
   const first = mine.filter((q) => moved[q]), rest = mine.filter((q) => !moved[q]);
   return first.length && rest.length ? { periods: [...first, ...rest], quiet: new Set(rest) } : none;
 }
-/** T-1735: per market part, the network (`lastNet`) it holds solved, untouched since */
-const marketNet = new Map<IntercityApi, NetIds>();
+/** T-1735, T-4237: per population (a market part or a city), the network (`lastNet`) it holds solved, untouched since:
+ * the baseline an edit's class is read against, whether or not its cluster has a market part */
+const marketNet = new Map<Population, NetIds>();
+/** T-2188: a network's fare settings the market prices by: the fares, and each line's own multiples and distance fare
+ * and each station's fare zone, by id */
+type FareOf = SnapFares;
+function fareOf(n: DemandNetwork, ids: NetIds): FareOf {
+  const lines = new Map<string, string>(), stations = new Map<string, number>();
+  let o = 0;
+  ids.lines.forEach((id, l) => { const k = 2 * o; lines.set(id, `${n.fareW?.[k] ?? 1},${n.baseW?.[k] ?? 1},${n.fzDist?.[k] ?? 0}`); o += n.lineN[l]; });
+  if (n.fz) ids.stations.forEach((id, k) => stations.set(id, n.fz![k]));
+  return { fare: JSON.stringify(n.fare), lines, stations };
+}
+/** T-2188: `b` prices a line or station both networks have otherwise than `a` (a fare edit) */
+function faresMoved(a: FareOf, b: FareOf): boolean {
+  if (a.fare !== b.fare) return true;
+  for (const [id, v] of b.lines) { const w = a.lines.get(id); if (w !== undefined && w !== v) return true; }
+  for (const [id, v] of b.stations) { const w = a.stations.get(id); if (w !== undefined && w !== v) return true; }
+  return false;
+}
+/** T-2188: per population, the fare settings of the network it holds solved (`marketNet`'s) */
+const marketFare = new Map<Population, FareOf>();
 /** T-1733: the view each city population holds every one of its periods solved on, untouched since
  * (a population set on a network again is dropped from it) */
 const cityOn = new Map<Population, PopView>();
@@ -395,12 +447,19 @@ const WINDOW_FLOOR = 800;
  * T-3600: except a line switched on or off (`switched`), whose zones' pairs are solved in the window
  * with no reach beyond them: five Kaohsiung feeders switched on moved the intercity lines by 7-16% */
 const WINDOW_EDIT_MIN = 20;
+/** T-2188: an edit is an intercity one, its solve going on to the whole solve, when against the network the market
+ * last solved on it changes the market's fares (`faresMoved`), switches a line on or off (`switched`), adds or drops a
+ * stop on a run of `WINDOW_EDIT_MIN` or more, or moves a line's run time end to end by this many minutes or more (a
+ * faster or slower line). A train-count
+ * edit moves run times only here and there (dwell, trains on shared track): 0.2-1.5 minutes on the Asia save's lines,
+ * which would otherwise open a window, and a whole solve, for a city line (notes/T-2188.md) */
+const RUN_SHIFT_MIN = 3;
 /** T-1735: the stations network `b` changed from `a` (a stop added or dropped there, or a hop's run
  * time changed, or, T-3600, every station of a line whose trains at some level went to or from none),
  * as masks over `b`'s and `a`'s stations; `map` is `nodeMap(a, b)`; `switched`: such a line.
  * `minutes`: the longest run between a line's first and last changed stops, the window's reach (a
  * pair goes out of its way for a new service only about as far as the service itself goes) */
-function editedStations(a: NonNullable<typeof lastNet>, b: NonNullable<typeof lastNet>, map: Int32Array): { now: Uint8Array; was: Uint8Array; minutes: number; switched: boolean } {
+function editedStations(a: NonNullable<typeof lastNet>, b: NonNullable<typeof lastNet>, map: Int32Array): { now: Uint8Array; was: Uint8Array; minutes: number; switched: boolean; stopMinutes: number; shift: number } {
   const now = new Uint8Array(b.stations.length), was = new Uint8Array(a.stations.length);
   const atB = new Map(b.stations.map((id, k) => [id, k]));
   const offs = (n: Uint32Array) => { const o = [0]; for (const v of n) o.push(o[o.length - 1] + v); return o; };
@@ -411,11 +470,13 @@ function editedStations(a: NonNullable<typeof lastNet>, b: NonNullable<typeof la
   const hit = new Uint8Array(2 * b.stops.length);
   // per line, the first and last stop changed (indices into `stops`), each network's
   const spanA = new Map<number, [number, number]>(), spanB = new Map<number, [number, number]>();
+  // (T-2188: the same from stops added or dropped alone)
+  const stopA = new Map<number, [number, number]>(), stopB = new Map<number, [number, number]>();
   const widen = (m: Map<number, [number, number]>, l: number, i: number) => { const s = m.get(l); m.set(l, s ? [Math.min(s[0], i), Math.max(s[1], i)] : [i, i]); };
   const mark = (stA: number, la: number, ia: number) => { was[stA] = 1; widen(spanA, la, ia); const k = atB.get(a.stations[stA]); if (k !== undefined) now[k] = 1; };
   for (let k = 0; k < map.length; k++) {
     const la = lineOf(oa, k), sa = a.stops[stopOf(a.lineN, oa, la, k)];
-    if (map[k] < 0) { mark(sa, la, stopOf(a.lineN, oa, la, k)); continue; }
+    if (map[k] < 0) { mark(sa, la, stopOf(a.lineN, oa, la, k)); widen(stopA, la, stopOf(a.lineN, oa, la, k)); continue; }
     hit[map[k]] = 1;
     const m = map[k], lb = lineOf(ob, m), ia = stopOf(a.lineN, oa, la, k), ib = stopOf(b.lineN, ob, lb, m);
     // this hop's run time past VIEW_TOLERANCE (trains an hour do not count, but for a line switched
@@ -428,7 +489,7 @@ function editedStations(a: NonNullable<typeof lastNet>, b: NonNullable<typeof la
     for (let r = 0; r < TIMES_PER_STOP && !changed; r++) changed = off(a.times[ta + r * na + (ia - oa[la])], b.times[tb + r * nb + (ib - ob[lb])], VIEW_TOLERANCE);
     if (changed) { mark(sa, la, ia); widen(spanB, lb, ib); }
   }
-  for (let m = 0; m < hit.length; m++) if (!hit[m]) { const lb = lineOf(ob, m), ib = stopOf(b.lineN, ob, lb, m); now[b.stops[ib]] = 1; widen(spanB, lb, ib); }
+  for (let m = 0; m < hit.length; m++) if (!hit[m]) { const lb = lineOf(ob, m), ib = stopOf(b.lineN, ob, lb, m); now[b.stops[ib]] = 1; widen(spanB, lb, ib); widen(stopB, lb, ib); }
   // (run times are seconds, the first row each hop's on from its stop one way at the first period)
   const run = (n: NonNullable<typeof lastNet>, o: number[], spans: Map<number, [number, number]>) => {
     let most = 0;
@@ -448,7 +509,19 @@ function editedStations(a: NonNullable<typeof lastNet>, b: NonNullable<typeof la
     for (let i = oa[la]; i < oa[la + 1]; i++) was[a.stops[i]] = 1;
     for (let i = ob[lb]; i < ob[lb + 1]; i++) now[b.stops[i]] = 1;
   });
-  return { now, was, minutes: Math.min(WINDOW_REACH_MIN, Math.max(run(a, oa, spanA), run(b, ob, spanB))), switched };
+  // T-2188: the most a line with the same stops moved its run time end to end, in any period and either way, minutes
+  let shift = 0;
+  b.lines.forEach((id, lb) => {
+    const la = lineA.get(id);
+    if (la === undefined || stopA.has(la) || stopB.has(lb) || a.lineN[la] !== b.lineN[lb]) return;
+    const n = b.lineN[lb], ta = TIMES_PER_STOP * oa[la], tb = TIMES_PER_STOP * ob[lb];
+    for (let r = 0; r < TIMES_PER_STOP; r++) {
+      let sa = 0, sb = 0;
+      for (let k = 0; k < n; k++) { sa += a.times[ta + r * n + k] || 0; sb += b.times[tb + r * n + k] || 0; }
+      shift = Math.max(shift, Math.abs(sb - sa) / 60);
+    }
+  });
+  return { now, was, minutes: Math.min(WINDOW_REACH_MIN, Math.max(run(a, oa, spanA), run(b, ob, spanB))), switched, stopMinutes: Math.max(run(a, oa, stopA), run(b, ob, stopB)), shift };
 }
 /** T-1733: carry the route-node state kept across solves (`marketOn`, `sharedMkt`, `capRatio`) to a
  * new network; without both networks' ids it is dropped */
@@ -481,7 +554,214 @@ function disturbed(p: Population) {
   cityOn.delete(p);
   heldOn.delete(p);
   trail.delete(p);
-  if (p instanceof IntercityApi) { marketOn.delete(p); sharedMkt.delete(p); sharedTrail.delete(p); marketNet.delete(p); }
+  marketNet.delete(p);
+  marketFare.delete(p);
+  shownIntact.delete(p);
+  if (p instanceof IntercityApi) { marketOn.delete(p); sharedMkt.delete(p); sharedTrail.delete(p); windowShown.delete(p); }
+}
+/** T-4220: per population whose figures are the ones on screen (its result sent, nothing set up since), the cluster it
+ * was solved in */
+type ShownIn = { zones: CityId[]; marketKey: string };
+const shownIntact = new WeakMap<Population, ShownIn>();
+/** T-4220: a market part's T-1735 window shown with its cluster's last local result (per period, the window's pairs'
+ * new loads less their old as `marketBlocks` gives them), on network `ids`; a result of the cluster shown without one
+ * drops it */
+const windowShown = new WeakMap<IntercityApi, { ids: NetIds; delta: (Float32Array[] | undefined)[] }>();
+/**
+ * T-4220: copies of what this worker holds of the populations of `cs` whose figures are on screen, each period it holds,
+ * with their buffers to transfer. Copies only: `keepTrails` puts a kept period's trail back and later solves read
+ * `boardsOf`. Past `SNAP_MAX_BYTES` it stops (`over`, `bytes` where it stopped).
+ */
+function snapPops(cs: JobCluster[]): { pops: SnapPop[]; transfer: ArrayBuffer[]; bytes: number; over: boolean } {
+  const pops: SnapPop[] = [], transfer: ArrayBuffer[] = [], copies = new Map<object, object>();
+  let bytes = 0;
+  // (an array that does not own its whole buffer, as one over the WASM memory would, is never transferred)
+  const dup = <T extends Float32Array | Float64Array | Uint32Array | Int32Array | Uint8Array>(a: T): T => own(a.slice() as T);
+  const own = <T extends Float32Array | Float64Array | Uint32Array | Int32Array | Uint8Array>(a: T): T => {
+    if (a.byteLength !== a.buffer.byteLength) return dup(a);
+    bytes += a.byteLength;
+    transfer.push(a.buffer as ArrayBuffer);
+    return a;
+  };
+  // (a view, or a network's ids, copied once: its populations share the copy)
+  const once = <T extends object>(o: T, copy: (o: T) => T): T => { let c = copies.get(o) as T | undefined; if (!c) copies.set(o, (c = copy(o))); return c; };
+  const viewCopy = (v: PopView): PopView => ({
+    net: Object.fromEntries(Object.entries(v.net).map(([k, x]) => [k, ArrayBuffer.isView(x) ? dup(x as Float32Array) : x])) as PopView["net"],
+    stLocal: dup(v.stLocal), nodeGlobal: dup(v.nodeGlobal), pads: dup(v.pads),
+  });
+  const idsCopy = (ids: NetIds): SnapIds => ({ ...ids, lineN: dup(ids.lineN), stops: dup(ids.stops), tph: dup(ids.tph), times: dup(ids.times) });
+  for (const c of cs) for (const p of c.pops) {
+    const shown = shownIntact.get(p), m = p.solved_mask();
+    if (!shown || !m) continue;
+    const market = p instanceof IntercityApi, fares = marketFare.get(p), on: SnapOn = { zones: shown.zones, marketKey: shown.marketKey, ...(fares ? { fares } : {}) };
+    if (market) {
+      const g = marketOn.get(p);
+      if (!g || !lastNet) continue;
+      on.nodes = dup(g);
+      on.ids = once(lastNet, idsCopy);
+    } else {
+      const v = cityOn.get(p);
+      if (!v) continue;
+      on.view = once(v, viewCopy);
+    }
+    const win = market ? windowShown.get(p) : undefined, b = boards.get(p), t = trail.get(p), pass = passByRound.get(p), h = heldQ.get(p);
+    const periods = PERIODS.map((_, q): SnapPeriod | null => {
+      if (!(m & (1 << q))) return null;
+      const free = b?.free[q], rounds = b?.rounds[q], d = win?.delta[q];
+      return {
+        on, psig: h?.[q] ?? "", trail: (t?.[q] ?? []).map((v) => v && dup(v)), free: free ? dup(free) : null, rounds: rounds ? dup(rounds) : null,
+        seg: own(p.seg(q)), board: own(p.board(q)), alight: own(p.alight(q)), loadOfCrush: own(p.load_of_crush(q)), fareX: own(p.fare_extra(q)),
+        baseX: own(p.base_extra(q)), xferIn: own(p.transfers_in(q)), summary: own(p.summary(q)), pass: pass?.[q]?.slice() ?? [],
+        ...(p instanceof EverydayApi ? { kinds: own(p.kind_totals(q)), partLoads: own(p.part_loads(q)) } : {}),
+        ...(p instanceof IntercityApi ? { commute: own(p.commute_loads(q)), everyday: own(p.everyday_loads(q)), lean: own(p.lean_loads(q)) } : {}),
+        ...(d ? { delta: { ids: once(win!.ids, idsCopy), blocks: d.map(dup) } } : {}),
+      };
+    });
+    if (market) pops.push({ kind: "market", key: shown.marketKey, periods });
+    else {
+      const zone = c.cities.find((id) => cities.get(id) === p || everyday.get(id) === p)!, sc = popScales.get(p);
+      pops.push({ kind: p instanceof EverydayApi ? "everyday" : "commute", key: zone, ...(sc ? { scales: { ...sc } } : {}), ...(p instanceof EverydayApi ? { purposes: p.purpose_count() } : {}), periods });
+    }
+    if (bytes > SNAP_MAX_BYTES) return { pops: [], transfer: [], bytes, over: true };
+  }
+  return { pops, transfer, bytes, over: false };
+}
+/**
+ * T-4220 stage 2: a stand-in for a population snapshot `p` holds, for a cluster's readers. Its trail, boardings, fare
+ * multiples and passes go where those look for a population's (`trail`, `boards`, `popScales`, `passByRound`, all weak);
+ * `keptOf` reads its period signatures from it (`psig`). Never put in a strong map of the worker's (`held`, `heldQ`,
+ * `cityOn`, `marketOn`), which outlive a job.
+ */
+function standIn(p: SnapPop): ShownPop {
+  const s = new ShownPop(p), t: (Float32Array | undefined)[][] = [], b = boardsOf(s), pass: number[][] = [];
+  p.periods.forEach((at, q) => {
+    if (!at) return;
+    t[q] = at.trail;
+    b.free[q] = at.free ?? undefined;
+    b.rounds[q] = at.rounds ?? undefined;
+    if (at.pass.length) pass[q] = at.pass;
+  });
+  trail.set(s, t);
+  passByRound.set(s, pass);
+  if (p.scales) popScales.set(s, p.scales);
+  return s;
+}
+/** T-4220 stage 3: the snapshot of the figures on screen the last side job was planned against, each population's
+ * stand-in by `kind:key`, made once per generation the page sends (`holdSnap`) */
+let asideSnap: { gen: number; shown: AsideShown; stand: Map<string, ShownPop> } | null = null;
+/** T-4220: the snapshot a message carries (an `aside`'s or a side job's), held as it comes: the page counts it sent */
+function holdSnap(gen: number, shown: AsideShown) {
+  asideSnap = { gen, shown, stand: new Map(shown.pops.map((p) => [`${p.kind}:${p.key}`, standIn(p)])) };
+}
+/** T-4220 stage 3: a cluster of the side job's network, every population its stand-in on its view of that network, and
+ * `fresh` those whose view is not their shown one's (in `zones`): stage 4 solves the real ones of those in the periods
+ * `solve`, crowded on the others' trails, and reads every stand-in in the periods `keep` (bits) */
+type AsideCluster = { c: JobCluster<ShownPop>; fresh: ShownPop[]; zones: CityId[]; keep: number; solve: number[]; ms: number | null };
+const EVERY_PERIOD = PERIODS.map((_, q) => q);
+
+/**
+ * T-4220 stage 3: the side job's plan for network `msg.net` against the figures on screen (notes/T-4220.md, "The pick"
+ * 4 and 7). The network's clusters are made as the main pool makes them, from the snapshot's zones in its order, its
+ * market zones and flags, and the page's `rounds` (all in `psig`); each population is its stand-in, a city's on its view
+ * of the network, the market's on its route nodes carried there (`nodeMap`, as `remapKept`). Fresh: a city population
+ * whose view is not `sameView` its shown one. Kept: a period every population holds for the cluster's `psig`, over every
+ * period (one focus worker solves them all). Refused: see `AsideRefusal`, the fare and cluster tests over every cluster,
+ * those with nothing fresh too. Reads none of this worker's solve state; sets the frame, as `run` does.
+ */
+function planAside(msg: Extract<ToDemand, { kind: "aside" }>): { answer: AsideAnswer; clusters: AsideCluster[] } {
+  const t0 = performance.now();
+  const no = (refused: AsideRefusal, why: string) => ({ answer: { refused, why, fresh: [], clusters: [], periods: [], ms: null, planMs: performance.now() - t0 }, clusters: [] });
+  const snap = asideSnap;
+  if (!snap || snap.gen !== msg.gen) return no("snapshot", `generation ${msg.gen} not held`); // i18n-ignore
+  const { shown, stand } = snap;
+  // (the main pool's solve of this network covers other zones: a line into a new zone, which it solves with the barrier)
+  const was = new Set(shown.zones.map((z) => z.id)), now = new Set(msg.cities);
+  const opened = msg.cities.filter((id) => !was.has(id)), closed = [...was].filter((id) => !now.has(id));
+  if (opened.length || closed.length) return no("zones", [opened.length ? `opened ${opened.join(",")}` : "", closed.length ? `closed ${closed.join(",")}` : ""].filter(Boolean).join("; "));
+  const n = msg.net;
+  setWorldFrame(n.frame);
+  const ids: NetIds = { lines: msg.ids.lines, stations: msg.ids.stations, lineN: n.lineN, stops: n.stops, tph: n.tph, times: n.times };
+  const { flags } = shown, zoneOf = new Map(shown.zones.map((z) => [z.id, z]));
+  const split = splitClusters(n, shown.zones.map(({ id, box }) => ({ id, box })), shown.marketZones, msg.rounds, flags.whole, flags.oneMarket);
+  const maps = new Map<SnapIds, Int32Array>();
+  // (every cluster, those with nothing fresh too: the fare and cluster checks below take them all, since a fare edit, or
+  // one that joins or splits clusters, may move no view past `sameView`'s tolerances)
+  const all: (AsideCluster & { missing: string[] })[] = [];
+  for (const c of split) {
+    const whole = clusterView(c), pops: ShownPop[] = [], views = new Map<ShownPop, PopView>(), missing: string[] = [];
+    // (every population the main pool's cluster has, in its `pops` order: the figures add up in it)
+    const take = (key: string) => { const s = stand.get(key); if (s) pops.push(s); else missing.push(key); return s; };
+    for (const id of c.cities) {
+      const s = take(`commute:${id}`);
+      if (s) views.set(s, flags.wide || flags.whole ? whole : reachView(n, c, cityReach(n, id, zoneOf.get(id)!.box)));
+    }
+    for (const z of shown.zones) {
+      if (!z.day || !c.cities.includes(z.id)) continue;
+      const s = take(`everyday:${z.id}`), a = stand.get(`commute:${z.id}`);
+      if (s && a) views.set(s, views.get(a)!);
+    }
+    const part = c.market ? take(`market:${c.marketKey}`) ?? null : null;
+    if (part?.on?.nodes && part.on.ids) {
+      let m = maps.get(part.on.ids);
+      if (!m) maps.set(part.on.ids, (m = nodeMap(part.on.ids, ids)));
+      const map = m;
+      views.set(part, { ...whole, nodeGlobal: part.on.nodes.map((v) => (v === NONE || map[v] < 0 ? NONE : map[v])), pads: new Uint32Array(0) });
+    } else if (part) missing.push("the market's periods solved on different networks"); // i18n-ignore
+    // (a city whose periods were solved on views that differ, `on` null, is fresh: in a period kept, `psig` says its
+    // inputs there are as they were, so its figures there still stand)
+    const fresh = pops.filter((p) => p !== part && (!p.on?.view || !views.has(p) || !sameView(p.on.view, views.get(p)!)));
+    all.push({ c: { ...c, pops, solveOrder: pops.slice(), reuse: 0, part, views }, fresh, zones: c.cities.filter((id) => fresh.some((p) => p.key === id)), keep: 0, solve: [], ms: null, missing });
+  }
+  const who = (p: ShownPop) => (p.kind === "market" ? "the market" : `${p.kind} ${p.key}`); // i18n-ignore
+  // fares first: an edit of them touches every population, so it reads as that rather than as what follows from it.
+  // Against what stays frozen, as the main pool's local stage tests: the market part, else a city not touched
+  let fareNow: FareOf | undefined;
+  for (const { c, fresh } of all) {
+    const kept = (c.part instanceof ShownPop ? c.part : null) ?? c.pops.find((p) => !fresh.includes(p));
+    if (!kept) continue; // (nothing frozen: the cluster is solved whole)
+    const f = kept.on?.fares;
+    if (!f || faresMoved(f, (fareNow ??= fareOf(n, ids)))) return no("fares", f ? `moved since ${who(kept)} was solved` : `none held for ${who(kept)}`); // i18n-ignore
+  }
+  const out = all.filter((a) => a.fresh.length);
+  const freshZones = [...new Set(out.flatMap((a) => a.zones))].sort((x, y) => CITY_ORDER.get(x)! - CITY_ORDER.get(y)!);
+  if (freshZones.length > ASIDE_MAX_ZONES) return no("many", `${freshZones.length} zones fresh: ${freshZones.slice(0, 8).join(",")}`); // i18n-ignore
+  for (const a of all) {
+    const { c } = a;
+    if (a.missing.length) return no("partial", `${a.missing.slice(0, 3).join(", ")} not held`); // i18n-ignore
+    for (const p of c.pops) {
+      if (a.fresh.includes(p)) continue;
+      if (!p.on) return no("partial", `${who(p)}: its periods solved on different networks`); // i18n-ignore
+      if (p.on.zones.join() !== c.cities.join() || p.on.marketKey !== c.marketKey) return no("clusters", `${who(p)} solved with ${p.on.zones.join(",")}${p.on.marketKey !== c.marketKey ? " and another market key" : ""}, now with ${c.cities.join(",")}`); // i18n-ignore
+    }
+  }
+  // T-4220 stage 4: an intercity edit, as the main pool's local stage classes one against the network the market part last
+  // solved on (`editOf`, T-2188): its local result there opens a window on the market (T-1735), which a side job keeps
+  // frozen (T-3600: lines moved by 7-16% without one)
+  for (const { c } of out) {
+    const on = c.part instanceof ShownPop ? c.part.on : null;
+    if (!on?.ids) continue;
+    const ed = editedStations(on.ids, ids, maps.get(on.ids) ?? nodeMap(on.ids, ids));
+    if (ed.switched || ed.stopMinutes >= WINDOW_EDIT_MIN || ed.shift >= RUN_SHIFT_MIN) return no("intercity", ed.switched ? "a line switched on or off" : ed.stopMinutes >= WINDOW_EDIT_MIN ? `a stop added or dropped on a run of ${Math.round(ed.stopMinutes)} min` : `a line's run ${ed.shift.toFixed(1)} min longer or shorter`); // i18n-ignore
+  }
+  for (const a of out) {
+    const { c } = a, frozen = c.pops.filter((p) => !a.fresh.includes(p));
+    a.keep = msg.fresh ? 0 : keptIn(c, EVERY_PERIOD);
+    a.solve = EVERY_PERIOD.filter((q) => !(a.keep & (1 << q)));
+    // (a frozen population's loads as each round was priced on, never the ended loads: T-1733's 6-16%)
+    for (const q of a.solve) for (const p of frozen) {
+      const t = trail.get(p)?.[q], nr = viewOf(c, p).nodeGlobal.length;
+      for (let r = 0; r <= msg.rounds; r++) if (t?.[r]?.length !== 3 * nr) return no("trail", `${who(p)} has no full trail of period ${q}`); // i18n-ignore
+    }
+    a.ms = a.solve.reduce<number | null>((sum, q) => { const m = passPrior(a.fresh, q, "all", msg.rounds); return sum === null || m === null ? null : sum + m; }, 0);
+  }
+  const answer: AsideAnswer = {
+    fresh: freshZones.map((id) => ({ id, level: zoneOf.get(id)!.level })),
+    clusters: out.map((a) => ({ zones: a.c.cities, fresh: a.zones, keep: a.keep, solve: a.solve, ms: a.ms })),
+    periods: EVERY_PERIOD.filter((q) => out.some((a) => a.solve.includes(q))),
+    ms: out.reduce<number | null>((sum, a) => (sum === null || a.ms === null ? null : sum + a.ms), 0),
+    planMs: performance.now() - t0,
+  };
+  return { answer, clusters: out.map(({ missing: _, ...a }) => a) };
 }
 const boxes = new Map<CityId, Box>();
 /** T-3373 B: the boxes of the city packs in `cityInfo`, for the page to send to workers not holding them */
@@ -601,6 +881,13 @@ class Work {
   private sized: [number, number] = [0, 0];
   private sizedMs: [number, number] = [0, 0];
   private blindRan: [boolean, boolean] = [false, false];
+  /** T-4343: the crowding rounds after the first, apart: the part of `blind` and `viewBlind` they are, the unit in hand being one, and
+   * their own ms a population once one has ended (a round's pace is its own: New York's later rounds ran at 0.4 of the first) */
+  private blindLate: [number, number] = [0, 0];
+  private viewBlindLate: [number, number] = [0, 0];
+  private curLate = false;
+  private sizedLate: [number, number] = [0, 0];
+  private sizedLateMs: [number, number] = [0, 0];
   /** this solve's units with an expected ms ended so far: their ms as run and as expected */
   private ran: [number, number] = [0, 0];
   private ranExp: [number, number] = [0, 0];
@@ -623,16 +910,17 @@ class Work {
   constructor(readonly version: number) {}
   /** `exp`: the units' expected ms in all, null when they have none (negative units, `exp` too, take
    * back units planned that will not run); `q` the units' period; `size` each one's populations */
-  plan(stage: 0 | 1, units: number, exp: number | null, view: boolean, q: number, size: number) {
+  plan(stage: 0 | 1, units: number, exp: number | null, view: boolean, q: number, size: number, late = false) {
     this.of[stage] += units;
-    if (exp === null) this.blind[stage] += units * size; else this.left[stage] += exp;
-    if (view || (this.viewAll && stage === 1)) { if (exp === null) this.viewBlind[stage] += units * size; else this.viewLeft[stage] += exp; }
+    if (exp === null) { this.blind[stage] += units * size; if (late) this.blindLate[stage] += units * size; } else this.left[stage] += exp;
+    if (view || (this.viewAll && stage === 1)) { if (exp === null) { this.viewBlind[stage] += units * size; if (late) this.viewBlindLate[stage] += units * size; } else this.viewLeft[stage] += exp; }
     if (stage === 1 && q >= 0 && exp !== null) this.leftQ[q] += exp;
   }
-  begin(stage: 0 | 1, exp: number | null, view: boolean, q: number, size: number) {
+  begin(stage: 0 | 1, exp: number | null, view: boolean, q: number, size: number, late = false) {
     this.stage = stage;
     this.cur = exp;
     this.curSize = size;
+    this.curLate = late;
     this.curView = view || (this.viewAll && stage === 1);
     this.curQ = stage === 1 ? q : -1;
     this.t0 = performance.now();
@@ -645,7 +933,10 @@ class Work {
       this.ms[s] += took;
       unitMsLast[s] = this.ms[s] / ++this.done[s];
     } else this.done[s]++;
-    if (ran && this.curSize > 0 && (this.cur === null || !this.blindRan[s])) {
+    if (ran && this.curSize > 0 && this.cur === null && this.curLate) {
+      this.sizedLate[s] += this.curSize;
+      this.sizedLateMs[s] += took;
+    } else if (ran && this.curSize > 0 && (this.cur === null || !this.blindRan[s])) {
       if (this.cur === null && !this.blindRan[s]) { this.blindRan[s] = true; this.sized[s] = this.sizedMs[s] = 0; }
       this.sized[s] += this.curSize;
       this.sizedMs[s] += took;
@@ -653,6 +944,10 @@ class Work {
     if (this.cur === null) {
       this.blind[s] = Math.max(0, this.blind[s] - this.curSize);
       if (this.curView) this.viewBlind[s] = Math.max(0, this.viewBlind[s] - this.curSize);
+      if (this.curLate) {
+        this.blindLate[s] = Math.max(0, this.blindLate[s] - this.curSize);
+        if (this.curView) this.viewBlindLate[s] = Math.max(0, this.viewBlindLate[s] - this.curSize);
+      }
     } else {
       this.left[s] = Math.max(0, this.left[s] - this.cur);
       if (this.curView) this.viewLeft[s] = Math.max(0, this.viewLeft[s] - this.cur);
@@ -665,6 +960,7 @@ class Work {
     }
     this.cur = null;
     this.curSize = 0;
+    this.curLate = false;
     this.curView = false;
     this.curQ = -1;
     this.send(false);
@@ -680,7 +976,7 @@ class Work {
     this.send(false);
   }
   send(busy: boolean) {
-    sendMessage({ kind: "work", version: this.version, stage: this.stage, busy, done: [...this.done], of: [...this.of], unitMs: [...unitMsLast], left: [...this.left], blind: [...this.blind], cur: busy ? this.cur : null, curSize: busy ? this.curSize : 0, sizeMs: [0, 1].map((s) => (this.sized[s] > 0 ? this.sizedMs[s] / this.sized[s] : 0)) as [number, number], ran: [...this.ran], ranExp: [...this.ranExp], ranN: [...this.ranN], viewLeft: [...this.viewLeft], viewBlind: [...this.viewBlind], curView: busy && this.curView, leftQ: [...this.leftQ], ranQ: [...this.ranQ], expQ: [...this.expQ], nQ: [...this.nQ], curQ: busy ? this.curQ : -1 });
+    sendMessage({ kind: "work", version: this.version, stage: this.stage, busy, done: [...this.done], of: [...this.of], unitMs: [...unitMsLast], left: [...this.left], blind: [...this.blind], cur: busy ? this.cur : null, curSize: busy ? this.curSize : 0, sizeMs: [0, 1].map((s) => (this.sized[s] > 0 ? this.sizedMs[s] / this.sized[s] : 0)) as [number, number], blindLate: [...this.blindLate], viewBlindLate: [...this.viewBlindLate], curLate: busy && this.curLate, sizeMsLate: [0, 1].map((s) => (this.sizedLate[s] > 0 ? this.sizedLateMs[s] / this.sizedLate[s] : 0)) as [number, number], ran: [...this.ran], ranExp: [...this.ranExp], ranN: [...this.ranN], viewLeft: [...this.viewLeft], viewBlind: [...this.viewBlind], curView: busy && this.curView, leftQ: [...this.leftQ], ranQ: [...this.ranQ], expQ: [...this.expQ], nQ: [...this.nQ], curQ: busy ? this.curQ : -1 });
   }
 }
 let work: Work | null = null;
@@ -714,7 +1010,7 @@ function openPacks(packs: { id: CityId; header: string; bin: ArrayBuffer; level?
         // (T-301: reopened before its close took effect: it stays)
         if (cities.get(pack.id)!.level() === level) { closeLater.ids.delete(pack.id); reopenLater.delete(pack.id); continue; }
         // T-1223: at another level; the solve in hand keeps the one it set up
-        if (busy && jobCities.has(pack.id)) { reopenLater.set(pack.id, pack); continue; }
+        if (inHand(pack.id)) { reopenLater.set(pack.id, pack); continue; }
         dropCity(pack.id);
       }
       openCity(pack, level);
@@ -736,7 +1032,8 @@ function openPacks(packs: { id: CityId; header: string; bin: ArrayBuffer; level?
         if (isPanic(err)) throw err;
         console.warn("market drives:", err); // the rule's drives everywhere
       }
-      marketRows = marketDrives = null;
+      if (corridorFile) marketPacks.set_corridors(corridorFile);
+      marketRows = marketDrives = corridorFile = null;
     }
     const have = new Set(marketPacks.places());
     const added: CityId[] = [];
@@ -889,7 +1186,14 @@ function recompose() {
   const same = key ? [...marketParts.values()].find((p) => composedOf.get(p) === key) : undefined;
   intercity = same ?? (key ? marketPacks!.market() : null);
   if (intercity && !same) composedOf.set(intercity, key);
+  // T-4199: a corridor file that was given and not used: the corridors were worked out here, slower
+  const cs = marketPacks?.corridors_state() ?? 0;
+  if (cs > 1 && !corridorsWarned) {
+    corridorsWarned = true;
+    console.warn(`market corridor file not used (${["", "", "other rows or drives", "another sim build", "unreadable", "samples differ"][cs]}): tools/corridor_file.mjs makes it again`); // i18n-ignore
+  }
 }
+let corridorsWarned = false;
 /** T-1198: the market packs (places, in order) each composition and its parts were made of */
 const composedOf = new WeakMap<IntercityApi, string>();
 
@@ -940,7 +1244,7 @@ function closePacks(msg: Extract<ToDemand, { kind: "close" }>) {
       if (!cities.has(id)) squares.delete(id);
     }
   } else {
-    for (const id of msg.ids) { reopenLater.delete(id); if (busy && jobCities.has(id)) closeLater.ids.add(id); else dropCity(id); }
+    for (const id of msg.ids) { reopenLater.delete(id); if (inHand(id)) closeLater.ids.add(id); else dropCity(id); }
     if (msg.markets?.length) { if (busy) for (const id of msg.markets) closeLater.markets.add(id); else dropMarkets(msg.markets); }
   }
   sendMessage({ kind: "closed", memBytes: wasm_memory_bytes(), heap: heap() });
@@ -992,7 +1296,7 @@ function openQueued(epoch: number): Promise<void> {
     if (!started || dead) return;
     try {
       const t0 = performance.now();
-      for (const m of batch) if (m.rows && !marketPacks) [marketRows, marketDrives] = [m.rows, m.drives ?? null];
+      for (const m of batch) if (m.rows && !marketPacks) [marketRows, marketDrives, corridorFile] = [m.rows, m.drives ?? null, m.corridors ?? null];
       const packs = batch.flatMap((m) => m.packs), market = batch.flatMap((m) => m.intercity ?? []);
       const rejected: OpenRejected[] = [];
       const cityInfo = openPacks(packs, market, isBare, rejected);
@@ -1078,13 +1382,22 @@ onmessage = (e: MessageEvent<ToDemand>) => {
       try { closePacks(msg); } catch (err) { failed(err); }
     });
   } else if (msg.kind === "solve") {
+    // (T-4220: a side job's snapshot is held as it comes, though a newer job may supersede the side job)
+    if (msg.aside?.shown) holdSnap(msg.aside.gen, msg.aside.shown);
+    const job = msg.aside?.shown ? { ...msg, aside: { gen: msg.aside.gen, cities: msg.aside.cities } } : msg;
+    // (T-4297: a side job this supersedes before it began still answers, so the page is not left waiting for it)
+    if (pending?.aside) sendMessage({ kind: "asideDone", version: pending.version, gen: pending.aside.gen, plan: { fresh: [], clusters: [], periods: [], ms: null, planMs: 0 }, ms: 0, stale: true });
     // (a `freshParts` not yet taken up carries over to the solve that supersedes it)
-    pending = pending?.freshParts && !msg.freshParts ? { ...msg, freshParts: true } : msg;
+    pending = pending?.freshParts && !job.freshParts ? { ...job, freshParts: true } : job;
     wake?.();
     if (msg.only) startRough();
     else void opening.then(() => { if (started && !busy) run(); });
   } else if (msg.kind === "whole") {
     wholeGo = Math.max(wholeGo, msg.version);
+    if (msg.early) wholeEarly = Math.max(wholeEarly, msg.version);
+    wake?.();
+  } else if (msg.kind === "endLocal") {
+    endLocalGo = Math.max(endLocalGo, msg.version);
     wake?.();
   } else if (msg.kind === "go") {
     const group = msg.group ?? 0;
@@ -1117,6 +1430,14 @@ onmessage = (e: MessageEvent<ToDemand>) => {
   } else if (msg.kind === "loads") {
     inbox.set(`${msg.version}:${msg.cluster}:${msg.period}:${msg.round}${msg.from === undefined ? "" : `:${msg.from}`}`, msg.loads);
     wake?.();
+  } else if (msg.kind === "aside") {
+    // T-4220 stage 3: planned at once, between a solve's populations if one runs here (it reads none of its state)
+    let plan: AsideAnswer;
+    try {
+      if (msg.shown) holdSnap(msg.gen, msg.shown);
+      plan = planAside(msg).answer;
+    } catch (err) { failed(err); return; }
+    sendMessage({ kind: "asidePlan", version: msg.version, gen: msg.gen, plan });
   } else if (msg.kind === "zones") {
     zonesIn.set(msg.version, msg.zones);
     for (const v of zonesIn.keys()) if (v < msg.version) zonesIn.delete(v);
@@ -1341,8 +1662,11 @@ function query(msg: Query) {
       sendMessage({ kind: "subSums", id: msg.id, version: msg.version, mask: copy ? copy.mask : live ? a!.solved_mask() : 0, sums, everyday: extra }, [...(sums ? [sums.buffer] : []), ...(extra ? [extra.buffer] : [])]);
     } else if (msg.kind === "cellModes") {
       // reads the network's subzones and the sums it is given, not any period's state, so it holds
-      // for the version whatever round this worker is in
-      const modes = a && sameNet ? withNone(a.cell_modes_day(msg.sums, day), a.cell_unreach_day(msg.sums, day)) : null;
+      // for the version whatever round this worker is in (T-4265: or for an older version whose subzones these are: the
+      // figures on screen, from the sums the page kept, while a whole solve after an edit runs)
+      const span = a ? layoutSpan.get(a) : undefined;
+      const subs = sameNet || (!!span && span.from <= msg.version && msg.version <= span.to);
+      const modes = a && subs ? withNone(a.cell_modes_day(msg.sums, day), a.cell_unreach_day(msg.sums, day)) : null;
       sendMessage({ kind: "cellModes", id: msg.id, version: msg.version, modes: modes && modes.length ? modes : null }, modes ? [modes.buffer] : []);
     } else if (msg.kind === "station") {
       const packed = live ? stationRiders(at!, cl, a!, msg.station, day) : null;
@@ -1808,8 +2132,28 @@ const inOrder = <T>(xs: readonly T[]): readonly T[] => (reverseSums ? xs.slice()
 /** a sum as the kernel and the results take it: rounded to f32 once */
 const asF32 = (a: PartSum): Float32Array => (a instanceof Float32Array ? a : toF32(a));
 
-function purposeParts(q: number, nr: number, clusters: typeof jobClusters, regional: boolean, pick: (a: Population) => boolean = () => true) {
-  const days = clusters.flatMap((c) => c.pops.filter((p): p is EverydayApi => p instanceof EverydayApi));
+/** T-4220: per zone of clusters `cs`, its commutes (`a`) and everyday layer (`e`) among their populations: its own, or
+ * its stand-ins where it is frozen aside */
+function zonePops(cs: readonly JobCluster<Reader>[]): Map<CityId, { a?: Reader; e?: EverydayApi | ShownPop }> {
+  const out = new Map<CityId, { a?: Reader; e?: EverydayApi | ShownPop }>();
+  for (const c of cs) {
+    const has = new Set<Reader>(c.pops);
+    for (const id of c.cities) {
+      const a = cities.get(id), e = everyday.get(id);
+      out.set(id, { ...(a && has.has(a) ? { a } : {}), ...(e && has.has(e) ? { e } : {}) });
+    }
+    for (const p of c.pops) {
+      if (!(p instanceof ShownPop) || p.kind === "market") continue;
+      const id = p.key as CityId, z = out.get(id) ?? {};
+      if (p.kind === "commute") z.a = p; else z.e = p;
+      out.set(id, z);
+    }
+  }
+  return out;
+}
+
+function purposeParts(q: number, nr: number, clusters: readonly JobCluster<Reader>[], regional: boolean, pick: (a: Reader) => boolean = () => true) {
+  const days = clusters.flatMap((c) => c.pops.filter(isEveryday));
   // (T-3373 B: under the split, the purposes of the clusters' zones other workers hold too, so every part has the
   // blocks one worker holding them all would, and the market's outings go to them the same way)
   const elsewhere = clusters.flatMap((c) => c.cities.map((id) => planKinds.get(id) ?? 0));
@@ -1823,14 +2167,14 @@ function purposeParts(q: number, nr: number, clusters: typeof jobClusters, regio
   for (const c of inOrder(clusters)) {
     // T-756: each population's route nodes go through its own view
     let map = c.nodeGlobal, m = map.length;
-    const to = (p: Population) => { map = viewOf(c, p).nodeGlobal; m = map.length; };
+    const to = (p: Reader) => { map = viewOf(c, p).nodeGlobal; m = map.length; };
     const add = (out: PartSum, at: number, v: ArrayLike<number>, from = 0) => {
       if (v.length < from + m) return; // nothing solved for this population (no network)
       for (let r = 0; r < m; r++) out[at * nr + map[r]] += termOf(v[from + r]);
     };
-    for (const a of inOrder(c.pops)) if (a instanceof DemandApi && pick(a)) { to(a); add(seg, 0, a.seg(q)); add(board, 0, a.board(q)); add(alight, 0, a.alight(q)); }
+    for (const a of inOrder(c.pops)) if (kindOf(a) === "commute" && pick(a)) { to(a); add(seg, 0, a.seg(q)); add(board, 0, a.board(q)); add(alight, 0, a.alight(q)); }
     for (const e of inOrder(c.pops)) {
-      if (!(e instanceof EverydayApi) || !pick(e)) continue;
+      if (!isEveryday(e) || !pick(e)) continue;
       to(e);
       const v = e.part_loads(q), k1 = Math.min(kinds, e.purpose_count());
       if (v.length !== 3 * e.purpose_count() * m) continue;
@@ -1890,6 +2234,478 @@ function assignParts(regional: IntercityApi, split: Cluster[]) {
   }
 }
 
+/** T-4220: what a job's set-up, readers and local solve (`jobTools`) take of it */
+interface JobCtx {
+  version: number;
+  rounds: number;
+  n: DemandNetwork;
+  /** the network's route nodes (2 x its stops): the whole network's sums are this long */
+  nodes: number;
+  exactMarket?: boolean;
+  nearChunks?: boolean;
+  /** set_network's ms since a result last carried them */
+  setupMs: number;
+  /** periods solved, for `done` */
+  periodsSolved: number;
+}
+/** T-4220: what a solve's local stage books: the periods it keeps (`keptOf` as the populations stand once set up), and
+ * its T-2729 units' expected ms and whether they come before the zone in view's figures */
+interface LocalBooks {
+  keptOf: (c: JobCluster<Reader>) => number;
+  localExp: (c: JobCluster<Reader>, fresh: readonly Reader[], q: number) => number | null;
+  inView: (c: JobCluster<Reader>, stage: 0 | 1) => boolean;
+}
+/** `localSolve`'s options (its comment). With `books`, a solve's local stage, which counts its units (`work`) and marks
+ * the cluster set up (`ready`); with `keep` instead, a side job's (T-4220): the periods (bits) every population keeps
+ * as shown, nothing booked */
+type LocalOpts = {
+  ratioSig?: string;
+  shared?: (PartSum | undefined)[];
+  win?: { sub: IntercityApi; less: (q: number) => Float32Array | null };
+  stage?: 0 | 1;
+  done?: (q: number, last: boolean) => void;
+  periods?: readonly number[];
+} & ({ books: LocalBooks; keep?: undefined } | { books?: undefined; keep: number });
+
+/**
+ * T-4220 stage 4: a job's set-up of populations on its network, the readers of a cluster's figures and the local solve,
+ * made for each solve by `run` and for each side job by `sideJob`. They read the job only through `ctx`; the worker
+ * state they write is that of the populations they set up and solve.
+ */
+function jobTools(ctx: JobCtx) {
+  // (the job's own route nodes: a side job's network is not the solve in hand's)
+  const { n } = ctx, jobNodes = ctx.nodes;
+  // the cities' commutes, then their everyday layers, then the market, each in `solveOrder`'s order: the
+  // set-up order moves each worker's first solve in WASM by seconds (T-405, T-414), and this one was measured
+  const setUpOrder = (pops: Population[]) => [...pops.filter((p) => p instanceof DemandApi), ...pops.filter((p) => p instanceof EverydayApi), ...pops.filter((p) => !(p instanceof DemandApi) && !(p instanceof EverydayApi))];
+  const setUpPops = (c: JobCluster<Reader>, pops: Population[], beside?: { sub: IntercityApi; part: IntercityApi }) => {
+    for (const p of pops) {
+      const m = viewOf(c, p).net;
+      held.delete(p);
+      disturbed(p);
+      p.set_complexes(m.complex);
+      p.set_upgrades(m.ups ?? new Uint8Array(0));
+      // T-2926, before set_network. Unguarded so a population type without the setter fails the typecheck (T-3909, T-3919)
+      p.set_tram_lines(m.tram ?? new Uint8Array(0));
+      p.set_stairs(m.pierLines ?? new Uint8Array(0), m.streetStops ?? new Uint8Array(0)); // T-3888, before set_network
+      p.set_passages(m.passages ?? new Uint32Array(0));
+      p.set_apart(m.apart ?? new Uint32Array(0)); // T-4048
+      p.set_span(m.span ?? new Float32Array(0));
+      p.set_back_stops(m.back ?? new Uint32Array(0)); // T-3348, before set_network          // T-1277: riders weigh fares by their country's income and pay the curve times its scale;
+      // the market takes the curve as set, at `marketFareWeight` (T-2670, T-3239: its route
+      // search charges that), and (T-1286) each trip's at its origin's scale over its default's
+      let scale = 1, rounded: ReturnType<typeof roundedDefault> = null;
+      if (p instanceof IntercityApi) {
+        p.set_fare_weight(marketFareWeight(m.fare.scales));
+        // T-3766: with fares by city, a city with a multiple of its own weighs at its own
+        if (m.fare.byCity) { const fx = marketFareFactors(m.fare); p.set_fare_factors_by(JSON.stringify(fx.byCountry), JSON.stringify(fx.byZone)); }
+        else p.set_fare_factors(JSON.stringify(fareFactors(m.fare.scales)));
+        p.set_sampled(!ctx.exactMarket);
+        p.set_far_chunks(!ctx.nearChunks);
+        // T-377: the market takes stations as longitude and latitude, each zone in its own frame
+        const ll = new Float64Array(m.stXY.length);
+        for (let k = 0; k < ll.length; k += 2) [ll[k], ll[k + 1]] = worldToLonLat(m.stXY[k], m.stXY[k + 1]);
+        // T-1464: the bus corridors' stretches, as the stations
+        const cxy = m.catchXY ?? new Float32Array(0), cll = new Float64Array(cxy.length);
+        for (let k = 0; k < cll.length; k += 2) [cll[k], cll[k + 1]] = worldToLonLat(cxy[k], cxy[k + 1]);
+        p.set_bus_ll(m.catchN ?? new Uint32Array(0), cll);
+        ctx.setupMs += beside && p === beside.sub ? p.set_network_ll_beside(beside.part, ll, m.lineN, m.stops, m.times, m.tph, m.cars) : p.set_network_ll(ll, m.lineN, m.stops, m.times, m.tph, m.cars);
+      } else {
+        if (p instanceof DemandApi) p.set_chunked(!ctx.exactMarket);
+        const city = c.cities.find((id) => cities.get(id) === p || everyday.get(id) === p)!;
+        const country = cityById(city).country;
+        p.set_fare_weight(fareWeight(country));
+        // T-3766: its own city's multiple with fares by city (`faresIn`), else its country's
+        const here = faresIn(m.fare, city);
+        scale = fareScale(country, here.scales);
+        rounded = roundedDefault(here, country); // T-1662
+        popScales.set(p, countryFareScales(country, here));
+        const xy = m.stXY.slice();
+        for (let k = 0; k < xy.length; k += 2) {
+          const w = worldToCity(xy[k], xy[k + 1], city);
+          xy[k] = w.x; xy[k + 1] = w.y;
+        }
+        const cxy = m.catchXY ? m.catchXY.slice() : new Float32Array(0);
+        for (let k = 0; k < cxy.length; k += 2) {
+          const w = worldToCity(cxy[k], cxy[k + 1], city);
+          cxy[k] = w.x; cxy[k + 1] = w.y;
+        }
+        p.set_bus(m.catchN ?? new Uint32Array(0), cxy);
+        ctx.setupMs += p.set_network(xy, m.lineN, m.stops, m.times, m.tph, m.cars);
+        if (p instanceof DemandApi) layoutAt(p, ctx.version);
+        p.set_ferry(m.ferry ?? new Uint8Array(0)); // T-2196, T-3892: the outings' fans and the commute's
+      }
+      p.set_fares(rounded ? rounded.base : m.fare.base * scale, rounded ? rounded.perKm : m.fare.perKm * scale, m.hopKm);
+      p.set_fare_mul(m.fareW ?? new Float32Array(0));
+      p.set_base_mul(m.baseW ?? new Float32Array(0)); // T-3578
+      p.set_fare_curve(rounded ? curveKnots(rounded) : scaledKnots(m.fare, scale));
+      // T-3740: a city's at its country's multiple of the curve, as its extras are charged (`popScales`); the
+      // market's as set
+      const fz = demandZones(m.fare, m.fz, p instanceof IntercityApi ? 1 : popScales.get(p)?.rate ?? scale, { dist: m.fzDist, passOff: m.fzPassOff, pass: m.fzPass });
+      p.set_fare_zones(fz.st, fz.off, fz.usd, fz.dist, fz.passOff, fz.pass);
+      // T-1801: the market's trips change lines free (its fares weigh by income group)
+      if (!(p instanceof IntercityApi)) p.set_transfer_fare(Math.min(transferFare(m.fare) * scale, rounded ? rounded.base : m.fare.base * scale)); // T-3689: never above the base fare charged
+    }
+  };
+  // the clusters' loads, all their populations', per route node of the whole network
+  // (`pick`: only those populations, T-1607; `market`: the market's times this per route node, T-3748)
+  // `fare`: the values are a fare extra, in the population's own dollars (a city's: the curve at its country's
+  // multiple, `popScales`; the market's: the curve as set). T-3753: each route node's is charged at the multiple
+  // of the stop it leaves (`fare.at`, absent: all 1), the base's or the rate's (`fare.of`)
+  const sumAll = (cs: JobCluster<Reader>[], read: (a: Reader) => Float32Array, out: PartSum = newSum(jobNodes), at = 0, pick?: (a: Reader) => boolean, fare?: { at?: Float32Array; of: "base" | "rate" }, step?: number): PartSum => {
+    const scale = step ?? (fare ? FARE_SCALE : LOAD_SCALE);
+    for (const c of inOrder(cs)) {
+      for (const a of inOrder(c.pops)) {
+        if (pick && !pick(a)) continue;
+        const map = viewOf(c, a).nodeGlobal, v = read(a);
+        const own = fare && kindOf(a) !== "market" ? popScales.get(a)?.[fare.of] ?? 1 : 1, s = fare?.at;
+        if (s || own !== 1) {
+          // a stop in the population's own country adds its value as it is (f32 multiples, so compared as f32)
+          const o = Math.fround(own);
+          for (let k = 0; k < map.length; k++) { const x = s ? s[map[k]] : 1; out[at + map[k]] += termOf(x === o ? v[k] ?? 0 : (v[k] ?? 0) * x / own, scale); }
+        } else for (let k = 0; k < map.length; k++) out[at + map[k]] += termOf(v[k] ?? 0, scale);
+      }
+    }
+    return out;
+  };
+  // the cluster's loads on a population's own route nodes; at a pad, the riders aboard as
+  // its boardings (`PopView.pads`)
+  const ownOfIn = (c: JobCluster<Reader>, a: Reader, total: PartSum) => {
+    const N = jobNodes, { nodeGlobal: map, pads } = viewOf(c, a), nr = map.length, own = new Float32Array(3 * nr);
+    for (let k = 0; k < nr; k++) { const g = map[k]; own[k] = total[g]; own[nr + k] = total[N + g]; own[2 * nr + k] = total[2 * N + g]; }
+    for (const k of pads) { own[nr + k] = own[k]; own[2 * nr + k] = 0; }
+    return own;
+  };
+  // T-1255: per route node of the whole network, the riders coming to the platforms of clusters
+  // `cs` in period q: the free-flow pass's boardings, at least the rounds' (before the cap)
+  const comeRaw = (cs: JobCluster<Reader>[], q: number, pick?: (a: Reader) => boolean): [PartSum, PartSum] =>
+    [sumAll(cs, (a) => boardsOf(a).free[q] ?? a.board(q), undefined, 0, pick), sumAll(cs, (a) => boardsOf(a).rounds[q] ?? a.board(q), undefined, 0, pick)];
+  const comeOf = (cs: JobCluster<Reader>[], q: number, pick?: (a: Reader) => boolean): Float32Array => { const [f, r] = comeRaw(cs, q, pick); return comeMax(asF32(f), asF32(r)); };
+  // T-1530: the transfers in at each route node of the whole network, every kind of day: a
+  // population's weekday figures times the factor its `transfers_day` scales its pairs by
+  const xferDays = (cs: JobCluster<Reader>[], q: number, pick?: (a: Reader) => boolean): PartSum => {
+    const N = jobNodes, D = DEMAND_DAYS.length, out = newSum(D * N);
+    const table = dayTable ??= day_factors(), K = 2 + EVERYDAY_KEYS.length, P = PERIODS.length;
+    const f = (day: number, p: number) => (day === 0 ? 1 : table[(day * K + p) * P + q] ?? 1);
+    for (const c of inOrder(cs))
+      for (const a of inOrder(c.pops)) {
+        if (pick && !pick(a)) continue;
+        const v = a.transfers_in(q);
+        if (!v.length) continue;
+        const map = viewOf(c, a).nodeGlobal;
+        const kinds = isEveryday(a) ? a.kind_totals(q) : null, kind = kindOf(a);
+        for (let day = 0; day < D; day++) {
+          let k = 1;
+          if (kind === "commute") k = f(day, 0);
+          else if (kind === "market") k = f(day, K - 1);
+          else if (kinds && day !== 0) {
+            // the purposes' transfers are kept together: their rail riders' mean factor
+            let rail = 0, weighted = 0;
+            for (let i = 0; 3 * i + 1 < kinds.length; i++) { rail += kinds[3 * i + 1]; weighted += kinds[3 * i + 1] * f(day, 1 + i); }
+            k = rail > 0 ? weighted / rail : 0;
+          }
+          for (let j = 0, o = day * N; j < map.length; j++) out[o + map[j]] += termOf(v[j] * k);
+        }
+      }
+    return out;
+  };
+  // period q's figures over the clusters `cs` (all of them for a result), as the state stands.
+  // `part` (T-1543): this worker's part of the period's origins, its market left out of a period
+  // it does not hold (`noMarket`)
+  // (T-1607 `part.side`: one side of a shared period, its populations alone, with the boardings
+  // `arrive` is worked out from)
+  // (T-1733 `extra`: loads to add, three blocks as `step`'s totals: a shared period's market loads,
+  // which the other worker holds, all counted as longer trips)
+  // (T-1735 `delta`: loads to add by purpose, `marketBlocks`' blocks: a window's pairs' new loads
+  // less their old)
+  const figures =(q: number, round: number, ms: number, cs: JobCluster<Reader>[], part?: { at: [number, number]; noMarket: boolean; side?: Side }, extra?: PartSum, delta?: Float32Array[]) => {
+    const side = part?.side, pick = side ? (a: Reader) => onSide(side, a) : undefined;
+    // (T-4220: each zone's populations as the clusters hold them, its stand-ins' where it is frozen aside)
+    const zp = zonePops(cs);
+    // in the job's order (the registry's): the summary adds the cities up in it
+    const ids = side === "market" ? [] : [...zp].filter(([, z]) => z.a).map(([id]) => id).sort((x, y) => CITY_ORDER.get(x)! - CITY_ORDER.get(y)!);
+    // the market's figures are all its parts' as they stand, whichever clusters are asked for
+    // (T-4220: none where its part is a stand-in, which holds no corridors; its loads still go in by purpose)
+    const hasMarket = cs.some((c) => !!c.part);
+    const market = hasMarket && !part?.noMarket && !cs.some((c) => c.part instanceof ShownPop) ? marketFigures(jobClusters.flatMap((c) => c.part ? [c.part] : []), q) : null;
+    const seg = sumAll(cs, a => a.seg(q), undefined, 0, pick), board = sumAll(cs, a => a.board(q), undefined, 0, pick), alight = sumAll(cs, a => a.alight(q), undefined, 0, pick), loadOfCrush = sumAll(cs, a => a.load_of_crush(q), undefined, 0, pick, undefined, CRUSH_SCALE), fareX = sumAll(cs, a => a.fare_extra(q), undefined, 0, pick, { at: n.fareS, of: "rate" }), baseX = sumAll(cs, a => a.base_extra(q), undefined, 0, pick, { at: n.baseS, of: "base" }), xferIn = xferDays(cs, q, pick);
+    if (extra) for (let k = 0; k < jobNodes; k++) { seg[k] += extra[k]; board[k] += extra[jobNodes + k]; alight[k] += extra[2 * jobNodes + k]; }
+    // (less a window's old loads, which can pass a node's own)
+    if (delta?.[0]) { const d = delta[0]; for (let k = 0; k < jobNodes; k++) { seg[k] = Math.max(0, seg[k] + termOf(d[k])); board[k] = Math.max(0, board[k] + termOf(d[jobNodes + k])); alight[k] = Math.max(0, alight[k] + termOf(d[2 * jobNodes + k])); } }
+    const [free, rounds] = comeRaw(cs, q, pick);
+    const come: [Float32Array, Float32Array] | undefined = side ? [asF32(free.slice()), asF32(rounds.slice())] : undefined;
+    const board32 = asF32(board), rounds32 = asF32(rounds);
+    const arrive = arriveOf(comeMax(asF32(free.slice()), rounds32), rounds32, board32);
+    const citySummary = Object.fromEntries(ids.map((id) => [id, Array.from(zp.get(id)!.a!.summary(q))])) as Record<CityId, number[]>;
+    for (const id of ids) { const e = zp.get(id)!.e; if (e) addSummary(citySummary[id], e.summary(q)); }
+    const intercitySummary = market ? market.summary : [];
+    const summary = [round, 0, 0, 0, ms, 0, 0, 0, 0, 0];
+    for (const v of inOrder([...ids.map((id) => citySummary[id]), intercitySummary])) for (const k of [1, 2, 3, 5]) summary[k] += termOf(v[k] ?? 0);
+    // T-1300: rail trips per curve dollar dearer on every fare, local and the market's (each
+    // population's per perceived minute, summary slot 10, times its minutes a curve dollar), and
+    // how far the trips' sensitivity reaches as against their riders: the sensitivity-weighted
+    // mean km over the rider-weighted one (slots 11 and 12)
+    const perDollar = (id: CityId) => { const c = cityById(id).country; return fareWeight(c) * fareScale(c, faresIn(n.fare, id).scales); };
+    const reach = (d: number, dKm: number, rail: number, km: number) => (d < 0 && km > 0 && rail > 0 ? (dKm / d) / (km / rail) : 1);
+    const ls = inOrder(ids).reduce((a, id) => {
+      const v = citySummary[id], w = perDollar(id);
+      return [a[0] + termOf((v[10] ?? 0) * w), a[1] + termOf((v[11] ?? 0) * w), a[2] + termOf(v[2] ?? 0), a[3] + termOf(v[12] ?? 0)];
+    }, [0, 0, 0, 0]);
+    const im = intercitySummary;
+    const fareSense: [number, number, number, number] = [ls[0], (im[10] ?? 0) * marketFareWeight(n.fare.scales), reach(ls[0], ls[1], ls[2], ls[3]), reach(im[10] ?? 0, im[11] ?? 0, im[2] ?? 0, im[12] ?? 0)];
+    const parts = purposeParts(q, jobNodes, cs, hasMarket, pick);
+    if (extra && hasMarket) {
+      const at = (parts.keys.length - 1) * jobNodes;
+      for (let k = 0; k < jobNodes; k++) { parts.seg[at + k] += extra[k]; parts.board[at + k] += extra[jobNodes + k]; parts.alight[at + k] += extra[2 * jobNodes + k]; }
+    }
+    // (the commutes to work, each everyday purpose to its own, the rest to the longer trips, as `purposeParts`)
+    if (delta?.[0] && hasMarket) {
+      const N = jobNodes, [all, com, ...ev] = delta, last = parts.keys.length - 1, kinds = Math.min(ev.length, last - 1);
+      const into = [parts.seg, parts.board, parts.alight];
+      // (each part held at 0 or more, as the totals above: T-3600, a line switched off read -1,042 riders)
+      for (let b = 0; b < 3; b++) for (let k = 0; k < N; k++) {
+        const to = into[b];
+        let rest = termOf(all[b * N + k]);
+        if (com) { const x = termOf(com[b * N + k]); to[k] = Math.max(0, to[k] + x); rest -= x; }
+        for (let i = 0; i < kinds; i++) { const j = (1 + i) * N + k, x = termOf(ev[i][b * N + k]); to[j] = Math.max(0, to[j] + x); rest -= x; }
+        to[last * N + k] = Math.max(0, to[last * N + k] + rest);
+      }
+    }
+    // T-260: each city's trips, rail and walked trips by purpose, `parts.keys` order less the
+    // market, so the main thread can work out a weekend's mode split
+    const local = parts.keys.length - (hasMarket ? 1 : 0);
+    const cityParts = Object.fromEntries(ids.map((id) => {
+      const v = new Array(3 * local).fill(0), s = zp.get(id)!.a!.summary(q);
+      for (let k = 0; k < 3; k++) v[k] = s[1 + k] ?? 0;
+      const e = zp.get(id)!.e?.kind_totals(q);
+      if (e) for (let k = 0; k < Math.min(e.length, 3 * (local - 1)); k++) v[3 + k] = e[k];
+      return [id, v];
+    })) as Record<CityId, number[]>;
+    // T-3373 B stage 2: a part (added to the others' on the page) carries its sums unrounded as well
+    const exact: ExactParts | undefined = part && seg instanceof Float64Array ? {
+      seg, board: board as Float64Array, alight: alight as Float64Array, loadOfCrush: loadOfCrush as Float64Array, fareX: fareX as Float64Array, baseX: baseX as Float64Array, xferIn: xferIn as Float64Array,
+      ...(side ? { come: [free as Float64Array, rounds as Float64Array] as [Float64Array, Float64Array] } : {}),
+      parts: { seg: parts.seg as Float64Array, board: parts.board as Float64Array, alight: parts.alight as Float64Array, ...(parts.lean ? { lean: parts.lean as Float64Array } : {}) },
+    } : undefined;
+    const parts32 = { keys: parts.keys, seg: asF32(parts.seg), board: asF32(parts.board), alight: asF32(parts.alight), ...(parts.lean ? { lean: asF32(parts.lean) } : {}) };
+    const [seg32, alight32, crush32, fareX32, baseX32, xferIn32] = [seg, alight, loadOfCrush, fareX, baseX, xferIn].map(asF32);
+    const msg = { version: ctx.version, period: q, summary, fareSense, citySummary, cityParts, intercitySummary, intercityParts: market ? market.parts : [], corridorKey: market?.corridorKey, corridorBook: market?.corridorBook, corridorShares: market?.corridorShares, corridorRail: market?.corridorRail, elsewhere: market?.elsewhere, everydayPlaces: market?.everydayPlaces, seg: seg32, board: board32, alight: alight32, arrive, loadOfCrush: crush32, fareX: fareX32, baseX: baseX32, xferIn: xferIn32, parts: parts32, ms, setupMs: ctx.setupMs, memBytes: wasm_memory_bytes(), ...(part ? { part: part.at, fareRaw: ls as [number, number, number, number] } : {}), ...(come ? { come } : {}), ...(exact ? { exact } : {}) };
+    const ex = exact ? [exact.seg, exact.board, exact.alight, exact.loadOfCrush, exact.fareX, exact.baseX, exact.xferIn, ...(exact.come ?? []), exact.parts.seg, exact.parts.board, exact.parts.alight, ...(exact.parts.lean ? [exact.parts.lean] : [])].map((a) => a.buffer as ArrayBuffer) : [];
+    const big = [...(come ? come.map((a) => a.buffer) : []), market?.corridorRail?.buffer, market?.corridorBook?.totals.buffer, market?.corridorBook?.own.buffer, market?.corridorBook?.apart.buffer, ...ex].filter((b): b is ArrayBuffer => !!b);
+    return { msg, transfer: [seg32.buffer, board32.buffer, alight32.buffer, arrive.buffer, crush32.buffer, fareX32.buffer, baseX32.buffer, xferIn32.buffer, parts32.seg.buffer, parts32.board.buffer, parts32.alight.buffer, ...(parts32.lean ? [parts32.lean.buffer] : []), ...big] };
+  };
+  const sharedOf = (c: JobCluster<Reader>, q: number, shared?: (PartSum | undefined)[]) => (c.part && !(c.part.solved_mask() & (1 << q)) ? shared?.[q] : undefined);
+  // T-1735: population a's period-q loads added to `out` (three blocks per route node of the whole network)
+  const addOwn = (c: JobCluster<Reader>, a: Reader, q: number, out: PartSum) => {
+    const N = jobNodes, map = viewOf(c, a).nodeGlobal, s = a.seg(q), b = a.board(q), l = a.alight(q);
+    const t = out instanceof Float64Array ? termOf : (x: number) => x;
+    for (let k = 0; k < map.length; k++) { const g = map[k]; out[g] += t(s[k]); out[N + g] += t(b[k]); out[2 * N + g] += t(l[k]); }
+  };
+  // T-1609: the populations `fresh` of cluster c solved alone, each of this worker's periods
+  // through every round, crowding on the other populations' loads (T-1733: round by round as
+  // their last solve was priced, `trail`) plus their own, then held to the trains' room
+  // as `step` holds them. The others keep their figures: the result is theirs with the fresh
+  // populations' in place of the ones they replace. False if a newer network came.
+  // (T-1733: `ratioSig` the cluster the frozen populations last solved; `shared` a shared period's
+  // market loads, for a period the market part here does not hold)
+  // (T-1735 `win`: the market's pairs with an end in a window solved too, `sub` set on the
+  // network as the cluster's market and solved, in the periods `less` gives, in one pass at the
+  // crowding of the touched cities' last round; the result's market less `less(q)`, the window's
+  // pairs' old loads, plus `sub`'s)
+  // (`stage`: the T-2729 work stage its periods count in)
+  // (T-2624 `done`: called as each period solved ends, `last` for the last of them; `periods`: the periods'
+  // order, `mine` by default: periods share no rider, so the order changes no figure)
+  const localSolve = async (c: JobCluster<Reader>, fresh: Population[], o: LocalOpts): Promise<boolean | null> => {
+    const { ratioSig = c.sig, shared, win, stage = 1, done, periods = mine } = o;
+    const N = jobNodes, isFresh = (a: Reader): a is Population => (fresh as readonly Reader[]).includes(a), order = c.solveOrder.filter(isFresh);
+    const trails = new Map(order.map((p) => [p, trail.get(p)]));
+    setUpPops(c, setUpOrder(win ? [...order, win.sub] : order), win && c.part instanceof IntercityApi ? { sub: win.sub, part: c.part } : undefined);
+    const keep = o.books ? o.books.keptOf(c) : o.keep;
+    keepTrails(trails, keep);
+    for (const p of win ? [...fresh, win.sub] : fresh) {
+      const m = p.solved_mask(), h = p === win?.sub ? undefined : heldQ.get(p);
+      for (let q = 0; q < PERIODS.length; q++) if (m & (1 << q) && !(keep & (1 << q))) p.forget_period(q);
+      heldQ.set(p, PERIODS.map((_, q) => (keep & (1 << q) && h?.[q]) || ""));
+    }
+    c.reuse = 0;
+    if (o.books) ready.add(c);
+    const lastQ = periods.filter((q) => !(keep & (1 << q))).pop();
+    for (const q of periods) {
+      if (keep & (1 << q)) continue;
+      if (stage === 0 && wholeGo >= ctx.version) {
+        if (o.books) work?.dropLocal();
+        return null;
+      }
+      if (o.books) work?.begin(stage, o.books.localExp(c, fresh, q), o.books.inView(c, stage), q, fresh.length);
+      const sh = sharedOf(c, q, shared), shTrail = sh && c.part instanceof IntercityApi ? sharedTrail.get(c.part)?.[q] : undefined;
+      // the others' loads as each round was priced on (`trail`), when every one holds them;
+      // else as they ended, before the cap (`capRatio`)
+      const others = c.pops.filter((a) => !isFresh(a) && !(sh && a === c.part));
+      const trails = others.map((a) => trail.get(a)?.[q]);
+      const onTrail = trails.every((t, i) => {
+        const nr = viewOf(c, others[i]).nodeGlobal.length;
+        for (let r = 0; r <= ctx.rounds; r++) if (t?.[r]?.length !== 3 * nr) return false;
+        return true;
+      });
+      if (import.meta.env.DEV) console.info(`T3512 v${ctx.version} local period ${q}: ${onTrail ? "on the trail" : "no full trail, the ended loads"}`); // i18n-ignore
+      let ended: PartSum | null = null;
+      if (!onTrail) {
+        const frozen = newSum(3 * N), notFresh = (a: Reader) => !isFresh(a);
+        sumAll([c], (a) => a.seg(q), frozen, 0, notFresh); sumAll([c], (a) => a.board(q), frozen, N, notFresh); sumAll([c], (a) => a.alight(q), frozen, 2 * N, notFresh);
+        const r = capRatio.get(ratioSig)?.[q];
+        if (r) for (let i = 0; i < r.idx.length; i++) frozen[r.idx[i]] = exactSums ? stepOf(frozen[r.idx[i]] * r.v[i]) : frozen[r.idx[i]] * r.v[i];
+        ended = frozen;
+      }
+      const frozenAt = (round: number): PartSum => {
+        const out = ended ? ended.slice() : newSum(3 * N);
+        if (!ended) inOrder(others.map((a, i) => [a, i] as const)).forEach(([a, i]) => {
+          const v = trails[i]![round]!, map = viewOf(c, a).nodeGlobal, nr = map.length;
+          for (let b = 0; b < 3; b++) for (let k = 0; k < nr; k++) out[b * N + map[k]] += termOf(v[b * nr + k]);
+        });
+        const m = sh && (shTrail?.[round] ?? sh);
+        if (m) for (let k = 0; k < out.length; k++) out[k] += m[k];
+        return out;
+      };
+      const total = (round: number) => {
+        const t = frozenAt(round);
+        sumAll([c], (a) => a.seg(q), t, 0, isFresh); sumAll([c], (a) => a.board(q), t, N, isFresh); sumAll([c], (a) => a.alight(q), t, 2 * N, isFresh);
+        return t;
+      };
+      for (let round = 0; round <= ctx.rounds; round++) {
+        const t = round > 0 ? asF32(total(round - 1)) : null;
+        if (t) for (const a of fresh) keepTrail(a, q, round - 1);
+        for (const a of order) {
+          if (t === null) a.solve(q);
+          else if (!a.crowd_with_external(q, ownOfIn(c, a, t))) throw new Error("local crowding layout disagrees");
+          await yieldNow();
+          if (pending) return false;
+          // T-3512: `whole` came while this worker still solves locally (another worker went
+          // straight to the whole solve), so its local result can never be shown: stop here
+          if (stage === 0 && wholeGo >= ctx.version) {
+            if (o.books) work?.dropLocal();
+            return null;
+          }
+        }
+        if (t === null) for (const a of fresh) { const b = boardsOf(a); b.free[q] = a.board(q); b.rounds[q] = undefined; }
+      }
+      let final = ctx.rounds > 0 ? total(ctx.rounds) : null;
+      // T-1735: the window's pairs at the crowding the cities ended on (their old loads standing
+      // in for their own), then swapped for their old loads in the totals the cap takes
+      const less = win?.less(q) ?? null, sub = less ? win!.sub : null;
+      if (sub) {
+        const at = final ?? total(0);
+        if (!sub.solve_crowded(q, ownOfIn(c, sub, at))) throw new Error("window crowding layout disagrees");
+        await yieldNow();
+        if (pending) return false;
+        const b = boardsOf(sub);
+        b.free[q] = b.rounds[q] = sub.board(q);
+        if (final) {
+          for (let k = 0; k < final.length; k++) final[k] -= termOf(less![k]);
+          addOwn(c, sub, q, final);
+          // (the window's old loads, from one pass at the last crowding, can pass a node's frozen ones)
+          for (let k = 0; k < final.length; k++) if (final[k] < 0) final[k] = 0;
+        }
+      }
+      if (final) {
+        for (const a of fresh) { boardsOf(a).rounds[q] = a.board(q); keepTrail(a, q, ctx.rounds); }
+        const come = comeOf([c], q);
+        for (const a of sub ? [...order, sub] : order) {
+          const own = ownOfIn(c, a, final), { nodeGlobal: map, pads } = viewOf(c, a), nr = map.length, four = new Float32Array(4 * nr);
+          four.set(own);
+          for (let k = 0; k < nr; k++) four[3 * nr + k] = Math.max(come[map[k]], own[nr + k]);
+          for (const k of pads) four[3 * nr + k] = own[nr + k];
+          if (!a.cap_with_external(q, four)) throw new Error("local capacity layout disagrees");
+        }
+      }
+      release_skims();
+      ctx.periodsSolved++;
+      if (o.books) work?.end();
+      done?.(q, q === lastQ);
+    }
+    return true;
+  };
+  return { setUpOrder, setUpPops, sumAll, ownOfIn, comeRaw, comeOf, xferDays, figures, sharedOf, addOwn, localSolve };
+}
+
+/** T-4220 stage 4: the zones a side job solves here (`sideJob`) */
+let asideCities = new Set<CityId>();
+/** a zone the job in hand solves: a close of it, or an open at another level, waits for the job to end */
+const inHand = (id: CityId) => busy && (jobCities.has(id) || asideCities.has(id));
+
+/** T-4220 stage 4: the T-1735 window a market stand-in's period q was shown with (`ShownPop.delta`), each block carried
+ * from the network it was solved on to `ids`' route nodes (3 x `nodes`), as `figures` adds one; none without */
+function windowOn(p: ShownPop | null, q: number, ids: NetIds, nodes: number, maps: Map<SnapIds, Int32Array>): Float32Array[] | undefined {
+  const d = p?.delta(q);
+  if (!d) return undefined;
+  let map = maps.get(d.ids);
+  if (!map) maps.set(d.ids, (map = nodeMap(d.ids, ids)));
+  const m = map, N0 = m.length;
+  return d.blocks.map((b) => {
+    const out = new Float32Array(3 * nodes);
+    for (let k = 0; k < N0; k++) if (m[k] >= 0) for (let i = 0; i < 3; i++) out[i * nodes + m[k]] = b[i * N0 + k];
+    return out;
+  });
+}
+
+type SolveJob = Extract<ToDemand, { kind: "solve" }>;
+/**
+ * T-4220 stage 4 (notes/T-4220.md, "The pick" 4): a side job. The network's clusters as `planAside` makes them against the
+ * figures on screen; in each with a fresh zone, this worker's populations of those zones (open at the level the
+ * snapshot's solve held them) set on the network and solved in the periods to solve, crowded round by round on the
+ * stand-ins' trails (`localSolve`), each period's figures sent as it ends, then those of each period every population
+ * keeps as shown, from the stand-ins alone: all as `result`s with `cluster.aside`, any market window shown with them
+ * added. Then the fresh zones' bubble sums where every period was solved (elsewhere they stay as shown), and `asideDone`.
+ * It reads nothing of this worker's own solves, and leaves its populations of the fresh zones holding nothing a later job
+ * keeps.
+ */
+async function sideJob(job: SolveJob & { aside: NonNullable<SolveJob["aside"]> }): Promise<void> {
+  const t0 = performance.now(), { version, rounds, net: n, aside } = job;
+  const end = (plan: AsideAnswer, more: { stale?: true; sums?: CityId[] } = {}) => sendMessage({ kind: "asideDone", version, gen: aside.gen, plan, ms: performance.now() - t0, ...more });
+  if (!job.ids) throw new Error("a side job needs the network's ids"); // i18n-ignore
+  const { answer, clusters } = planAside({ kind: "aside", version, net: n, ids: job.ids, rounds, cities: aside.cities, gen: aside.gen, ...(job.fresh ? { fresh: true } : {}) });
+  if (answer.refused) return end(answer);
+  const level = new Map(answer.fresh.map((z) => [z.id, z.level])), real = new Map<ShownPop, Population>();
+  for (const a of clusters) for (const s of a.fresh) {
+    const p = s.kind === "commute" ? cities.get(s.key) : everyday.get(s.key);
+    if (!p || cities.get(s.key)?.level() !== level.get(s.key)) return end({ ...answer, refused: "open", why: `${s.kind} ${s.key} not open here at level ${level.get(s.key)}` }); // i18n-ignore
+    real.set(s, p);
+  }
+  const ctx: JobCtx = { version, rounds, n, nodes: 2 * n.stops.length, exactMarket: job.exactMarket, nearChunks: job.nearChunks, setupMs: 0, periodsSolved: 0 };
+  const { figures, localSolve } = jobTools(ctx);
+  const ids: NetIds = { lines: job.ids.lines, stations: job.ids.stations, lineN: n.lineN, stops: n.stops, tph: n.tph, times: n.times };
+  const maps = new Map<SnapIds, Int32Array>(), sums: CityId[] = [];
+  asideCities = new Set(level.keys());
+  try {
+    for (const a of clusters) {
+      // (each fresh stand-in swapped in place for this worker's population: the figures add up in `pops`' order)
+      const swap = (p: ShownPop): Reader => real.get(p) ?? p;
+      const mixed: JobCluster<Reader> = { ...a.c, pops: a.c.pops.map(swap), solveOrder: a.c.solveOrder.map(swap), views: new Map([...a.c.views].map(([p, v]) => [swap(p), v])) };
+      const part = a.c.part instanceof ShownPop ? a.c.part : null;
+      const send = (q: number, c: JobCluster<Reader>) => {
+        const { msg, transfer } = figures(q, rounds, 0, [c], undefined, undefined, windowOn(part, q, ids, ctx.nodes, maps));
+        sendMessage({ kind: "result", ...msg, cluster: { cities: a.zones, market: false, lines: a.c.lines.slice(), local: true, aside: true } }, transfer);
+      };
+      const fresh = a.fresh.map((s) => real.get(s)!);
+      if (a.solve.length && !(await localSolve(mixed, fresh, { keep: a.keep, periods: a.solve, done: (q) => send(q, mixed) }))) return end(answer, { stale: true });
+      for (const q of EVERY_PERIOD) if (a.keep & (1 << q)) send(q, a.c);
+      // (`sub_sums` covers the periods a population holds solved: with some kept, they are the snapshot's, not here)
+      if (a.keep) continue;
+      for (const id of a.zones) {
+        for (const day of sumsDays(id)) {
+          const k = sumsNow(id, cities.get(id)!, day), copy = k.sums.slice(), extra = k.everyday?.slice() ?? null;
+          sendMessage({ kind: "sums", version, round: rounds, city: id, mask: k.mask, sums: copy, everyday: extra, ...(day ? { day } : {}), aside: true }, [copy.buffer, ...(extra ? [extra.buffer] : [])]);
+        }
+        sums.push(id);
+      }
+    }
+  } finally {
+    asideCities = new Set();
+    // (solved against stand-ins: never a period a later set-up keeps, nor a cluster a question reads)
+    for (const p of real.values()) { held.delete(p); heldQ.delete(p); disturbed(p); }
+  }
+  end(answer, { sums });
+}
+
 async function run() {
   busy = true;
   try {
@@ -1902,6 +2718,13 @@ async function run() {
       wasm_heap_peak(true);
       let job = pending;
       pending = null;
+      // T-4220 stage 4: a side job solves none of this worker's own clusters (`sideJob`); none of what follows is its
+      const side = job.aside;
+      if (side) {
+        if (job.freshParts) freshCarry = true;
+        await sideJob({ ...job, aside: side });
+        continue;
+      }
       // T-3373 B stage 3: under the split every solve is whole (no kept period or cluster, no local stage, no parts)
       if (job.split) job = { ...job, barrier: true, fresh: true, part: undefined };
       const sp = job.split ?? null;
@@ -1912,7 +2735,8 @@ async function run() {
       const n = job.net;
       remapKept(job.ids ? { lines: job.ids.lines, stations: job.ids.stations, lineN: n.lineN, stops: n.stops, tph: n.tph, times: n.times } : null);
       setWorldFrame(n.frame);
-      let setupMs = 0;
+      // (T-4220: what this job's set-up, readers and local solve take of it, `jobTools`)
+      const ctx: JobCtx = { version: job.version, rounds: job.rounds, n, nodes: 2 * n.stops.length, exactMarket: job.exactMarket, nearChunks: job.nearChunks, setupMs: 0, periodsSolved: 0 };
       // the cities open now: a pack opened during this job waits for the next one (T-149)
       // in the registry's order, not the order the packs happened to open in: the figures are added
       // up in it, so the same network gives the same figures to the bit however the packs arrived
@@ -2027,7 +2851,9 @@ async function run() {
       }
       // (sharing, every market cluster is solved, since both sides of a period must step it; and
       // not sharing, every one last solved sharing, whose shared periods are held apart)
-      const dirty = sp ? jobClusters.slice() : jobClusters.filter((c) => (!!c.part && (sharing || sharedParts.has(c.part))) || c.pops.some((p) => held.get(p) !== c.sig));
+      // (T-2188: the idle refresh's, every cluster holding a period from a local solve)
+      const localHeld = (c: JobCluster) => c.pops.some((p) => units.some((q) => heldQ.get(p)?.[q]?.endsWith(LOCAL)));
+      const dirty = sp ? jobClusters.slice() : jobClusters.filter((c) => (!!c.part && (sharing || sharedParts.has(c.part))) || c.pops.some((p) => held.get(p) !== c.sig) || (!!job.refresh && localHeld(c)));
       // which of a cluster's populations this worker solves period q of
       // T-3373 B: under the split, the workers holding each cluster's populations (its zones' and the market's)
       const byCity = sp ? new Map(sp.cities.map((c) => [c.id, c.by])) : null;
@@ -2074,9 +2900,10 @@ async function run() {
       const firsts = job.barrier && job.focused ? [...(job.next ?? []), ...own] : [...own, ...(job.next ?? [])];
       const rank = (c: JobCluster) => { const k = firsts.findIndex((id) => c.cities.includes(id)); return k < 0 ? firsts.length : k; };
       if (firsts.length) dirty.sort((a, b) => rank(a) - rank(b));
-      // T-3512: this worker's periods every population of c holds from c's last whole solve on these
-      // inputs (setUp's test): a local solve keeps them as they are, so the whole solve after it keeps them too
-      const keptOf = (c: JobCluster) => (job.fresh ? 0 : mine.reduce((m, q) => (c.pops.every((p) => p.solved_mask() & (1 << q) && heldQ.get(p)?.[q] === c.psig[q]) ? m | (1 << q) : m), 0));
+      // T-3512: this worker's periods every population of c holds from c's last solve on these inputs: a local solve
+      // keeps them as they are, and the whole solve after it keeps those held from a whole solve (setUp's test; T-2188:
+      // one held from a local solve, `LOCAL`, it solves)
+      const keptOf = (c: JobCluster<Reader>) => (job.fresh ? 0 : keptIn(c, mine));
       // T-3512: the share of c's changed periods' passes that `fresh` took in c's last whole solve here (-1: not known)
       const freshShare = (c: JobCluster, fresh: Population[]) => {
         const kept = keptOf(c);
@@ -2127,8 +2954,13 @@ async function run() {
       // last solved (the cities on the same inputs, `sameView`) first solves only the cities the edit
       // touched against those frozen loads; that result is sent, then the cluster is solved whole
       // as usual. `market`: the part's route nodes on this network; `sig`: the cluster it last solved
-      const editOf = new Map<JobCluster, { fresh: Population[]; market: Uint32Array | null; sig: string | undefined }>();
-      if (!job.barrier && !job.fresh &&!only && mine.length) {
+      // (T-1735 `ed`, `reach`, `window`: the stations changed since the market part's last whole solve, the window's
+      // reach, and whether the local solve opens one; T-2188 `intercity`: `RUN_SHIFT_MIN`; `whole`: T-3512's share)
+      const editOf = new Map<JobCluster, { fresh: Population[]; market: Uint32Array | null; sig: string | undefined; ed: ReturnType<typeof editedStations> | null; reach: number; window: boolean; intercity: boolean; fares: boolean; whole: boolean }>();
+      // (T-2188: this network's fare settings, made once)
+      let fareNow: FareOf | undefined;
+      const holdNet = (p: Population) => { const net = lastNet as NetIds | null; if (net) { marketNet.set(p, net); marketFare.set(p, fareNow ??= fareOf(n, net)); } };
+      if (!job.barrier && !job.fresh && !job.refresh && !only && mine.length) {
         const all = maskOf(mine);
         for (const c of dirty) {
           if (localOf.has(c)) continue;
@@ -2141,15 +2973,35 @@ async function run() {
           const intact = (p: Population) => cityOn.has(p) && (p.solved_mask() & all) === all && sameView(cityOn.get(p)!, viewOf(c, p));
           const fresh = c.pops.filter((p) => !(p instanceof IntercityApi) && !intact(p));
           // (something must stay frozen: the market part, or a city; on all of Japan the cities are a fifth of a solve)
-          if (!fresh.length || (!c.part && fresh.length === c.pops.length)) continue;
+          // (T-2188: none touched past `sameView`'s tolerance, as more trains on a line at its most trains an hour: kept
+          // here only for a city edit, below, which then ends with nothing solved)
+          if ((!fresh.length && c.pops.every((p) => held.get(p) === c.sig)) || (!c.part && fresh.length === c.pops.length)) continue;
           const share = freshShare(c, fresh), shareMax = job.localShare?.[job.part?.[0] ?? 0] ?? LOCAL_SHARE_MAX;
-          if (import.meta.env.DEV) console.info(`T3512 v${job.version} periods ${mine.join(",")} kept ${keptOf(c).toString(2)}: ${fresh.length} of ${c.pops.length} populations touched, ${Math.round(100 * share)}% of the cluster's passes${share >= shareMax ? ", solved whole at once" : ""}`); // i18n-ignore
-          if (share >= shareMax) continue;
           const kept = c.part ?? c.pops.find((p) => !fresh.includes(p))!;
-          editOf.set(c, { fresh, market, sig: held.get(kept) });
+          // T-4237: against the network what stays frozen last solved on: the market part's, else a kept city's
+          const base = lastNet ? marketNet.get(kept) : undefined;
+          const ed = base ? editedStations(base, lastNet!, nodeMap(base, lastNet!)) : null;
+          const reach = ed && ed.minutes >= WINDOW_EDIT_MIN ? ed.minutes : 0;
+          const fares = !marketFare.has(kept) || faresMoved(marketFare.get(kept)!, fareNow ??= fareOf(n, lastNet!));
+          const intercity = fares || (!!ed && (ed.switched || ed.stopMinutes >= WINDOW_EDIT_MIN || ed.shift >= RUN_SHIFT_MIN));
+          // (T-2188: a city edit's local result is its final, so it keeps its local solve however much of the cluster
+          // it touches; an intercity edit's whole solve follows, so it goes there at once as T-3512 has it, below)
+          if (import.meta.env.DEV) console.info(`T3512 v${job.version} periods ${mine.join(",")} kept ${keptOf(c).toString(2)}: ${fresh.length} of ${c.pops.length} populations touched, ${Math.round(100 * share)}% of the cluster's passes${share >= shareMax ? ", solved whole at once unless a city edit" : ""}`); // i18n-ignore
+          editOf.set(c, { fresh, market, sig: held.get(kept), ed, reach, window: !!ed && (reach > 0 || ed.switched), intercity, fares, whole: share >= shareMax });
         }
       }
+      // T-2188: a city edit (no edited cluster here an intercity one) may end at its local result, the market left
+      // frozen (no window: the result ends as the populations hold it): the page's `endLocal` once every solving
+      // worker says so (`plan.final`), its clusters then holding it, with no whole solve; an intercity edit, or one
+      // whose cluster was last solved with its market set apart (T-1607, which its whole solve joins back), goes on to
+      // the whole solve as before
+      const ends = editOf.size > 0 && [...editOf].every(([c, e]) => !e.intercity && !(c.part && sharedParts.has(c.part)));
+      if (!ends) for (const [c, e] of editOf) if (!e.fresh.length || e.whole) editOf.delete(c);
+      // i18n-ignore
+      if (import.meta.env.DEV && editOf.size) console.info(`T2188 v${job.version} ${ends ? "a city edit" : "an intercity edit"}: ${[...editOf].map(([c, e]) => `fares ${e.fares}, switched ${!!e.ed?.switched}, stops ${Math.round(e.ed?.stopMinutes ?? 0)} min, shift ${(e.ed?.shift ?? 0).toFixed(2)} min${c.part && sharedParts.has(c.part) ? ", market set apart" : ""}`).join("; ")}`);
       const early = job.barrier ? [] : dirty;
+      // T-2188: each edited cluster's periods the local solve kept (`keptOf` as it started)
+      const localKeep = new Map<JobCluster, number>();
       // (T-2045: not in a solve of `only` zones, whose clusters are all the zone in view's)
       const ahead = job.barrier && !job.whole && !only && dirty.length > 1 && rank(dirty[0]) < firsts.length;
       // T-2045: the lines a solve of `only` zones gives figures, so the page puts in only those
@@ -2160,76 +3012,8 @@ async function run() {
       for (const c of early) groupOf.set(c, 0);
       groups.forEach((cs, g) => { for (const c of cs) groupOf.set(c, g); });
       stageGroup = 0;
-      let periodsKept = 0, periodsSolved = 0;
-      // the cities' commutes, then their everyday layers, then the market, each in `solveOrder`'s order: the
-      // set-up order moves each worker's first solve in WASM by seconds (T-405, T-414), and this one was measured
-      const setUpOrder = (pops: Population[]) => [...pops.filter((p) => p instanceof DemandApi), ...pops.filter((p) => p instanceof EverydayApi), ...pops.filter((p) => !(p instanceof DemandApi) && !(p instanceof EverydayApi))];
-      const setUpPops = (c: JobCluster, pops: Population[], beside?: { sub: IntercityApi; part: IntercityApi }) => {
-        for (const p of pops) {
-          const m = viewOf(c, p).net;
-          held.delete(p);
-          disturbed(p);
-          p.set_complexes(m.complex);
-          p.set_upgrades(m.ups ?? new Uint8Array(0));
-          // T-2926, before set_network. Unguarded so a population type without the setter fails the typecheck (T-3909, T-3919)
-          p.set_tram_lines(m.tram ?? new Uint8Array(0));
-          p.set_stairs(m.pierLines ?? new Uint8Array(0), m.streetStops ?? new Uint8Array(0)); // T-3888, before set_network
-          p.set_passages(m.passages ?? new Uint32Array(0));
-          p.set_span(m.span ?? new Float32Array(0));
-          p.set_back_stops(m.back ?? new Uint32Array(0)); // T-3348, before set_network          // T-1277: riders weigh fares by their country's income and pay the curve times its scale;
-          // the market takes the curve as set, at `marketFareWeight` (T-2670, T-3239: its route
-          // search charges that), and (T-1286) each trip's at its origin's scale over its default's
-          let scale = 1, rounded: ReturnType<typeof roundedDefault> = null;
-          if (p instanceof IntercityApi) {
-            p.set_fare_weight(marketFareWeight(m.fare.scales));
-            // T-3766: with fares by city, a city with a multiple of its own weighs at its own
-            if (m.fare.byCity) { const fx = marketFareFactors(m.fare); p.set_fare_factors_by(JSON.stringify(fx.byCountry), JSON.stringify(fx.byZone)); }
-            else p.set_fare_factors(JSON.stringify(fareFactors(m.fare.scales)));
-            p.set_sampled(!job.exactMarket);
-            p.set_far_chunks(!job.nearChunks);
-            // T-377: the market takes stations as longitude and latitude, each zone in its own frame
-            const ll = new Float64Array(m.stXY.length);
-            for (let k = 0; k < ll.length; k += 2) [ll[k], ll[k + 1]] = worldToLonLat(m.stXY[k], m.stXY[k + 1]);
-            // T-1464: the bus corridors' stretches, as the stations
-            const cxy = m.catchXY ?? new Float32Array(0), cll = new Float64Array(cxy.length);
-            for (let k = 0; k < cll.length; k += 2) [cll[k], cll[k + 1]] = worldToLonLat(cxy[k], cxy[k + 1]);
-            p.set_bus_ll(m.catchN ?? new Uint32Array(0), cll);
-            setupMs += beside && p === beside.sub ? p.set_network_ll_beside(beside.part, ll, m.lineN, m.stops, m.times, m.tph, m.cars) : p.set_network_ll(ll, m.lineN, m.stops, m.times, m.tph, m.cars);
-          } else {
-            if (p instanceof DemandApi) p.set_chunked(!job.exactMarket);
-            const city = c.cities.find((id) => cities.get(id) === p || everyday.get(id) === p)!;
-            const country = cityById(city).country;
-            p.set_fare_weight(fareWeight(country));
-            // T-3766: its own city's multiple with fares by city (`faresIn`), else its country's
-            const here = faresIn(m.fare, city);
-            scale = fareScale(country, here.scales);
-            rounded = roundedDefault(here, country); // T-1662
-            popScales.set(p, countryFareScales(country, here));
-            const xy = m.stXY.slice();
-            for (let k = 0; k < xy.length; k += 2) {
-              const w = worldToCity(xy[k], xy[k + 1], city);
-              xy[k] = w.x; xy[k + 1] = w.y;
-            }
-            const cxy = m.catchXY ? m.catchXY.slice() : new Float32Array(0);
-            for (let k = 0; k < cxy.length; k += 2) {
-              const w = worldToCity(cxy[k], cxy[k + 1], city);
-              cxy[k] = w.x; cxy[k + 1] = w.y;
-            }
-            p.set_bus(m.catchN ?? new Uint32Array(0), cxy);
-            setupMs += p.set_network(xy, m.lineN, m.stops, m.times, m.tph, m.cars);            p.set_ferry(m.ferry ?? new Uint8Array(0)); // T-2196, T-3892: the outings' fans and the commute's
-          }
-          p.set_fares(rounded ? rounded.base : m.fare.base * scale, rounded ? rounded.perKm : m.fare.perKm * scale, m.hopKm);
-          p.set_fare_mul(m.fareW ?? new Float32Array(0));
-          p.set_base_mul(m.baseW ?? new Float32Array(0)); // T-3578
-          p.set_fare_curve(rounded ? curveKnots(rounded) : scaledKnots(m.fare, scale));
-          // T-3740: a city's at its country's multiple of the curve, as its extras are charged (`popScales`); the
-          // market's as set
-          const fz = demandZones(m.fare, m.fz, p instanceof IntercityApi ? 1 : popScales.get(p)?.rate ?? scale, { dist: m.fzDist, passOff: m.fzPassOff, pass: m.fzPass });
-          p.set_fare_zones(fz.st, fz.off, fz.usd, fz.dist, fz.passOff, fz.pass);
-          // T-1801: the market's trips change lines free (its fares weigh by income group)
-          if (!(p instanceof IntercityApi)) p.set_transfer_fare(Math.min(transferFare(m.fare) * scale, rounded ? rounded.base : m.fare.base * scale)); // T-3689: never above the base fare charged
-        }
-      };
+      let periodsKept = 0;
+      const { setUpOrder, setUpPops, sumAll, ownOfIn, comeRaw, comeOf, figures, sharedOf, addOwn, localSolve } = jobTools(ctx);
       const setUp = (c: JobCluster) => {
         const trails = new Map(c.solveOrder.map((p) => [p, trail.get(p)]));
         setUpPops(c, setUpOrder(c.solveOrder));
@@ -2259,16 +3043,22 @@ async function run() {
         // T-3512: a kept period's trail holds as it did, for the next edit's local solve
         keepTrails(trails, reuse);
         ready.add(c);
-        for (const q of units) if (reuse & (1 << q)) periodsKept++; else periodsSolved++;
+        for (const q of units) if (reuse & (1 << q)) periodsKept++; else ctx.periodsSolved++;
       };
+      // T-4220: the cluster a population's figures on screen were solved in, one object per cluster
+      const shownOf = new Map<JobCluster, ShownIn>();
+      const inOf = (c: JobCluster) => { let s = shownOf.get(c); if (!s) shownOf.set(c, (s = { zones: c.cities, marketKey: c.marketKey })); return s; };
       const solved =(c: JobCluster) => {
+        const shown = inOf(c);
         for (const p of c.pops) {
+          shownIntact.set(p, shown);
           held.set(p, c.sig);
           const h = heldQ.get(p)!;
           for (const q of units) h[q] = c.psig[q];
           heldOn.set(p, { sig: c.sig, psig: c.psig, shape: c.shape, net: c.net });
-          if (p instanceof IntercityApi) { marketOn.set(p, viewOf(c, p).nodeGlobal); const net = lastNet as NetIds | null; if (net) marketNet.set(p, net); }
+          if (p instanceof IntercityApi) marketOn.set(p, viewOf(c, p).nodeGlobal);
           else cityOn.set(p, viewOf(c, p));
+          holdNet(p);
         }
         if (sharing && c.part) sharedParts.add(c.part);
       };
@@ -2277,7 +3067,7 @@ async function run() {
       for (const v of versions.keys()) if (versions.size > KEEP_VERSIONS && v !== job.version) versions.delete(v);
       const citiesOf = (c: JobCluster, f: Population[]) => c.cities.filter((id) => f.includes(cities.get(id)!) || (everyday.has(id) && f.includes(everyday.get(id)!)));
       const freshCities = (c: JobCluster) => citiesOf(c, localOf.get(c)!);
-      sendMessage({ kind: "plan", version: job.version, solving: dirty.map((c) => (localOf.has(c) ? freshCities(c) : c.cities)), kept: jobClusters.filter((c) => !dirty.includes(c)).flatMap((c) => c.cities), ...(ahead ? { ahead: dirty[0].cities } : {}), local: editOf.size });
+      sendMessage({ kind: "plan", version: job.version, solving: dirty.map((c) => (localOf.has(c) ? freshCities(c) : c.cities)), kept: jobClusters.filter((c) => !dirty.includes(c)).flatMap((c) => c.cities), ...(ahead ? { ahead: dirty[0].cities } : {}), local: editOf.size, ...(ends ? { final: true } : {}) });
       // T-2729: an edit's solve's units, as the loops below make them; a cluster's kept periods come
       // off as it is set up
       // T-3876: a barrier solve (a load's) is timed too: its units are a cluster's round of a period, and
@@ -2285,14 +3075,14 @@ async function run() {
       work = new Work(job.version);
       // T-3599: each unit's expected ms, worked out as planned (the whole solve's passes replace the
       // priors as it goes): a local solve's period, or a round of a period of a cluster solved whole
-      const exps = new Map<JobCluster, Map<string, number | null>>();
-      const expOf = (c: JobCluster, key: string, f: () => number | null) => {
+      const exps = new Map<JobCluster<Reader>, Map<string, number | null>>();
+      const expOf = (c: JobCluster<Reader>, key: string, f: () => number | null) => {
         let m = exps.get(c);
         if (!m) exps.set(c, (m = new Map()));
         if (!m.has(key)) m.set(key, f());
         return m.get(key)!;
       };
-      const localExp = (c: JobCluster, fresh: Population[], q: number) => expOf(c, `l${q}`, () => passPrior(fresh, q, "all", job.rounds));
+      const localExp = (c: JobCluster<Reader>, fresh: readonly Reader[], q: number) => expOf(c, `l${q}`, () => passPrior(fresh, q, "all", job.rounds));
       // (the zone in view's cluster solved whole shows its free flow first, its round 0 split between the
       // workers by origins, `splitRound`, the market alone solved in this worker's own periods: those
       // periods' round 0 then leave the market out)
@@ -2316,22 +3106,27 @@ async function run() {
       const firstAt = job.first ? early.findIndex((c) => c.cities.includes(job.first!)) : -1;
       const firstEdit = firstAt >= 0 ? editOf.get(early[firstAt]) : undefined;
       const viewLocal = !!firstEdit && citiesOf(early[firstAt], firstEdit.fresh).includes(job.first!);
-      const inView = (c: JobCluster, stage: 0 | 1) => firstAt >= 0 && (stage === 0 ? !viewLocal || early.indexOf(c) <= firstAt : !viewLocal && early.indexOf(c) <= firstAt);
+      const inView = (c: JobCluster<Reader>, stage: 0 | 1) => firstAt >= 0 && (stage === 0 ? !viewLocal || early.findIndex((x) => x === c) <= firstAt : !viewLocal && early.findIndex((x) => x === c) <= firstAt);
+      // (T-4220: what the local solve books of this solve, which a side job's keeps none of)
+      const books: LocalBooks = { keptOf, localExp, inView };
       const groupView = (g: number) => !ahead || g === 0;
+      const planWhole = (c: JobCluster) => { for (const q of mine) for (let r = 0; r <= job.rounds; r++) work!.plan(1, 1, roundExp(c, q, r), inView(c, 1), q, roundSize(c, r)); };
       // (a load's rounds on the real North America save took 50, 46, 46 and 43 s: a flat decay, not the edits' 0.75)
-      const sizeB = (c: JobCluster, r: number) => c.pops.length * 0.9 ** r;
+      // (T-4343: a later round took 0.4 of the first on New York, 0.26 on all-China and 0.8 on Japan, flat across the rounds: the page sends this browser's last ratio)
+      const later = job.later ?? 0.5;
+      const sizeB = (c: JobCluster, r: number) => c.pops.length * (r === 0 ? 1 : later);
       if (work && job.barrier) {
-        groups.forEach((late, g) => { for (const c of late) for (const q of units) for (let r = 0; r <= job.rounds; r++) work!.plan(1, 1, roundExp(c, q, r), groupView(g), q, sizeB(c, r)); });
+        groups.forEach((late, g) => { for (const c of late) for (const q of units) for (let r = 0; r <= job.rounds; r++) work!.plan(1, 1, roundExp(c, q, r), groupView(g), q, sizeB(c, r), r > 0); });
         work.send(false);
       }
       if (work && !job.barrier) {
         for (const c of early) {
           const e = editOf.get(c), fresh = localOf.get(c), v0 = inView(c, 0), v1 = inView(c, 1);
-          if (e) { const k = keptOf(c); for (const q of mine) if (!(k & (1 << q))) work.plan(0, 1, localExp(c, e.fresh, q), v0, -1, e.fresh.length); }
+          if (e?.fresh.length) { const k = keptOf(c); for (const q of mine) if (!(k & (1 << q))) work.plan(0, 1, localExp(c, e.fresh, q), v0, -1, e.fresh.length); }
           if (fresh) { const k = keptOf(c); if (fresh.length) for (const q of mine) if (!(k & (1 << q))) work.plan(1, 1, localExp(c, fresh, q), v1, q, fresh.length); }
-          else {
+          else if (!(e && ends)) {
             if (previews(c)) work.plan(1, 1, splitExp(c), v1, -1, splitSize(c));
-            for (const q of mine) for (let r = 0; r <= job.rounds; r++) work.plan(1, 1, roundExp(c, q, r), v1, q, roundSize(c, r));
+            planWhole(c);
           }
         }
         work.send(false);
@@ -2341,36 +3136,21 @@ async function run() {
       roundsHeld.fill(-1);
       // T-1609: in a solve where every cluster solved is a local refine, a zone it does not solve
       // keeps the last solve's bubbles' sums (working out all of China's took 5-6 s)
-      const keptSums = new Map<CityId, { mask: number; sums: Float32Array; everyday: Float32Array | null }>();
-      if (localOf.size && localOf.size === dirty.length) {
-        const fresh = new Set([...localOf.keys()].flatMap(freshCities));
-        for (const [id] of jobLocal) { const k = sumsByRound.get(`${id}:${job.rounds}`); if (k && !fresh.has(id)) keptSums.set(id, k); }
+      const keptSums = new Map<CityId, Map<number, Sums>>();
+      // (T-2188: so does an edit's that ends at its local result, its touched zones solved)
+      if (dirty.length && dirty.every((c) => localOf.has(c) || (ends && editOf.has(c)))) {
+        const fresh = new Set([...[...localOf.keys()].flatMap(freshCities), ...(ends ? [...editOf].flatMap(([c, e]) => citiesOf(c, e.fresh)) : [])]);
+        for (const [id] of jobLocal) {
+          if (fresh.has(id)) continue;
+          const k = new Map<number, Sums>();
+          for (const day of new Set([0, viewDay])) { const s = sumsByRound.get(day === 0 ? `${id}:${job.rounds}` : `${id}:${job.rounds}:${day}`); if (s) k.set(day, s); }
+          if (k.size) keptSums.set(id, k);
+        }
       }
       sumsByRound.clear();
       stageRound = -1;
       answerWaiting(); // an older version's get nulls; this one's wait on
       let stale = false;
-      // the clusters' loads, all their populations', per route node of the whole network
-      // (`pick`: only those populations, T-1607; `market`: the market's times this per route node, T-3748)
-      // `fare`: the values are a fare extra, in the population's own dollars (a city's: the curve at its country's
-      // multiple, `popScales`; the market's: the curve as set). T-3753: each route node's is charged at the multiple
-      // of the stop it leaves (`fare.at`, absent: all 1), the base's or the rate's (`fare.of`)
-      const sumAll = (cs: JobCluster[], read: (a: Population) => Float32Array, out: PartSum = newSum(jobNodes), at = 0, pick?: (a: Population) => boolean, fare?: { at?: Float32Array; of: "base" | "rate" }, step?: number): PartSum => {
-        const scale = step ?? (fare ? FARE_SCALE : LOAD_SCALE);
-        for (const c of inOrder(cs)) {
-          for (const a of inOrder(c.pops)) {
-            if (pick && !pick(a)) continue;
-            const map = viewOf(c, a).nodeGlobal, v = read(a);
-            const own = fare && !(a instanceof IntercityApi) ? popScales.get(a)?.[fare.of] ?? 1 : 1, s = fare?.at;
-            if (s || own !== 1) {
-              // a stop in the population's own country adds its value as it is (f32 multiples, so compared as f32)
-              const o = Math.fround(own);
-              for (let k = 0; k < map.length; k++) { const x = s ? s[map[k]] : 1; out[at + map[k]] += termOf(x === o ? v[k] ?? 0 : (v[k] ?? 0) * x / own, scale); }
-            } else for (let k = 0; k < map.length; k++) out[at + map[k]] += termOf(v[k] ?? 0, scale);
-          }
-        }
-        return out;
-      };
       // T-1607: a shared period's sums as one worker adds them: the cities' (every population
       // before the market), then the market's, which is one population, so the bits are the same
       // (under `exactSums` both are whole steps, added in either order)
@@ -2387,14 +3167,6 @@ async function run() {
         for (let k = 0; k < t.length; k++) t[k] += m[k];
         return asF32(t);
       };
-      // the cluster's loads on a population's own route nodes; at a pad, the riders aboard as
-      // its boardings (`PopView.pads`)
-      const ownOfIn = (c: JobCluster, a: Population, total: PartSum) => {
-        const N = jobNodes, { nodeGlobal: map, pads } = viewOf(c, a), nr = map.length, own = new Float32Array(3 * nr);
-        for (let k = 0; k < nr; k++) { const g = map[k]; own[k] = total[g]; own[nr + k] = total[N + g]; own[2 * nr + k] = total[2 * N + g]; }
-        for (const k of pads) { own[nr + k] = own[k]; own[2 * nr + k] = 0; }
-        return own;
-      };
       // One round of period q for the cluster. Periods are independent. Every population of a
       // cluster advances from one frozen load vector of the whole cluster, never from whichever
       // population happened to run first. False if a newer network came meanwhile.
@@ -2403,7 +3175,7 @@ async function run() {
         // the waits for full trains (T-188) the round is solved with
         const N = jobNodes;
         // T-1607: the populations this worker solves of a shared period, and the other side's loads
-        const side = sideOf(c, q) ?? "all", here = (a: Population) => onSide(side, a);
+        const side = sideOf(c, q) ?? "all", here = (a: Reader) => onSide(side, a);
         const ownLoads = (): PartSum => {
           const t = newSum(3 * N);
           sumAll([c], a => a.seg(q), t, 0, here); sumAll([c], a => a.board(q), t, N, here); sumAll([c], a => a.alight(q), t, 2 * N, here);
@@ -2487,121 +3259,6 @@ async function run() {
         return true;
       };
       let estimated = false;
-      // T-1255: per route node of the whole network, the riders coming to the platforms of clusters
-      // `cs` in period q: the free-flow pass's boardings, at least the rounds' (before the cap)
-      const comeRaw = (cs: JobCluster[], q: number, pick?: (a: Population) => boolean): [PartSum, PartSum] =>
-        [sumAll(cs, (a) => boardsOf(a).free[q] ?? a.board(q), undefined, 0, pick), sumAll(cs, (a) => boardsOf(a).rounds[q] ?? a.board(q), undefined, 0, pick)];
-      const comeOf = (cs: JobCluster[], q: number, pick?: (a: Population) => boolean): Float32Array => { const [f, r] = comeRaw(cs, q, pick); return comeMax(asF32(f), asF32(r)); };
-      // T-1530: the transfers in at each route node of the whole network, every kind of day: a
-      // population's weekday figures times the factor its `transfers_day` scales its pairs by
-      const xferDays = (cs: JobCluster[], q: number, pick?: (a: Population) => boolean): PartSum => {
-        const N = jobNodes, D = DEMAND_DAYS.length, out = newSum(D * N);
-        const table = dayTable ??= day_factors(), K = 2 + EVERYDAY_KEYS.length, P = PERIODS.length;
-        const f = (day: number, p: number) => (day === 0 ? 1 : table[(day * K + p) * P + q] ?? 1);
-        for (const c of inOrder(cs))
-          for (const a of inOrder(c.pops)) {
-            if (pick && !pick(a)) continue;
-            const v = a.transfers_in(q);
-            if (!v.length) continue;
-            const map = viewOf(c, a).nodeGlobal;
-            const kinds = a instanceof EverydayApi ? a.kind_totals(q) : null;
-            for (let day = 0; day < D; day++) {
-              let k = 1;
-              if (a instanceof DemandApi) k = f(day, 0);
-              else if (a instanceof IntercityApi) k = f(day, K - 1);
-              else if (kinds && day !== 0) {
-                // the purposes' transfers are kept together: their rail riders' mean factor
-                let rail = 0, weighted = 0;
-                for (let i = 0; 3 * i + 1 < kinds.length; i++) { rail += kinds[3 * i + 1]; weighted += kinds[3 * i + 1] * f(day, 1 + i); }
-                k = rail > 0 ? weighted / rail : 0;
-              }
-              for (let j = 0, o = day * N; j < map.length; j++) out[o + map[j]] += termOf(v[j] * k);
-            }
-          }
-        return out;
-      };
-      // period q's figures over the clusters `cs` (all of them for a result), as the state stands.
-      // `part` (T-1543): this worker's part of the period's origins, its market left out of a period
-      // it does not hold (`noMarket`)
-      // (T-1607 `part.side`: one side of a shared period, its populations alone, with the boardings
-      // `arrive` is worked out from)
-      // (T-1733 `extra`: loads to add, three blocks as `step`'s totals: a shared period's market loads,
-      // which the other worker holds, all counted as longer trips)
-      // (T-1735 `delta`: loads to add by purpose, `marketBlocks`' blocks: a window's pairs' new loads
-      // less their old)
-      const figures =(q: number, round: number, ms: number, cs: JobCluster[], part?: { at: [number, number]; noMarket: boolean; side?: Side }, extra?: PartSum, delta?: Float32Array[]) => {
-        const side = part?.side, pick = side ? (a: Population) => onSide(side, a) : undefined;
-        // in the job's order: the summary adds the cities up in it
-        const ids = side === "market" ? [] : jobLocal.map(([id]) => id).filter((id) => cs.some((c) => c.cities.includes(id)));
-        // the market's figures are all its parts' as they stand, whichever clusters are asked for
-        const hasMarket = !!regional && cs.some((c) => c.market);
-        const market = hasMarket && !part?.noMarket ? marketFigures(jobClusters.flatMap((c) => c.part ? [c.part] : []), q) : null;
-        const seg = sumAll(cs, a => a.seg(q), undefined, 0, pick), board = sumAll(cs, a => a.board(q), undefined, 0, pick), alight = sumAll(cs, a => a.alight(q), undefined, 0, pick), loadOfCrush = sumAll(cs, a => a.load_of_crush(q), undefined, 0, pick, undefined, CRUSH_SCALE), fareX = sumAll(cs, a => a.fare_extra(q), undefined, 0, pick, { at: n.fareS, of: "rate" }), baseX = sumAll(cs, a => a.base_extra(q), undefined, 0, pick, { at: n.baseS, of: "base" }), xferIn = xferDays(cs, q, pick);
-        if (extra) for (let k = 0; k < jobNodes; k++) { seg[k] += extra[k]; board[k] += extra[jobNodes + k]; alight[k] += extra[2 * jobNodes + k]; }
-        // (less a window's old loads, which can pass a node's own)
-        if (delta?.[0]) { const d = delta[0]; for (let k = 0; k < jobNodes; k++) { seg[k] = Math.max(0, seg[k] + termOf(d[k])); board[k] = Math.max(0, board[k] + termOf(d[jobNodes + k])); alight[k] = Math.max(0, alight[k] + termOf(d[2 * jobNodes + k])); } }
-        const [free, rounds] = comeRaw(cs, q, pick);
-        const come: [Float32Array, Float32Array] | undefined = side ? [asF32(free.slice()), asF32(rounds.slice())] : undefined;
-        const board32 = asF32(board), rounds32 = asF32(rounds);
-        const arrive = arriveOf(comeMax(asF32(free.slice()), rounds32), rounds32, board32);
-        const citySummary = Object.fromEntries(ids.map((id) => [id, Array.from(cities.get(id)!.summary(q))])) as Record<CityId, number[]>;
-        for (const [id, a] of jobEveryday) if (citySummary[id]) addSummary(citySummary[id], a.summary(q));
-        const intercitySummary = market ? market.summary : [];
-        const summary = [round, 0, 0, 0, ms, 0, 0, 0, 0, 0];
-        for (const v of inOrder([...ids.map((id) => citySummary[id]), intercitySummary])) for (const k of [1, 2, 3, 5]) summary[k] += termOf(v[k] ?? 0);
-        // T-1300: rail trips per curve dollar dearer on every fare, local and the market's (each
-        // population's per perceived minute, summary slot 10, times its minutes a curve dollar), and
-        // how far the trips' sensitivity reaches as against their riders: the sensitivity-weighted
-        // mean km over the rider-weighted one (slots 11 and 12)
-        const perDollar = (id: CityId) => { const c = cityById(id).country; return fareWeight(c) * fareScale(c, faresIn(n.fare, id).scales); };
-        const reach = (d: number, dKm: number, rail: number, km: number) => (d < 0 && km > 0 && rail > 0 ? (dKm / d) / (km / rail) : 1);
-        const ls = inOrder(ids).reduce((a, id) => {
-          const v = citySummary[id], w = perDollar(id);
-          return [a[0] + termOf((v[10] ?? 0) * w), a[1] + termOf((v[11] ?? 0) * w), a[2] + termOf(v[2] ?? 0), a[3] + termOf(v[12] ?? 0)];
-        }, [0, 0, 0, 0]);
-        const im = intercitySummary;
-        const fareSense: [number, number, number, number] = [ls[0], (im[10] ?? 0) * marketFareWeight(n.fare.scales), reach(ls[0], ls[1], ls[2], ls[3]), reach(im[10] ?? 0, im[11] ?? 0, im[2] ?? 0, im[12] ?? 0)];
-        const parts = purposeParts(q, jobNodes, cs, hasMarket, pick);
-        if (extra && hasMarket) {
-          const at = (parts.keys.length - 1) * jobNodes;
-          for (let k = 0; k < jobNodes; k++) { parts.seg[at + k] += extra[k]; parts.board[at + k] += extra[jobNodes + k]; parts.alight[at + k] += extra[2 * jobNodes + k]; }
-        }
-        // (the commutes to work, each everyday purpose to its own, the rest to the longer trips, as `purposeParts`)
-        if (delta?.[0] && hasMarket) {
-          const N = jobNodes, [all, com, ...ev] = delta, last = parts.keys.length - 1, kinds = Math.min(ev.length, last - 1);
-          const into = [parts.seg, parts.board, parts.alight];
-          // (each part held at 0 or more, as the totals above: T-3600, a line switched off read -1,042 riders)
-          for (let b = 0; b < 3; b++) for (let k = 0; k < N; k++) {
-            const to = into[b];
-            let rest = termOf(all[b * N + k]);
-            if (com) { const x = termOf(com[b * N + k]); to[k] = Math.max(0, to[k] + x); rest -= x; }
-            for (let i = 0; i < kinds; i++) { const j = (1 + i) * N + k, x = termOf(ev[i][b * N + k]); to[j] = Math.max(0, to[j] + x); rest -= x; }
-            to[last * N + k] = Math.max(0, to[last * N + k] + rest);
-          }
-        }
-        // T-260: each city's trips, rail and walked trips by purpose, `parts.keys` order less the
-        // market, so the main thread can work out a weekend's mode split
-        const local = parts.keys.length - (hasMarket ? 1 : 0);
-        const cityParts = Object.fromEntries(ids.map((id) => {
-          const v = new Array(3 * local).fill(0), s = cities.get(id)!.summary(q);
-          for (let k = 0; k < 3; k++) v[k] = s[1 + k] ?? 0;
-          const e = everyday.get(id)?.kind_totals(q);
-          if (e) for (let k = 0; k < Math.min(e.length, 3 * (local - 1)); k++) v[3 + k] = e[k];
-          return [id, v];
-        })) as Record<CityId, number[]>;
-        // T-3373 B stage 2: a part (added to the others' on the page) carries its sums unrounded as well
-        const exact: ExactParts | undefined = part && seg instanceof Float64Array ? {
-          seg, board: board as Float64Array, alight: alight as Float64Array, loadOfCrush: loadOfCrush as Float64Array, fareX: fareX as Float64Array, baseX: baseX as Float64Array, xferIn: xferIn as Float64Array,
-          ...(side ? { come: [free as Float64Array, rounds as Float64Array] as [Float64Array, Float64Array] } : {}),
-          parts: { seg: parts.seg as Float64Array, board: parts.board as Float64Array, alight: parts.alight as Float64Array, ...(parts.lean ? { lean: parts.lean as Float64Array } : {}) },
-        } : undefined;
-        const parts32 = { keys: parts.keys, seg: asF32(parts.seg), board: asF32(parts.board), alight: asF32(parts.alight), ...(parts.lean ? { lean: asF32(parts.lean) } : {}) };
-        const [seg32, alight32, crush32, fareX32, baseX32, xferIn32] = [seg, alight, loadOfCrush, fareX, baseX, xferIn].map(asF32);
-        const msg = { version: job.version, period: q, summary, fareSense, citySummary, cityParts, intercitySummary, intercityParts: market ? market.parts : [], corridorKey: market?.corridorKey, corridorBook: market?.corridorBook, corridorShares: market?.corridorShares, corridorRail: market?.corridorRail, elsewhere: market?.elsewhere, everydayPlaces: market?.everydayPlaces, seg: seg32, board: board32, alight: alight32, arrive, loadOfCrush: crush32, fareX: fareX32, baseX: baseX32, xferIn: xferIn32, parts: parts32, ms, setupMs, memBytes: wasm_memory_bytes(), ...(part ? { part: part.at, fareRaw: ls as [number, number, number, number] } : {}), ...(come ? { come } : {}), ...(exact ? { exact } : {}) };
-        const ex = exact ? [exact.seg, exact.board, exact.alight, exact.loadOfCrush, exact.fareX, exact.baseX, exact.xferIn, ...(exact.come ?? []), exact.parts.seg, exact.parts.board, exact.parts.alight, ...(exact.parts.lean ? [exact.parts.lean] : [])].map((a) => a.buffer as ArrayBuffer) : [];
-        const big = [...(come ? come.map((a) => a.buffer) : []), market?.corridorRail?.buffer, market?.corridorBook?.totals.buffer, market?.corridorBook?.own.buffer, market?.corridorBook?.apart.buffer, ...ex].filter((b): b is ArrayBuffer => !!b);
-        return { msg, transfer: [seg32.buffer, board32.buffer, alight32.buffer, arrive.buffer, crush32.buffer, fareX32.buffer, baseX32.buffer, xferIn32.buffer, parts32.seg.buffer, parts32.board.buffer, parts32.alight.buffer, ...(parts32.lean ? [parts32.lean.buffer] : []), ...big] };
-      };
       // T-1543: a free-flow round shown before it is solved (a rough solve's, the zone in view's
       // preview after an edit) is one period solved in parts of its origins, a part in each solving
       // worker, every period estimated from it and the parts added up on the page. Each worker
@@ -2660,18 +3317,6 @@ async function run() {
         drop();
         return true;
       };
-      // T-1609: the populations `fresh` of cluster c solved alone, each of this worker's periods
-      // through every round, crowding on the other populations' loads (T-1733: round by round as
-      // their last solve was priced, `trail`) plus their own, then held to the trains' room
-      // as `step` holds them. The others keep their figures: the result is theirs with the fresh
-      // populations' in place of the ones they replace. False if a newer network came.
-      const sharedOf = (c: JobCluster, q: number, shared?: (PartSum | undefined)[]) => (c.part && !(c.part.solved_mask() & (1 << q)) ? shared?.[q] : undefined);
-      // T-1735: population a's period-q loads added to `out` (three blocks per route node of the whole network)
-      const addOwn = (c: JobCluster, a: Population, q: number, out: PartSum) => {
-        const N = jobNodes, map = viewOf(c, a).nodeGlobal, s = a.seg(q), b = a.board(q), l = a.alight(q);
-        const t = out instanceof Float64Array ? termOf : (x: number) => x;
-        for (let k = 0; k < map.length; k++) { const g = map[k]; out[g] += t(s[k]); out[N + g] += t(b[k]); out[2 * N + g] += t(l[k]); }
-      };
       // T-1735: blocks of three per route node `map` gives (NONE: dropped) onto the whole network's
       const toWhole = (v: ArrayLike<number>, map: Uint32Array): Float32Array[] => {
         const N = jobNodes, m = map.length, out: Float32Array[] = [];
@@ -2691,138 +3336,26 @@ async function run() {
         addOwn(c, a, q, all);
         return [all, toWhole(a.commute_loads(q), map)[0] ?? new Float32Array(3 * jobNodes), ...toWhole(a.everyday_loads(q), map)];
       };
-      // (T-1733: `ratioSig` the cluster the frozen populations last solved; `shared` a shared period's
-      // market loads, for a period the market part here does not hold)
-      // (T-1735 `win`: the market's pairs with an end in a window solved too, `sub` set on the
-      // network as the cluster's market and solved, in the periods `less` gives, in one pass at the
-      // crowding of the touched cities' last round; the result's market less `less(q)`, the window's
-      // pairs' old loads, plus `sub`'s)
-      // (`stage`: the T-2729 work stage its periods count in)
-      // (T-2624 `done`: called as each period solved ends, `last` for the last of them; `periods`: the periods'
-      // order, `mine` by default: periods share no rider, so the order changes no figure)
-      const localSolve = async (c: JobCluster, fresh: Population[], ratioSig = c.sig, shared?: (PartSum | undefined)[], win?: { sub: IntercityApi; less: (q: number) => Float32Array | null }, stage: 0 | 1 = 1, done?: (q: number, last: boolean) => void, periods = mine): Promise<boolean | null> => {
-        const N = jobNodes, isFresh = (a: Population) => fresh.includes(a), order = c.solveOrder.filter(isFresh);
-        const trails = new Map(order.map((p) => [p, trail.get(p)]));
-        setUpPops(c, setUpOrder(win ? [...order, win.sub] : order), win && c.part ? { sub: win.sub, part: c.part } : undefined);
-        const keep = keptOf(c);
-        keepTrails(trails, keep);
-        for (const p of win ? [...fresh, win.sub] : fresh) {
-          const m = p.solved_mask(), h = p === win?.sub ? undefined : heldQ.get(p);
-          for (let q = 0; q < PERIODS.length; q++) if (m & (1 << q) && !(keep & (1 << q))) p.forget_period(q);
-          heldQ.set(p, PERIODS.map((_, q) => (keep & (1 << q) && h?.[q]) || ""));
-        }
-        c.reuse = 0;
-        ready.add(c);
-        const lastQ = periods.filter((q) => !(keep & (1 << q))).pop();
-        for (const q of periods) {
-          if (keep & (1 << q)) continue;
-          if (stage === 0 && wholeGo >= job.version) {
-            work?.dropLocal();
-            return null;
-          }
-          work?.begin(stage, localExp(c, fresh, q), inView(c, stage), q, fresh.length);
-          const sh = sharedOf(c, q, shared), shTrail = sh && c.part ? sharedTrail.get(c.part)?.[q] : undefined;
-          // the others' loads as each round was priced on (`trail`), when every one holds them;
-          // else as they ended, before the cap (`capRatio`)
-          const others = c.pops.filter((a) => !isFresh(a) && !(sh && a === c.part));
-          const trails = others.map((a) => trail.get(a)?.[q]);
-          const onTrail = trails.every((t, i) => {
-            const nr = viewOf(c, others[i]).nodeGlobal.length;
-            for (let r = 0; r <= job.rounds; r++) if (t?.[r]?.length !== 3 * nr) return false;
-            return true;
-          });
-          if (import.meta.env.DEV) console.info(`T3512 v${job.version} local period ${q}: ${onTrail ? "on the trail" : "no full trail, the ended loads"}`); // i18n-ignore
-          let ended: PartSum | null = null;
-          if (!onTrail) {
-            const frozen = newSum(3 * N), notFresh = (a: Population) => !isFresh(a);
-            sumAll([c], (a) => a.seg(q), frozen, 0, notFresh); sumAll([c], (a) => a.board(q), frozen, N, notFresh); sumAll([c], (a) => a.alight(q), frozen, 2 * N, notFresh);
-            const r = capRatio.get(ratioSig)?.[q];
-            if (r) for (let i = 0; i < r.idx.length; i++) frozen[r.idx[i]] = exactSums ? stepOf(frozen[r.idx[i]] * r.v[i]) : frozen[r.idx[i]] * r.v[i];
-            ended = frozen;
-          }
-          const frozenAt = (round: number): PartSum => {
-            const out = ended ? ended.slice() : newSum(3 * N);
-            if (!ended) inOrder(others.map((a, i) => [a, i] as const)).forEach(([a, i]) => {
-              const v = trails[i]![round]!, map = viewOf(c, a).nodeGlobal, nr = map.length;
-              for (let b = 0; b < 3; b++) for (let k = 0; k < nr; k++) out[b * N + map[k]] += termOf(v[b * nr + k]);
-            });
-            const m = sh && (shTrail?.[round] ?? sh);
-            if (m) for (let k = 0; k < out.length; k++) out[k] += m[k];
-            return out;
-          };
-          const total = (round: number) => {
-            const t = frozenAt(round);
-            sumAll([c], (a) => a.seg(q), t, 0, isFresh); sumAll([c], (a) => a.board(q), t, N, isFresh); sumAll([c], (a) => a.alight(q), t, 2 * N, isFresh);
-            return t;
-          };
-          for (let round = 0; round <= job.rounds; round++) {
-            const t = round > 0 ? asF32(total(round - 1)) : null;
-            if (t) for (const a of fresh) keepTrail(a, q, round - 1);
-            for (const a of order) {
-              if (t === null) a.solve(q);
-              else if (!a.crowd_with_external(q, ownOfIn(c, a, t))) throw new Error("local crowding layout disagrees");
-              await yieldNow();
-              if (pending) return false;
-              // T-3512: `whole` came while this worker still solves locally (another worker went
-              // straight to the whole solve), so its local result can never be shown: stop here
-              if (stage === 0 && wholeGo >= job.version) {
-                work?.dropLocal();
-                return null;
-              }
-            }
-            if (t === null) for (const a of fresh) { const b = boardsOf(a); b.free[q] = a.board(q); b.rounds[q] = undefined; }
-          }
-          let final = job.rounds > 0 ? total(job.rounds) : null;
-          // T-1735: the window's pairs at the crowding the cities ended on (their old loads standing
-          // in for their own), then swapped for their old loads in the totals the cap takes
-          const less = win?.less(q) ?? null, sub = less ? win!.sub : null;
-          if (sub) {
-            const at = final ?? total(0);
-            if (!sub.solve_crowded(q, ownOfIn(c, sub, at))) throw new Error("window crowding layout disagrees");
-            await yieldNow();
-            if (pending) return false;
-            const b = boardsOf(sub);
-            b.free[q] = b.rounds[q] = sub.board(q);
-            if (final) {
-              for (let k = 0; k < final.length; k++) final[k] -= termOf(less![k]);
-              addOwn(c, sub, q, final);
-              // (the window's old loads, from one pass at the last crowding, can pass a node's frozen ones)
-              for (let k = 0; k < final.length; k++) if (final[k] < 0) final[k] = 0;
-            }
-          }
-          if (final) {
-            for (const a of fresh) { boardsOf(a).rounds[q] = a.board(q); keepTrail(a, q, job.rounds); }
-            const come = comeOf([c], q);
-            for (const a of sub ? [...order, sub] : order) {
-              const own = ownOfIn(c, a, final), { nodeGlobal: map, pads } = viewOf(c, a), nr = map.length, four = new Float32Array(4 * nr);
-              four.set(own);
-              for (let k = 0; k < nr; k++) four[3 * nr + k] = Math.max(come[map[k]], own[nr + k]);
-              for (const k of pads) four[3 * nr + k] = own[nr + k];
-              if (!a.cap_with_external(q, four)) throw new Error("local capacity layout disagrees");
-            }
-          }
-          release_skims();
-          periodsSolved++;
-          work?.end();
-          done?.(q, q === lastQ);
-        }
-        return true;
-      };
+      // (T-4220 stage 8: each local stage's touched populations as they held the figures on screen, below)
+      const befores: { fresh: Population[]; part: JobCluster["part"]; win: ReturnType<typeof windowShown.get>; snap: ReturnType<typeof snapPops>; ms: number }[] = [];
       // T-1733: every edited cluster's touched cities first, the zone in view's cluster first
       // (`early`'s order), each sent as a local cluster result; the market part read through its
       // route nodes on this network (`marketOn`) meanwhile
       for (const c of early) {
         const e = editOf.get(c);
         if (!e) continue;
+        if (!e.fresh.length) { localKeep.set(c, keptOf(c)); continue; }
         const t0 = performance.now(), whole = c.part ? viewOf(c, c.part) : null, shared = c.part ? sharedMkt.get(c.part) : undefined;
+        // T-4220 stage 8: with several solving workers this local result may never be shown (`whole` sent as the plans came
+        // in, `wholeEarly`), and the set-up below puts the touched populations on this network: what they hold of the
+        // figures on screen is copied first. With one solving worker it is always shown
+        if (job.snap && mine.length < PERIODS.length) befores.push({ fresh: e.fresh, part: c.part, win: c.part ? windowShown.get(c.part) : undefined, snap: snapPops([{ ...c, pops: e.fresh }]), ms: performance.now() - t0 });
         if (c.part && e.market) c.views.set(c.part, { ...whole!, nodeGlobal: e.market, pads: new Uint32Array(0) });
         // T-1735: the market's pairs with an end in a zone a station changed since the market's last
         // whole solve serves, solved with the touched cities on the window's stations alone; the
         // frozen market less those pairs' old loads (`less`)
-        const part = c.part, base = part && e.market && lastNet ? marketNet.get(part) : undefined;
-        const ed = base ? editedStations(base, lastNet!, nodeMap(base, lastNet!)) : null;
-        const reach = ed && ed.minutes >= WINDOW_EDIT_MIN ? ed.minutes : 0;
-        const sub = ed && (reach > 0 || ed.switched) ? part!.beside() : null;
+        const part = c.part, { ed, reach } = e;
+        const sub = e.window && !ends ? part!.beside() : null;
         const lessOf = new Map<number, Float32Array[]>();
         if (sub) {
           c.views.set(sub, whole!);
@@ -2840,11 +3373,12 @@ async function run() {
             return blocks[0];
           },
         } : undefined;
-        const touched = citiesOf(c, e.fresh), sent = new Set<number>();
+        const touched = citiesOf(c, e.fresh), sent = new Set<number>(), deltas: (Float32Array[] | undefined)[] = [];
         const send = (q: number) => {
           sent.add(q);
           const less = lessOf.get(q);
           const delta = sub && less ? marketBlocks(c, sub, q).map((v, i) => { const t = v.slice(), l = less[i]; if (l) for (let k = 0; k < t.length; k++) t[k] -= l[k]; return t; }) : undefined;
+          deltas[q] = delta;
           if (import.meta.env.DEV && delta) { let a = 0, b = 0; for (let k = jobNodes; k < 2 * jobNodes; k++) { a += less![0][k]; b += delta[0][k] + less![0][k]; } console.info(`T1735 v${job.version} period ${q}: the window's pairs board ${Math.round(b)} on the new network, ${Math.round(a)} on the old`); }
           const { msg, transfer } = figures(q, job.rounds, 0, [c], undefined, sharedOf(c, q, shared), delta);
           sendMessage({ kind: "result", ...msg, cluster: { cities: touched, market: false, lines: c.lines.slice(), local: true } }, transfer);
@@ -2852,17 +3386,24 @@ async function run() {
         try {
           // T-2624: each period's result as it ends, but the last, which goes after the zones' bubbles below
           const lo = job.oneSend ? null : localOrder(c.lines, netBefore, lastNet);
-          const ok = lo ? await localSolve(c, e.fresh, e.sig, shared, win, 0, (q, last) => { if (!last && !lo.quiet.has(q)) send(q); }, lo.periods) : await localSolve(c, e.fresh, e.sig, shared, win, 0);
+          localKeep.set(c, keptOf(c));
+          const ok = lo ? await localSolve(c, e.fresh, { ratioSig: e.sig, shared, win, stage: 0, done: (q, last) => { if (!last && !lo.quiet.has(q)) send(q); }, periods: lo.periods, books }) : await localSolve(c, e.fresh, { ratioSig: e.sig, shared, win, stage: 0, books });
           if (ok === null) {
             if (import.meta.env.DEV) console.info(`T3512 v${job.version} local solve stopped for the whole solve after ${Math.round(performance.now() - t0)} ms`); // i18n-ignore
             break;
           }
           if (!ok) { stale = true; break; }
-          for (const p of e.fresh) cityOn.set(p, viewOf(c, p));
+          for (const p of e.fresh) { cityOn.set(p, viewOf(c, p)); if (c.part) holdNet(p); } // (T-4237: with no market part the baseline stays at the last whole solve)
           // T-2532: the touched zones' bubbles from this result, ahead of it, as a round's go ahead of
           // its last result; the whole solve's of the same round replace them
           for (const id of touched) keepSums(job.version, [job.rounds], id, cities.get(id)!, undefined, true);
           for (const q of mine) if (!sent.has(q)) send(q);
+          // T-4220: the touched populations' figures are the ones on screen now, the market's with this window or none
+          // (unless `whole` came first: another worker went straight to the whole solve, so this result is never shown)
+          if (wholeGo < job.version) {
+            for (const p of e.fresh) shownIntact.set(p, inOf(c));
+            if (part) { if (deltas.some(Boolean)) windowShown.set(part, { ids: lastNet!, delta: deltas }); else windowShown.delete(part); }
+          }
           // i18n-ignore
           if (import.meta.env.DEV) console.info(`T1733 v${job.version} local solve of ${touched.length} zones (${touched.slice(0, 8).join(",")}) of ${c.cities.length} after an edit${sub ? `, the market's pairs of ${sub.window_zones().length} of its zones` : ""}: ${Math.round(performance.now() - t0)} ms`);
         } finally {
@@ -2875,20 +3416,73 @@ async function run() {
       // result is in, and a moment has passed for the next edit (stations built, then the line)
       if (editOf.size && !stale) {
         const until = performance.now() + WHOLE_WAIT_MS;
-        while (!pending && wholeGo < job.version && performance.now() < until) await new Promise<void>((r) => { wake = r; setTimeout(r, until - performance.now()); });
+        while (!pending && wholeGo < job.version && !(ends && endLocalGo >= job.version) && performance.now() < until) await new Promise<void>((r) => { wake = r; setTimeout(r, until - performance.now()); });
         wake = null;
         if (pending) stale = true;
       }
+      // T-4220 stage 8: `whole` came as the plans came in (a worker solves nothing locally, T-1733), so no local result of
+      // this solve is shown, though one here may have ended before it came: the touched populations are not the figures on
+      // screen, and what they held of those before the local stage goes to the page in their place
+      if (befores.length && !stale && wholeEarly >= job.version) for (const b of befores) {
+        for (const p of b.fresh) shownIntact.delete(p);
+        if (b.part) { if (b.win) windowShown.set(b.part, b.win); else windowShown.delete(b.part); }
+        const s = b.snap, snap: Snapshot = { pops: s.pops, periods: mine.slice(), bytes: s.bytes, ms: b.ms, again: true, ...(s.over ? { over: true } : {}) };
+        if (s.pops.length || s.over) sendMessage({ kind: "shown", version: job.version, snap }, s.transfer);
+      }
+      // T-2188: a city edit's solve ends here: each edited cluster holds its local result as solved on this network
+      // (`held`, so a question about it is answered), each population its periods solved locally as `LOCAL` (a
+      // later local solve takes them as they are, the idle refresh's whole solve solves them again), and the market
+      // part is read through the route nodes it was solved on, carried to this network (`marketOn`), as the local
+      // solve read it. The lie: until a whole solve, the untouched cities and the market keep the loads they last
+      // solved, so they do not answer the edit's crowding, and the market keeps its routes (DECISIONS)
+      const endHere = ends && !stale && wholeGo < job.version && endLocalGo >= job.version;
+      if (endHere) for (const [c, e] of editOf) {
+        const keep = localKeep.get(c) ?? 0;
+        for (const p of c.pops) {
+          held.set(p, c.sig);
+          const h = heldQ.get(p) ?? [];
+          for (const q of mine) if (!(keep & (1 << q))) h[q] = c.psig[q] + LOCAL;
+          heldQ.set(p, h);
+        }
+        const r = e.sig === undefined ? undefined : capRatio.get(e.sig);
+        if (r) capRatio.set(c.sig, r);
+        if (c.part && e.market) c.views.set(c.part, { ...viewOf(c, c.part), nodeGlobal: e.market, pads: new Uint32Array(0) });
+      }
+      else if (ends && !stale) {
+        // (`whole` came instead, as when another worker solves nothing locally: as before T-2188)
+        keptSums.clear();
+        if (work) { for (const c of early) if (editOf.has(c)) planWhole(c); work.send(false); }
+      }
+      // T-4220: what this worker holds of the figures on screen (an edit's local results included), before the whole
+      // solve's first set-up puts any of it on this network, for an edit made meanwhile to be solved aside against
+      // (false past the cap: the page then holds none, so no cluster is sent again)
+      const sendShown = (cs: JobCluster[], again: boolean): boolean => {
+        const t0 = performance.now(), s = snapPops(cs), mz = !again && !s.over && zones ? zones.slice() : null;
+        const snap: Snapshot = { pops: s.pops, periods: mine.slice(), bytes: s.bytes, ms: 0, ...(s.over ? { over: true } : {}), ...(again ? { again } : {
+          zones: jobLocal.map(([id, a]) => ({ id, box: boxes.get(id) ?? null, level: a.level(), day: everyday.has(id) })), marketZones: mz, flags: { whole: !!job.whole, oneMarket: !!job.oneMarket, wide: !!job.wide },
+        }) };
+        snap.ms = performance.now() - t0;
+        sendMessage({ kind: "shown", version: job.version, snap }, mz ? [...s.transfer, mz.buffer as ArrayBuffer] : s.transfer);
+        return !s.over;
+      };
+      // (with nothing dirty here too: the refresh solves again only the clusters holding a local period, which are by worker,
+      // so another worker may set up whole what this one holds as shown, and a side job needs every period)
+      const snapping = !!job.snap && !stale && mine.length > 0 && (!early.length || early.some((c) => !localOf.has(c) && !(endHere && editOf.has(c)))) && sendShown(jobClusters, false);
       for (const c of early) {
         if (stale) break;
+        // (T-2188: its local results went as they landed; the last one's figures go with the solve's, below)
+        if (endHere && editOf.has(c)) { if (c === early[early.length - 1]) break; continue; }
         const fresh = localOf.get(c);
         if (fresh) {
           const t0 = performance.now(), shared = c.part ? sharedMkt.get(c.part) : undefined;
-          if (fresh.length && !(await localSolve(c, fresh, c.sig, shared))) { stale = true; break; }
+          if (fresh.length && !(await localSolve(c, fresh, { ratioSig: c.sig, shared, books }))) { stale = true; break; }
+          if (c.part) windowShown.delete(c.part); // (T-4220: its result shown with no window)
           for (const p of c.pops) {
             held.set(p, c.sig);
             if (!fresh.includes(p)) continue;
             cityOn.set(p, viewOf(c, p));
+            shownIntact.set(p, inOf(c));
+            holdNet(p);
             const h = heldQ.get(p)!;
             for (const q of mine) h[q] = c.psig[q] + LOCAL;
           }
@@ -2901,6 +3495,7 @@ async function run() {
             const { msg, transfer } = figures(q, job.rounds, 0, [c], undefined, extra);
             sendMessage({ kind: "result", ...msg, cluster: { cities: c.cities, market: c.market && !(c.part && sharedParts.has(c.part)), lines: c.lines.slice() } }, transfer);
           }
+          if (snapping) sendShown([c], true);
           continue;
         }
         setUp(c);
@@ -3001,6 +3596,7 @@ async function run() {
           const { msg, transfer } = figures(q, job.rounds, 0, [c]);
           sendMessage({ kind: "result", ...msg, cluster: { cities: c.cities, market: c.market, lines: c.lines.slice() } }, transfer);
         }
+        if (snapping) sendShown([c], true);
       }
       if (!stale && !job.barrier) {
         // Every cluster is solved to its last round, so the solve's result for every round is its
@@ -3025,11 +3621,11 @@ async function run() {
           msg.ms = msg.summary[4] = performance.now() - t0;
           for (let r = 0; r <= job.rounds; r++) {
             const lean = msg.parts.lean?.slice();
-            const m = { ...msg, summary: [r, ...msg.summary.slice(1)], seg: msg.seg.slice(), board: msg.board.slice(), alight: msg.alight.slice(), arrive: msg.arrive.slice(), loadOfCrush: msg.loadOfCrush.slice(), parts: { keys: msg.parts.keys, seg: msg.parts.seg.slice(), board: msg.parts.board.slice(), alight: msg.parts.alight.slice(), ...(lean ? { lean } : {}) }, setupMs: r === 0 ? setupMs : 0 };
+            const m = { ...msg, summary: [r, ...msg.summary.slice(1)], seg: msg.seg.slice(), board: msg.board.slice(), alight: msg.alight.slice(), arrive: msg.arrive.slice(), loadOfCrush: msg.loadOfCrush.slice(), parts: { keys: msg.parts.keys, seg: msg.parts.seg.slice(), board: msg.parts.board.slice(), alight: msg.parts.alight.slice(), ...(lean ? { lean } : {}) }, setupMs: r === 0 ? ctx.setupMs : 0 };
             sendMessage({ kind: "result", ...m }, [m.seg.buffer, m.board.buffer, m.alight.buffer, m.arrive.buffer, m.loadOfCrush.buffer, m.parts.seg.buffer, m.parts.board.buffer, m.parts.alight.buffer, ...(lean ? [lean.buffer] : [])]);
           }
         }
-        setupMs = 0;
+        ctx.setupMs = 0;
         for (const [id, a] of offScreen) keepSums(job.version, rounds, id, a, keptSums.get(id));
       }
       // with the barrier only: without it the results were sent just above
@@ -3043,7 +3639,7 @@ async function run() {
         stageRound = -1;
         roundsHeld.fill(-1);
         for (const c of late) setUp(c);
-        if (work) for (const c of late) for (const q of units) if (c.reuse & (1 << q) || !sideOf(c, q)) for (let r = 0; r <= job.rounds; r++) { const x = roundExp(c, q, r); work.plan(1, -1, x === null ? null : -x, groupView(g), q, sizeB(c, r)); }
+        if (work) for (const c of late) for (const q of units) if (c.reuse & (1 << q) || !sideOf(c, q)) for (let r = 0; r <= job.rounds; r++) { const x = roundExp(c, q, r); work.plan(1, -1, x === null ? null : -x, groupView(g), q, sizeB(c, r), r > 0); }
         for (let round = 0; round <= job.rounds && !stale; round++) {
           // T-327: a worker ahead holds its last round until every worker has finished it
           while (round > 0 && units.length && !pending && !goAllows(job.version, g, round)) {
@@ -3075,8 +3671,8 @@ async function run() {
             const est = round === 0 && !!only && !job.exact0 && from !== undefined && from !== q;
             for (const c of late) {
               if (c.reuse & (1 << q) || !sideOf(c, q)) continue;
-              if (est && estimate(c, from, q, new Set())) { estimated = true; work?.begin(1, roundExp(c, q, round), groupView(g), q, sizeB(c, round)); work?.end(false); continue; }
-              work?.begin(1, roundExp(c, q, round), groupView(g), q, sizeB(c, round));
+              if (est && estimate(c, from, q, new Set())) { estimated = true; work?.begin(1, roundExp(c, q, round), groupView(g), q, sizeB(c, round), round > 0); work?.end(false); continue; }
+              work?.begin(1, roundExp(c, q, round), groupView(g), q, sizeB(c, round), round > 0);
               if (!(await step(c, round, q))) { stale = true; break; }
               work?.end();
             }
@@ -3106,7 +3702,7 @@ async function run() {
             if (alone) sendMessage({ kind: "result", ...msg, cluster: { cities: alone.cities, market: alone.market, lines: alone.lines.slice() } }, transfer);
             else {
               sendMessage({ kind: "result", ...msg, ...onlyLines() }, transfer);
-              setupMs = 0;
+              ctx.setupMs = 0;
             }
             for (const [id, a] of offScreen) keepSums(job.version, [round], id, a);
           }
@@ -3119,6 +3715,7 @@ async function run() {
       }
       if (!stale) {
         solvedOnce = true;
+        for (const c of jobClusters) if (c.part) windowShown.delete(c.part); // (T-4220: the final shows no window)
         // T-1733: a shared period's market loads from the other side, for a local solve after an edit
         if (sharing) jobClusters.forEach((c, i) => {
           if (!c.part || !dirty.includes(c)) return;
@@ -3137,7 +3734,7 @@ async function run() {
         });
         if (work && import.meta.env.DEV) console.info(`T2729 v${job.version} units ${work.done.join("+")} of ${work.of.join("+")}, ${unitMsLast.map((v) => Math.round(v)).join(" and ")} ms each`); // i18n-ignore
         work = null;
-        sendMessage({ kind: "done", version: job.version, memBytes: wasm_memory_bytes(), heap: heap(), clusters: [jobClusters.length - dirty.length, dirty.length], periods: [periodsKept, periodsSolved], ...(localOf.size ? { local: [...localOf.keys()].flatMap(freshCities) } : {}) });
+        sendMessage({ kind: "done", version: job.version, memBytes: wasm_memory_bytes(), heap: heap(), clusters: [jobClusters.length - dirty.length, dirty.length], periods: [periodsKept, ctx.periodsSolved], ...(localOf.size ? { local: [...localOf.keys()].flatMap(freshCities) } : {}), ...(jobClusters.some(localHeld) ? { localHeld: true } : {}) });
       }
     }
   } catch (err) {

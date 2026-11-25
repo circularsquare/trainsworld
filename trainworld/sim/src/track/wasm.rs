@@ -15,13 +15,14 @@ use super::bridge;
 use super::cost::{BlockIndex, ClassGrid, GeoMask, MaskSet, NoWater, RunMask, TransformedMask, UnionMask, WaterMask, WorldWater};
 use super::frame::FrameKind;
 use super::geom::{self, design_radii, GeomIssue, Pi, Ramps};
-use super::net::{CrossKind, EdgeData, GroupLook, Issue, OuterGroup, LineData, LoopKind, Network, NodeData, StationData, Weekend, SPLIT_ROOM};
+use super::net::{CrossKind, EdgeData, GroupLook, Issue, OuterGroup, LineData, LoopKind, Network, NodeData, PathTree, StationData, Weekend, SPLIT_ROOM};
 use super::params::*;
 use super::profile;
 use super::roads::{self, RoadTile, Roads};
 use super::save;
 use super::streets::StreetGrid;
 use super::world::{auto_trains, ChargeError, EditResult, Op, TrackWorld};
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -41,9 +42,16 @@ pub struct TrackApi {
     last: Option<EditResult>,
     /// T-4113: what the edits since `take_touched` touched
     touched: touched::Touched,
+    /// T-4299: the money a state reads, kept per record (`wasm/kept.rs`)
+    kept: kept::Kept,
+    /// T-4249: an edit since `take_service_moved` rebuilt, rescheduled or re-timed some line's service
+    service_moved: bool,
     /// T-4113: each line's stamp as `take_changed_lines` last took it (`TrackApi::stamped`)
     stamps: Vec<Option<u64>>,
     stamps_off: bool,
+    /// T-4299: the last stamps worked out for the noted lines (`peek_changed_lines`), at the kept money's model state:
+    /// `take_changed_lines` takes them again where nothing moved since (the edit's patch peeks, its state takes)
+    stamps_peeked: Option<(u64, Vec<u32>, (Vec<u32>, Vec<(u32, Option<u64>)>))>,
     issues: Vec<Issue>,
     /// Set when the last refusal was for money: (need, have).
     money_short: Option<(f64, f64)>,
@@ -102,6 +110,11 @@ pub struct TrackApi {
     bare_slide: bool,
     /// T-4185: while on, `run` makes each edit part of the player's edit before it (`join_edit`).
     join: bool,
+    /// T-4272: stations placed and track deleted on the map are answered from what they touch (`run_answered`); off,
+    /// every edit goes the whole way, as before (tests compare the two)
+    answer_first: bool,
+    /// T-4272: the lines that owed services, once worked out, moved for demand, since `take_settled_demand`
+    settled_demand: Vec<u32>,
     /// T-3137: the points the next route's ends join double track nearest (`set_route_join`), and
     /// while one is laid out (`route_op`) the ones it uses; NaN for the nearer track.
     route_join: Option<[f64; 4]>,
@@ -144,6 +157,8 @@ pub struct TrackApi {
     route_junctions: Vec<(u32, [f64; 2])>,
     /// What the last station trial added to the blueprint, US$M (`station_cost`).
     station_cost: f64,
+    /// T-4214: the station nodes the last station edit placed (`last_stations`).
+    last_stations: Vec<u32>,
     /// The building the last `add_building` made (`u32::MAX` if none) and what the last add or
     /// reshape paid, US$M (T-2217).
     building_last: (u32, f64),
@@ -174,6 +189,8 @@ pub struct TrackApi {
     last_port: u32,
     /// T-3378: the node the last `add_brt_station` added, `u32::MAX` if it was refused.
     last_brt_station: u32,
+    /// T-4080: the kept stop the last `name_keep` or `connect_keep` left (`last_keep`).
+    last_keep: u32,
     /// T-2669: per line id, its running cost over the world price list (its countries' prices,
     /// `set_line_run_factors`); 1 for a line not listed. Never saved: the app sends it.
     run_factor: Vec<f64>,
@@ -265,10 +282,15 @@ fn pack_mask_in(frame: super::frame::Frame, mask: &Arc<RunMask>, lon: f64, lat: 
 /// Cars the running lines need: each line's busiest schedule's trains times its cars (T-028).
 /// Ordinary cars, then high-speed ones (T-817), then buses (T-1464), then boats (T-2193), then trams (T-2926).
 fn cars_needed(w: &TrackWorld) -> [u32; FLEETS] {
+    cars_needed_with(w, &mut None)
+}
+
+/// `cars_needed` with the track limits the weekend counts read shared through `most` (T-4299).
+fn cars_needed_with(w: &TrackWorld, most: &mut lines::Limits) -> [u32; FLEETS] {
     let mut out = [0; FLEETS];
     // T-3521: a train runs on whichever kind of day needs the most at any level
     let mut weekend = vec![0u32; w.svc.lines.len()];
-    for (l, c) in w.weekend_own() {
+    for (l, c) in w.weekend_own_in(most) {
         // (T-3542: at the places its rows use)
         let used = ROW_PLACES[w.net.rows(l) - ROWS_MIN];
         if let Some(x) = weekend.get_mut(l) { *x = used.iter().map(|&k| c[k]).max().unwrap_or(0); }
@@ -325,9 +347,13 @@ fn port_upkeep() -> f64 {
 /// A constructed bus route's upkeep a game day, US$M, a BRT one's lanes included (T-3907); None for a
 /// planned one (T-1464). `lanes`: each line's part of the lanes' upkeep, road metres (`Network::brt_upkeep_m`).
 fn bus_upkeep(n: &Network, l: u32, lanes: &[f64]) -> Option<f64> {
+    bus_upkeep_with(n, l, n.bus_road_m(l), lanes)
+}
+/// `bus_upkeep` with the route's road metres `road` (`Network::bus_road_m`) known (T-4299).
+fn bus_upkeep_with(n: &Network, l: u32, road: f64, lanes: &[f64]) -> Option<f64> {
     n.line_bus.get(l as usize)?.as_ref().filter(|r| r.built && n.line_ok(l)).map(|_| {
         // T-3907: a BRT route's road in town at street tram track's rate; T-3378: a lane two lines share, half each
-        let (road, town) = (n.bus_road_m(l), lanes.get(l as usize).copied().unwrap_or(0.0));
+        let town = lanes.get(l as usize).copied().unwrap_or(0.0);
         ((road - town) * UPKEEP_BUS_KM + town * UPKEEP_BRT_KM) / 1000.0 * ECONOMY / 1e6
     })
 }
@@ -399,8 +425,11 @@ impl TrackApi {
             w: TrackWorld::new(Network::new(origin_lon, origin_lat, right_hand)),
             last: None,
             touched: Default::default(),
+            kept: Default::default(),
+            service_moved: true,
             stamps: vec![],
             stamps_off: false,
+            stamps_peeked: None,
             issues: vec![],
             money_short: None,
             cash: 6000.0,
@@ -448,6 +477,7 @@ impl TrackApi {
             preview_marks: vec![],
             route_junctions: vec![],
             station_cost: 0.0,
+            last_stations: vec![],
             building_last: (u32::MAX, 0.0),
             rasters: vec![],
             world_water: None,
@@ -461,10 +491,13 @@ impl TrackApi {
             link_charge: 0.0,
             last_port: u32::MAX,
             last_brt_station: u32::MAX,
+            last_keep: u32::MAX,
             run_factor: vec![],
             load_level: save::LEVEL,
             bind_new: true,
             old_names: false,
+            answer_first: true,
+            settled_demand: vec![],
         }
     }
 
@@ -555,6 +588,17 @@ impl TrackApi {
     pub fn boarding_step(&mut self, max_lines: u32) -> bool {
         self.boarding.ensure_some(&self.w.net, &self.w.svc, max_lines as usize)
     }
+    /// T-4240: `boarding_hour`, bringing up to date only the accounts of lines whose service changed (an edit's,
+    /// `Boarding::hour_kept`): a line out of date for new riders alone gives its last loads until `boarding_step`
+    /// reaches it, so an edit's trips never wait for every line's account after new riders.
+    pub fn boarding_hour_kept(&mut self, epoch: f64) -> Vec<f32> {
+        self.boarding.hour_kept(&self.w.net, &self.w.svc, epoch)
+    }
+    /// T-4240: `boarding_step` for the lines whose service changed since their account (an edit's), leaving those
+    /// out of date for new riders alone; true if more such lines are left.
+    pub fn boarding_step_service(&mut self, max_lines: u32) -> bool {
+        self.boarding.ensure_service_some(&self.w.net, &self.w.svc, max_lines as usize)
+    }
     /// Lines whose account was worked out again since the last call.
     pub fn boarding_redone(&mut self) -> u32 {
         self.boarding.take_redone() as u32
@@ -578,6 +622,7 @@ impl TrackApi {
         net.streets = self.w.net.streets.clone();
         self.w = TrackWorld::new(net);
         self.touched.everything();
+        self.kept.everything();
         self.rebuild_water();
         true
     }
@@ -832,6 +877,7 @@ impl TrackApi {
                 }
                 self.w = TrackWorld::new(net);
                 self.touched.everything();
+                self.kept.everything();
                 self.old_names = level <= save::OLD_BOUND_NAMES;
                 if level <= save::OLD_STATION_WAYS && self.w.net.pin_station_runs() {
                     self.w.reload();
@@ -845,6 +891,15 @@ impl TrackApi {
                 // again with them
                 if self.w.allocate_unallocated() && water {
                     self.w.reload();
+                }
+                // T-4080: the kept bus stops no bus stop took are forgotten; none holds a stop, so nothing moves
+                if self.w.net.keep_ids().next().is_some() {
+                    let taken: Vec<u32> = self.w.svc.lines.iter().filter_map(|l| l.bus.as_ref()).flat_map(|p| p.stops.iter().filter_map(|s| s.keep)).collect();
+                    let left = self.w.net.drop_keeps_except(&taken);
+                    // a bare one held a stop: its line's stops are placed again without it
+                    if !left.is_empty() {
+                        self.w.reload();
+                    }
                 }
                 // a save made while trains changed over loads with them where they were (T-1071)
                 if let Some((e, phases, wide, hours)) = eras {
@@ -891,6 +946,19 @@ impl TrackApi {
                 for p in net.pis.get(net.edge_pis[e]) {
                     out.extend([p.x, p.y]);
                 }
+            }
+        }
+        out
+    }
+    /// T-4193: a save's bus routes' points, x, y flat, read without deriving it, as `bus_route` gives them once loaded:
+    /// the clock worker puts the street speeds they meet in before the one real load, so it times its buses on them
+    /// and settles once. Empty if it does not decode or has no bus line.
+    pub fn save_bus_points(bytes: &[u8]) -> Vec<f64> {
+        let Ok(net) = save::decode(split_eras(bytes).0) else { return vec![] };
+        let mut out = vec![];
+        for l in net.bus_lines() {
+            if let Some(r) = &net.line_bus[l as usize] {
+                out.extend(r.points.iter().flat_map(|p| [p[0], p[1]]));
             }
         }
         out
@@ -959,12 +1027,14 @@ mod service;
 mod upgrades;
 mod related;
 mod bus;
+mod keeps;
 mod ferry;
 mod buildings;
 mod twin;
 mod onetrack;
 mod legs;
 mod touched;
+mod kept;
 
 /// What buying the cars the running lines need beyond `fleet` costs, US$M.
 fn trains_to_buy(w: &TrackWorld, fleet: [u32; FLEETS]) -> f64 {
@@ -1037,14 +1107,51 @@ fn vertex_kmh(f: &geom::Fit, i: usize, cap: f64) -> f64 {
     if rad > 0.0 && !slight { (A_LAT * rad).sqrt().min(cap) * 3.6 } else { cap * 3.6 }
 }
 
-/// Hops already searched while trying stops (T-237): `(from, to, side arrived on at from, 2 for
-/// none, tram)` to `Network::find_path_side`'s answer. Valid for one state of the network. `tram`:
-/// the stops tried are a tram line's even where they hold no tram stop themselves (part of the
-/// line's stops, T-3889).
+/// Hops already searched while trying stops (T-237): `(from, to, side arrived on at from, want
+/// arrival side at to, tram)` to `Network::find_path_side`'s answer. Valid for one state of the
+/// network. `tram`: the stops tried are a tram line's even where they hold no tram stop themselves
+/// (part of the line's stops, T-3889).
 #[derive(Default)]
 pub(super) struct HopMemo {
-    hops: std::collections::HashMap<(u32, u32, u8, u8, bool), Option<(Vec<u32>, u8)>>,
+    hops: HashMap<HopKey, Option<(Vec<u32>, u8)>>,
     tram: bool,
+    searches: Option<StopSearches>,
+}
+
+type HopKey = (u32, u32, Option<u8>, Option<u8>, bool);
+type SearchKey = (u32, Option<u8>, bool);
+
+/// T-4255: cap retained `PathTree` arrays during a stop-marker scan so track-worker WASM linear
+/// memory stays within the edit-speed memory budget on small devices (8 MiB vs PR 29's 32 MiB).
+const STOP_TREE_BUDGET: usize = 8 * 1024 * 1024;
+
+/// A marker scan asks many destinations of the same origin. Keep those trees for the
+/// line's stops across candidates, and the current candidate's trees only while it is tried.
+struct StopSearches {
+    stops: HashSet<u32>,
+    line: HashMap<SearchKey, PathTree>,
+    candidate: u32,
+    local: HashMap<SearchKey, PathTree>,
+    line_limit: usize,
+}
+
+impl StopSearches {
+    fn find(&mut self, net: &Network, (from, to, arrived, want, tram): HopKey) -> Option<(Vec<u32>, u8)> {
+        let key = (from, arrived, tram);
+        if let Some(tree) = self.line.get(&key) {
+            return tree.path(to, want);
+        }
+        if from == self.candidate {
+            return self.local.entry(key).or_insert_with(|| net.path_tree(from, arrived, tram)).path(to, want);
+        }
+        if self.line.len() < self.line_limit && self.stops.contains(&from) {
+            let tree = net.path_tree(from, arrived, tram);
+            let path = tree.path(to, want);
+            self.line.insert(key, tree);
+            return path;
+        }
+        net.find_path_side(from, to, arrived, want, tram)
+    }
 }
 
 impl HopMemo {
@@ -1054,6 +1161,44 @@ impl HopMemo {
     /// For a tram line's stops (`tram`) or a train line's.
     pub(super) fn of(tram: bool) -> Self {
         Self { tram, ..Self::default() }
+    }
+
+    fn for_stop_scan(net: &Network, stops: &[u32]) -> Self {
+        Self::for_stop_scan_budget(net, stops, STOP_TREE_BUDGET)
+    }
+
+    fn for_stop_scan_budget(net: &Network, stops: &[u32], budget: usize) -> Self {
+        // Allow for the candidate's six combinations of arrival side and tram access.
+        const LOCAL_TREES: usize = 6;
+        let bytes_per_tree = (2 * net.edge_count() + 3 * net.node_count()) * std::mem::size_of::<u32>();
+        let line_limit = (budget / bytes_per_tree.max(1)).saturating_sub(LOCAL_TREES);
+        let searches = (stops.len() > 2 && line_limit > 0).then(|| StopSearches {
+            stops: stops.iter().copied().collect(),
+            line: HashMap::new(),
+            candidate: u32::MAX,
+            local: HashMap::new(),
+            line_limit,
+        });
+        Self { searches, ..Self::default() }
+    }
+
+    fn try_station(&mut self, station: u32) {
+        if let Some(searches) = self.searches.as_mut() {
+            searches.candidate = station;
+            searches.local.clear();
+        }
+    }
+
+    fn hop(&mut self, net: &Network, key: HopKey) -> Option<&(Vec<u32>, u8)> {
+        let searches = &mut self.searches;
+        self.hops.entry(key).or_insert_with(|| {
+            if let Some(searches) = searches {
+                searches.find(net, key)
+            } else {
+                let (from, to, arrived, want, tram) = key;
+                net.find_path_side(from, to, arrived, want, tram)
+            }
+        }).as_ref()
     }
     /// Whether `stops` route as a tram line's.
     fn tram_for(&self, net: &Network, stops: &[u32]) -> bool {
@@ -1069,19 +1214,30 @@ fn route_memo(net: &Network, stops: &[u32], memo: &mut HopMemo, ones: &[(u32, u8
         return None;
     }
     let tram = memo.tram_for(net, stops);
-    if let Some(p) = net.route_legs_t(stops, ones, tram) {
+    if let Some(p) = net.route_legs_with(stops, ones, |s| route_plain_memo(net, s, memo, tram)) {
         return Some(p);
     }
+    route_plain_memo(net, stops, memo, tram)
+}
+
+fn route_plain_memo(net: &Network, stops: &[u32], memo: &mut HopMemo, tram: bool) -> Option<Vec<u32>> {
     let mut path = vec![];
     let mut side = None;
     let closes = stops.len() >= 3 && stops[0] == stops[stops.len() - 1];
     for (k, w) in stops.windows(2).enumerate() {
         let want = if closes && k + 2 == stops.len() { net.carry_on_side(&path) } else { None };
-        let key = |x: Option<u8>| (w[0], w[1], side.unwrap_or(2), x.unwrap_or(2), tram);
-        let found = |memo: &mut HopMemo, x: Option<u8>| memo.hops.entry(key(x)).or_insert_with(|| net.find_path_side(w[0], w[1], side, x, tram)).is_some();
-        let x = if want.is_some() && found(memo, want) && (!found(memo, None) || net.carry_worth(&memo.hops[&key(want)].as_ref().unwrap().0, &memo.hops[&key(None)].as_ref().unwrap().0)) { want } else { None };
-        found(memo, x);
-        let (p, s) = memo.hops[&key(x)].as_ref()?;
+        let key = |want| (w[0], w[1], side, want, tram);
+        let hop = if want.is_some() {
+            memo.hop(net, key(want));
+            memo.hop(net, key(None));
+            match (memo.hops[&key(want)].as_ref(), memo.hops[&key(None)].as_ref()) {
+                (Some(carry), Some(plain)) if net.carry_worth(&path, &carry.0, &plain.0) => Some(carry),
+                (carry, plain) => plain.or(carry),
+            }
+        } else {
+            memo.hop(net, key(None))
+        };
+        let (p, s) = hop?;
         path.extend_from_slice(p);
         side = Some(*s);
     }
@@ -1199,8 +1355,8 @@ fn route_plain_close(net: &Network, stops: &[u32], memo: &mut HopMemo) -> Option
     let &last = path.last()?;
     let side = net.port_side(last >> 1, 1 - (last & 1));
     let tram = memo.tram_for(net, stops);
-    let hop = memo.hops.entry((stops[n - 2], stops[n - 1], side.unwrap_or(2), 2, tram)).or_insert_with(|| net.find_path_side(stops[n - 2], stops[n - 1], side, None, tram));
-    path.extend_from_slice(&hop.as_ref()?.0);
+    let hop = memo.hop(net, (stops[n - 2], stops[n - 1], side, None, tram))?;
+    path.extend_from_slice(&hop.0);
     Some(path)
 }
 
@@ -2397,6 +2553,11 @@ mod realwater_tests;
 #[cfg(test)]
 mod bus_tests;
 #[cfg(test)]
+mod keeps_tests;
+/// T-4249: an edit rebuilds the bus lines and ways back it reaches.
+#[cfg(test)]
+mod scope_tests;
+#[cfg(test)]
 mod loop_tests;
 #[cfg(test)]
 mod ferry_tests;
@@ -2459,6 +2620,10 @@ mod upgrade_tests;
 /// T-1382: the changes the clock worker reads its state rows again for.
 #[cfg(test)]
 mod changed_tests;
+
+/// T-4299: the kept money against a whole rebuild after each kind of edit.
+#[cfg(test)]
+mod kept_tests;
 
 /// T-1964: station placements across joints between pieces of track.
 #[cfg(test)]

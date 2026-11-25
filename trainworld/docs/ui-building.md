@@ -223,6 +223,8 @@ mouse moving again takes it back).
   does) and stop (a red cross; the run ends and its track stays, or the placement is dropped; the
   tool stays on). The level and track type are the track bar's [T-1706, T-2282].
 - **Bus points** drag with a finger and are deleted by holding one (Drawing a bus line, T-1517).
+- **Station building** handles drag with a finger and a held corner is deleted, as bus points (ui-inspectors.md
+  "Station buildings", T-4341).
 - **Pinch and pan** work as always; a pan or pinch never places or moves a point. A tap that stops
   a fling is no tap (MapLibre's own rule).
 - **Select tool**: a one-finger drag pans; a tap adds the piece under it to the pick or takes it
@@ -281,10 +283,13 @@ Track is drawn through points, double and quad alike [T-418, T-422, T-423]. The 
   on its node) does the same at any later time: it ends the run, or drops a start that has no
   segment yet [T-707]; a segment never ends where it starts, so no loop is lost. To carry on later, click the loose end
   (on quad, either pair's). Backspace while chaining undoes the last segment and draws on from its
-  start. A segment may turn
+  start; if that segment is refused meanwhile, nothing is undone and the run draws on from there all the same. Any other
+  undo or redo while drawing (Ctrl+Z, the blueprint panel's buttons) ends the run [T-4311]. A segment may turn
   up to 350 degrees, so a loop or hairpin is one click [T-442]. A click whose segment cannot be
   built (a curve under 100 m, a click straight behind the start, water, too little room for a
-  ramp) is refused by the edit, its reason at the bottom left; the ghost was red already. A
+  ramp) is refused by the edit, its reason at the bottom left; the ghost was red already. No click
+  waits for the segment before it to be answered: a refused segment takes the segments clicked on from it with it,
+  and the run draws on from its start [T-4214]. A
   free-drawn segment reaches 500 km at most, straight line between its ends: past that no ghost is
   drawn, the tag says so and a click is refused, so a run left open in one city never lays track to
   the next one the player pans to (real routes, T-727, are not capped) [T-1020]. While
@@ -406,8 +411,8 @@ tag over a point states what these do there. Loops are described under each tool
 | Left click, a lone point | Nothing | Remove it | none |
 | Right click, the last point | Delete it | Nothing | Nothing |
 | Right click, a lone point | Delete it | none | none |
-| Right click, a middle point | Loop back to it and save | Turn the line around a loop of track if it offers one, else "Can't loop back here" | Nothing |
-| Right click, the first point | Close the loop and save | Close into a circle if it offers one | Nothing |
+| Right click, a middle point | Loop back to it and save | Turn the line around a loop of track if it offers one, else "Only the first or last stop closes a loop" | Nothing |
+| Right click, the first point | Close the loop and save | Close into a circle if it offers one, else "Trains would have to reverse to close a loop" | Nothing |
 | Right click, a point of a ring | Open the ring there | Open the ring there | none |
 | Right click, a point of a route that loops back | Stop looping back | Stop looping back (a turned line) | none |
 | Right click, empty ground | Take back the last point | Nothing | Nothing |
@@ -427,10 +432,10 @@ last or a lone point.
 [T-1464, T-1465, T-1514; `map/busDraw.ts`] The Build tab's Bus button (under the four tools, beside
 Ferry, key U) or U from any tab starts the bus tool for a
 new line; the Build tab's button again, while it is on, leaves it. Each click adds a
-point. Between two points the route takes the shortest path over the basemap's zoom 14 roads
+point. Between two points the route takes the quickest path over the basemap's zoom 14 roads
 (`busRoads.ts`; trunk, primary, secondary, tertiary, minor and bus-only roads, and motorways, so the
-long bridges and tunnels most cities carry on them (T-2469); any direction, or with Settings > "Buses obey one-way streets" ticked only the way a one-way street runs (T-3480, Renkon's open-source PR 1), length as it is, no turn
-rules; service ways, tracks and paths are left out, except that a plain service road (no driveway, alley or parking aisle tag, open to all, at ground level) at most 60 m long with each end within 3 m of a street can be driven, and is never landed on (T-2882)), at most 3 times the straight line or 1 km more
+long bridges and tunnels most cities carry on them (T-2469); any direction, or with Settings > "Buses obey one-way streets" ticked only the way a one-way street runs (T-3480, Renkon's open-source PR 1), road time, no turn
+rules (T-4257, xoaninc's PR 32: a metre of trunk road or motorway costs 1/1.4 of a street's and a constructed busway's about 0.62, the ratios of a plain bus's speeds at 44 km/h car streets from the sim, `bus_road_speeds`, read once through `map/busSpeeds.ts`; a leg's length, its detour cap's test and what the quote charges stay road metres, though the cap compares road time); service ways, tracks and paths are left out, except that a plain service road (no driveway, alley or parking aisle tag, open to all, at ground level) at most 60 m long with each end within 3 m of a street can be driven, and is never landed on (T-2882)), at most 3 times the straight line or 1 km more
 than it, whichever is longer. While the tool is on, the roads it may use carry a teal hint (`bus_roads_hint`), from zoom 11; the fast ones, trunk roads and motorways with their ramps (`fastRoadExpr` in `busRoads.ts`, the roads a route marks `K_TRUNK`), are drawn in blue instead (`BUS_FAST_COLOUR`, light #3a4fb0 at 0.85 opacity, dark #a6bcff at 0.9), 1.2 times its width [T-3829; Anita picked it from three looks]. Under the hint, the ground that is in town for BRT (a plain bus moves under BRT's floor there, `streets::brt_in_town`) is tinted faintly green (`bus_town_fill`: light #22a43c at 0.22 opacity, dark #5fd070 at 0.17), from zoom 11: the 2 km zone squares of the street speeds loaded, merged into polygons by the sim (`TrackApi.last_town_outline`, sent by the clock worker as each pack's speeds land, `map/townArea.ts`); where no pack's speeds are in, it is out of town, as in the sim [T-3913; `?town=a|b|c|now|khaki|none` swaps the look, notes/T-3913.md]. With that setting ticked (off by default, `display.busOneWay`; with it off a route is as it was) a one-way street is the basemap's `oneway`: 1 runs with the line as drawn, -1 against it, and a street with no `oneway` runs both ways (`RoadGraph.path`). The route goes round rather than back down a one-way street. While the bus tool is on and the setting is ticked, those one-way streets carry small arrows in the road hint's own colour on that road (teal, blue on a fast road), pointing the way traffic runs (turned round where `oneway` is -1), from zoom 15, drawn about 1.2 times the road hint's own stroke on that road at each zoom (`bus_roads_oneway` in `basemap.ts`). A two-way street stays a plain line. A line set to both ways, and one that loops back, still runs that drawn road in reverse on the way back (open-source issue 8, a bus going the wrong way round a roundabout, is the same case). Roads join where a road's vertex comes within about 1 m of another road
 at its level, or where two ground-level roads cross, since the tiles drop the junction's vertex from a road
 running straight through it (T-2873; a motorway joins another motorway, and its own ends join any road).
@@ -846,6 +851,17 @@ stations. Disabled blueprint is left out by Construct and the blueprint total, a
 ([ui-map.md](ui-map.md) "Lines and track"). It is a tool of its own because a plain drag on the map
 is the pan and Shift+drag is MapLibre's zoom box, so a box needs a mode.
 
+- **Modes** [T-4330, Anita's design; `ui/ToolBar.tsx` `SelectBar`, `game/ui.ts` `selectMode`]: the tool's bar at the
+  top centre, the station bar's look, holds three icon buttons, the choice remembered in the browser. **Blueprints, or
+  built track if there are none** (a track icon in the blueprint blue): the rule above, the default. **Built track
+  only** (a grey track icon): every pick (box, click, Shift+click, double click) keeps only constructed pieces, so
+  blueprint in the box or under the pointer is passed over. **Demand bubbles** (the purple bubble icon): a left drag
+  draws the demand box at once, as Shift+drag does while plain selecting (a plain drag replaces the bubbles
+  selected, Shift+drag adds or takes the far ends, as there); a click picks the bubble under it, Shift adds, a click on
+  none clears; a finger pans and a tap picks. Picking a mode drops the pick it would not make (all of it for Demand
+  bubbles), and Demand bubbles turns the bubbles on as last shown when they are off. While the tool is on the
+  selection bar sits under the bar (on a phone, over it).
+
 - **Dragging the pick** [T-475]: a left drag that starts on picked track or within 9 px of one
   of its nodes (a grab cursor there) moves every movable node of the pick by the same offset,
   previewed as a node drag is: the nodes a box held inside it (T-1898, Anita: "only move the
@@ -1130,7 +1146,7 @@ running line's trains stop at then wins over one they do; then the nearest.
   into the land, the unreachable ones dimmest (CSS tokens `--mk-*`, T-543). The tiers come from the clock worker trying each station with the same
   insertion search a click makes (`TrackApi::stop_tiers`), so a marker always says what its click
   does; until the answer lands an estimate from the track graph shows on entering, and after an edit
-  the last answer stands with only the stops changed (T-648). A click on a marker adds or removes a stop and
+  the last answer stands with only the stops changed (T-648), or whole while the stops are the ones it was for (T-4223). A click on a marker adds or removes a stop and
   nothing else (T-3109, trains and trams alike): on a station that is no stop it is one edit (`insertStop`): the
   worker fits the station in where `TrackApi::insert_stop` puts it, among the stops it holds then, and never turns
   the line around a loop (`TrackApi::add_stop`, T-3140, track-and-service.md "Only the right click turns an end"); on a stop it
@@ -1143,7 +1159,11 @@ running line's trains stop at then wins over one they do; then the nearest.
   ways" on one made one way.
   A **right click** (or a finger held 500 ms on the marker, moving up to 8 px; the lift adds nothing) closes, opens
   or turns a loop where the marker offers one (the loop items below); anywhere else it changes nothing and the tag
-  says "Can't loop back here" for four seconds. The strip at the bottom says "Click a circle to add or remove a
+  says why for four seconds: "Trains would have to reverse to close a loop" ("Trams" on a tram line) on the first
+  or last stop of an open line whose track does not lead round from its last stop to its first, "Only the first or
+  last stop closes a loop" on another station of an open line, "Can't loop back here" otherwise. It reads the
+  worker's tiers for the line's stops as they are: one made before those are in (just after a stop click or an
+  undo; many seconds on a big network) waits for them, as the estimate offers no loop (T-4223). The strip at the bottom says "Click a circle to add or remove a
   stop. Right click one to loop back there." ("Tap ... Hold one to loop back there." by touch). On touch it also has
   a Loop button (T-3118; "Loop back" in the bus tool above): pressed, the next tap on a marker is a right click.
 - Hover says "Click to add a stop", "Click to add a stop and change the route", "Click to add a

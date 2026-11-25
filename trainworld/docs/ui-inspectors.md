@@ -622,8 +622,8 @@ line panel's own remove button works as before.
   hand order where there is one (T-1813).
 - **Stops header**: the all-stops switch (hover "Show all stops" / "Show fewer stops", kept while
   the page is open) and Copy line, which opens a row of the group's bullets; a click on one copies
-  that line (hover "Copy 4") into the group. With two or more of its lines running on rail, a chart icon
-  (hover "Timetable chart") opens the group's chart in the schedule panel ([ui-panels.md](ui-panels.md#schedule-panel), T-3346).
+  that line (hover "Copy 4") into the group. With two or more of its lines running on rail, the line panel's
+  timetable icon (hover "Detailed schedule", T-4276) opens the group's timetable and chart in the schedule panel ([ui-panels.md](ui-panels.md#schedule-panel), T-3346).
 - **Rows**: one place (station complex, `stopKey`) each. They start from the line with most stops in
   its path order, north up as the line panel's stops (T-1894); each other line is matched to them by place, turned around if it runs the other
   way, and its own places go in as one block: between the rows it leaves and rejoins, or above its
@@ -749,6 +749,16 @@ places the stops again (the stop nearest where it was, within 60 m, the same id 
 station's panel once it is a station's stop).
 ## Trains
 
+- **The speed dial** [T-4243, `ui/inspector/Speedometer.tsx`]: at the panel's right beside Next stop, whose label
+  sits over the stop's name (her 11-25; a long name wraps), the two centred on the dial; a running train's speed on a
+  round dial 68 px wide. The rim, 3 px thick, is the Speed view's colours (`SPEED_STOPS`, maroon at a
+  standstill to purple at 320 km/h), linear from 0 to 320 km/h along its 270 degrees with the gap at the bottom, each
+  colour at its own speed (DECISIONS 2026-11-24); the needle turns around a centre circle holding the speed in the
+  units setting, in the speed's colour kept readable on the shade (`legibleOn`), the unit under it. It reads the
+  speed the train is drawn at: its run profile's, none while it stands, and where the guard draws it behind its
+  timetable (T-1965) that speed times one minus the rate its lag grows (still while held, faster while catching up).
+  Hover: "Top speed 160 km/h", the fastest on its way to its last stop. It moves from a frame loop of its own while
+  the clock runs, writing to the page only when the needle (to a quarter degree) or the figure changes.
 - **The train inspector's "On board"** [T-083, T-164, T-230]: this train's own riders on the stretch
   it is running, from the boarding account ([track-and-service.md](track-and-service.md) 6.6),
   against seats and crush: a bar running to crush (240 a car, 150%), with a tick at the seats and
@@ -947,6 +957,16 @@ order, kept and dropped as the Lines tab's is [T-1813]. Riders follows the rider
   only the setting; "Rename all stations" changes it and binds or unbinds every station (each keeping the
   name it shows), one undo, which leaves the setting as chosen. The map labels every distinct name a complex's stations show. A line group's name
   typed in its title stays even when it equals its first line's name.
+- **Rename stations** [T-4259, from omi-key's PR 35, `ui/inspector/RenameStops.tsx`]: in a rail line's panel, while its
+  stops are not being edited, an icon button after "Stops" (hover "Rename stations", then how a paste fills the boxes)
+  turns the stops list into a box per station, in the list's order, each filled with the name it shows; a bound station
+  stands for its complex, so the bound stations of one complex share a box. The boxes follow the line as it is now and
+  keep what was typed by station, so a station deleted meanwhile takes only its own box. A paste of several lines into
+  a box fills it and the boxes below, one line each (a blank line leaves its box as it is). Enter goes to the next box,
+  and on the last box or with Ctrl (Cmd) renames; Escape or Cancel closes the boxes renaming nothing, and the panel
+  stays. A changed box is bold, its hover the name it had; the station whose box has the focus is lit on the map as
+  under a stop row's pointer. "Rename 3 stations" (greyed until a box changes) renames each changed one as its own
+  panel would (`renameStations` in `workers/clockDemand.ts`, `TrackApi.rename_stations`), all as one undo.
 
 ## The complex map
 
@@ -981,9 +1001,16 @@ selection or a tool stops it. Refused with a notice, still picking: the same sta
 in this complex, one more than 1 km away centre to centre, or a bus stop ("Bus stops can't have passages.", T-4079). At a BRT station the icon's hover has "Saves 1 minute on transfers" under what it does. Between two constructed stations it
 is paid at once (US$10M plus US$90M a km, a notice), else it is built with the second of them.
 "Passages", after the closest stations, lists each passage touching the complex with its two stations,
-their chips, its length and Remove (nothing refunded once built). Only the player's passages can be
-removed: stations the distance rule groups cannot be split. Passages are not in the Ctrl+Z history
-(a setting, like fares); removing a station drops its passages. Demand counts a passage once both
+their chips, its length and Remove (nothing refunded once built). While a passage is being placed, from
+zoom 14, each join the map draws (a passage's or the distance rule's bridge, a BRT station's dashed join)
+has a small cross button (`map/joinButtons.ts`, T-4048): at the join's middle, else moved along it or just
+beside its middle, never over another button, a station's name or a capacity dot, and left out where
+none of those fit; hovered, it takes the delete tool's ring (2 px, the accent). A click removes the join and
+picking goes on: a passage goes (notice "Passage between A and B removed."); a join the distance rule makes
+splits the complex there, every pair the rule links across it kept apart (`cutPairs`; notice "Connection
+between A and B removed."); a passage between stations the rule joins does both. Remove in the list does
+just what the passage's button does. All are free and one Ctrl+Z step each; making a
+passage is not in the Ctrl+Z history (it is paid). Removing a station drops its passages and pairs. Demand counts a passage once both
 stations are constructed.
 
 ## Station buildings
@@ -1004,7 +1031,10 @@ stations are constructed.
   or "Built. Click to change its outline", or "Click to stop" while drawing.
 - **A closed outline** shows its corners as round handles and each edge's middle as a small one.
   Drag a corner to move it; right click a corner to delete it (3 at least); drag an edge's middle to
-  make a new corner there. The bar at the map's bottom left says "New station building: 4 corners"
+  make a new corner there. A finger does the same: drags a handle (18 px reach for a corner, 14 for a
+  middle), holds a corner half a second to delete it, and at 3 corners the hold says "A station building
+  has 3 to 24 corners." as a notice; the touch bar sits above the outline, clear of its handles
+  (T-4341). The bar at the map's bottom left says "New station building: 4 corners"
   (or "Station building outline") with Cancel (Esc) and Construct, or Save outline, (Enter).
 - **Drawing by hand**: Esc drops a new outline (a second Esc leaves the tool). Each click places a
   corner, a ghost edge follows the pointer, the outline so far is shaded closed through it; a click on
@@ -1029,7 +1059,8 @@ stations are constructed.
   "Area" and its floor, "Room" and the riders its hall holds once the platforms are full, to the
   nearest 100 ("36,700 riders"; while platform crowds are drawn and riders wait there, "4,200/36,700
   riders"; hover "Riders who can wait in the hall once the platforms are full") [T-2219], then Edit
-  outline and Remove building. Remove building, and the delete tool
+  outline and Remove building. A building with no station inside (its last one removed) is picked by
+  a click on its floor and the panel holds this section alone (T-4341). Remove building, and the delete tool
   on the floor ("Remove the Times Sq-42 St station building"), ask first: "Remove the Times Sq-42 St
   station building? Nothing is refunded." Neither is in the Ctrl+Z history.
 - **On the map**: [ui-map.md](ui-map.md) "Station buildings on the map" (one shape with its
