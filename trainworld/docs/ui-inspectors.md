@@ -624,7 +624,10 @@ line panel's own remove button works as before.
   the page is open) and Copy line, which opens a row of the group's bullets; a click on one copies
   that line (hover "Copy 4") into the group. With two or more of its lines running on rail, the line panel's
   timetable icon (hover "Detailed schedule", T-4276) opens the group's timetable and chart in the schedule panel ([ui-panels.md](ui-panels.md#schedule-panel), T-3346).
-- **Rows**: one place (station complex, `stopKey`) each. They start from the line with most stops in
+- **Rows**: one place each: railway station complexes (`stopKey`) and shared bus stop places
+  (`busPlaces`). A bus place at a railway station uses that station's complex; nearby places linked
+  only by a walk stay separate. Individual stop ids and stop order are retained. Clicking a bus
+  stop name opens its bus stop panel. They start from the line with most stops in
   its path order, north up as the line panel's stops (T-1894); each other line is matched to them by place, turned around if it runs the other
   way, and its own places go in as one block: between the rows it leaves and rejoins, or above its
   first shared row or below its last, whichever leaves the shorter bar running beside them. So a
