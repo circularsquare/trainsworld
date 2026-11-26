@@ -99,6 +99,8 @@ export const Icon = {
   // the line panel's related lines (T-1168), as its diagram looks (T-1860, Anita's sketch): two lines side by side, a station pill across both, the right one curving away at the bottom
   allStops: () => <svg viewBox="0 0 16 16"><path d="M8 1.5v13M5 3.5h6M5 6.5h6M5 9.5h6M5 12.5h6" /></svg>,
   related: () => <svg viewBox="0 0 16 16"><path d="M6 1.5v13M10 1.5v8c0 1.8 1 3 3 5" /><rect x="3.5" y="4.5" width="9" height="3.5" rx="1.75" /></svg>,
+  // flat junctions and crossings on the line panel's stops diagram: a route line with a diamond mark
+  routeMarks: () => <svg viewBox="0 0 16 16"><path d="M8 1.5v3.3M8 11.2v3.3M8 4.8L11.2 8 8 11.2 4.8 8z" /></svg>,
   // T-4259: names in a list, with the text cursor
   rename: () => <svg viewBox="0 0 16 16"><path d="M1.5 4.5h6M1.5 8h6M1.5 11.5h6M12 2.5v11M10.5 2.5h3M10.5 13.5h3" /></svg>,
   // two parallel tracks with an express pair added beside them
