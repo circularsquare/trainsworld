@@ -10,7 +10,8 @@ import { complexes } from "../game/complexView";
 import { membersOf } from "../game/complexes";
 import { complexTitle, leadOf } from "../game/complexLead";
 import type { EditOp } from "../workers/protocol";
-import { listedLines, edit } from "../game/world";
+import { listedLines, edit, world } from "../game/world";
+import { backStopAt } from "../game/stopStations";
 import { display, selection, shownDayPhrase, stationSort, uiScale, type StationUseMode } from "../game/ui";
 import { listWorld, scopedLists } from "../game/listScope";
 import { accountVersion } from "../game/boarding";
@@ -144,7 +145,9 @@ function stationRows(stations: readonly StationInput[], all: readonly StationInp
   const cx = complexes.value;
   const byId = new Map(all.map((s) => [s.id, s]));
   const lineIdx = new Map<string, number[]>();
-  lines.forEach((l, i) => { for (const id of l.stops) { const a = lineIdx.get(id); if (!a) lineIdx.set(id, [i]); else if (a[a.length - 1] !== i) a.push(i); } });
+  // (a stop's return run's own station lists the line too, game/stopStations.ts)
+  const w = world.peek();
+  lines.forEach((l, i) => { for (const id of w ? [...l.stops, ...l.stops.flatMap((_, k) => backStopAt(w, l, k) ?? [])] : l.stops) { const a = lineIdx.get(id); if (!a) lineIdx.set(id, [i]); else if (a[a.length - 1] !== i) a.push(i); } });
   const seen = new Set<number | string>();
   const rows: StationRow[] = [];
   for (const s of stations) {

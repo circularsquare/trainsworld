@@ -20,6 +20,7 @@ import { selection, shownDay, shownDayOn, shownDayPhrase } from "../../game/ui";
 import { builtCities } from "../../game/worldTotals";
 import { AVERAGE_DAY } from "../../game/days";
 import { listedLines, stationsById, world } from "../../game/world";
+import { backStopAt } from "../../game/stopStations";
 import type { LineInput, StationInput } from "../../game/types";
 import { figures, moneyTip, net, pointsTip } from "../Cities";
 import { goalTip } from "../GoalTicks";
@@ -111,7 +112,7 @@ export function CityNetwork({ city }: { city: City }) {
   // one row per complex (as the Stations tab), named after its member with most lines
   const cx = complexes.value, by = stationsToday.value;
   const linesAt = new Map<string, number>();
-  for (const l of listedLines(w)) for (const s of new Set(l.stops)) linesAt.set(s, (linesAt.get(s) ?? 0) + 1);
+  for (const l of listedLines(w)) for (const s of new Set([...l.stops, ...l.stops.flatMap((_, k) => backStopAt(w, l, k) ?? [])])) linesAt.set(s, (linesAt.get(s) ?? 0) + 1);
   const seen = new Set<string>();
   const stationRows: { lead: StationInput; n: number }[] = [];
   for (const s of w.save.stations) {

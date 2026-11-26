@@ -6,6 +6,7 @@ import { clock } from "./clock";
 import { crowdAt, platformRoom, QUEUE_STRIDE } from "./boarding";
 import type { LineId, LineInput, StationId, StationInput } from "./types";
 import { stationNames, stationsById, world } from "./world";
+import { stopStations, stopsAtStation } from "./stopStations";
 import { live } from "../map/live";
 
 /** One line and direction's riders on one platform now. */
@@ -77,7 +78,8 @@ export function complexNow(members: StationId[]): ComplexNow | null {
   const byId = stationsById(w);
   const names = stationNames(w);
   const byNum = new Map(members.map((m) => [byId.get(m)?.num, m]));
-  const lines = new Map(w.save.lines.filter((l) => !w.lineStats[l.id]?.bus && l.stops.some((st) => inside.has(st))).map((l) => [l.id, l]));
+  // (either half of a stop whose runs stop at stations of their own, game/stopStations.ts)
+  const lines = new Map(w.save.lines.filter((l) => !w.lineStats[l.id]?.bus && l.stops.some((_, k) => stopStations(w, l, k).some((st) => inside.has(st)))).map((l) => [l.id, l]));
   const now = clock.now();
   const queues: QueueNow[] = [];
   const platforms = new Map<StationId, ComplexPlatform>();
@@ -92,9 +94,10 @@ export function complexNow(members: StationId[]): ComplexNow | null {
       if (!l || !s) continue;
       // a line stopping here twice (T-797): the visit at the queue's offset along run 0
       const offs = w.lineStats[line]?.stopS[0] ?? [];
-      let k = l.stops.indexOf(station);
-      for (let j = k + 1; j < l.stops.length; j++)
-        if (l.stops[j] === station && Math.abs((offs[j] ?? Infinity) - b.queues[base + 3]) < Math.abs((offs[k] ?? Infinity) - b.queues[base + 3])) k = j;
+      const ks = stopsAtStation(w, l, station);
+      let k = ks[0] ?? -1;
+      for (const j of ks.slice(1))
+        if (Math.abs((offs[j] ?? Infinity) - b.queues[base + 3]) < Math.abs((offs[k] ?? Infinity) - b.queues[base + 3])) k = j;
       const c = crowdAt(b, q, t);
       queues.push({ station, line, run, dir: runDir(l, run, k, s, byId), waiting: c.waiting, to: names.get(run === 0 ? l.stops[l.stops.length - 1] : l.stops[0]) ?? "", leftBehind: c.leftBehind });
     }

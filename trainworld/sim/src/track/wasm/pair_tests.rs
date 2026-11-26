@@ -9,8 +9,9 @@ fn east_half(a: &TrackApi, x: u32, y: u32) -> (u32, u32) {
     if a.w.net.leg_heading(x).unwrap().cos() > 0.0 { (x, y) } else { (y, x) }
 }
 
-/// Line `l` lists `stop` once and its runs stop there at `fwd` (run 0) and `back` (run 1), each a stop
-/// served both ways round the trip: no half dot, no stop passed.
+/// Line `l` lists `stop` once and its runs stop there at `fwd` (run 0) and `back` (run 1), no stop passed:
+/// two stations, each a stop with its half dot the way its run's trains run there, both stops to the stop
+/// editor.
 fn assert_one_stop(a: &TrackApi, l: u32, stop: u32, fwd: u32, back: u32, what: &str) {
     let net = &a.w.net;
     assert!(!net.line_broken[l as usize] && net.check_line(l).is_ok(), "{what}: the line runs, {:?}", net.check_line(l));
@@ -23,7 +24,14 @@ fn assert_one_stop(a: &TrackApi, l: u32, stop: u32, fwd: u32, back: u32, what: &
     assert_eq!(ls.stop_node(1, n - 1 - k), Some(back), "{what}: run 1 at the other");
     assert!(!ls.runs[0].passes(k) && !ls.runs[1].passes(n - 1 - k), "{what}: stopped at both ways");
     let ways = a.line_stop_ways(l);
-    assert!(!ways.chunks(2).any(|c| c[0] as u32 == fwd || c[0] as u32 == back), "{what}: no half dot, {ways:?}");
+    for half in [fwd, back] {
+        let dot: Vec<f64> = ways.chunks(2).filter(|c| c[0] as u32 == half).map(|c| c[1]).collect();
+        assert_eq!(dot, vec![net.leg_heading(half).unwrap()], "{what}: {half}'s half dot, {ways:?}");
+    }
+    let tiers = a.stop_tiers(l);
+    for half in [fwd, back] {
+        assert!(tiers.chunks(3).any(|c| c[0] as u32 == half && c[1] == 0.0), "{what}: {half} a stop to the editor");
+    }
     for r in 0..2 {
         assert!(net.path_reversals(&ls.runs[r].segs).is_empty(), "{what}: run {r} turns back");
     }

@@ -13,6 +13,7 @@ import { periodAt, PERIODS } from "../../game/periods";
 import type { LineDemand } from "../../game/demand";
 import type { LineInput } from "../../game/types";
 import { linesAtMap, stationNames, world } from "../../game/world";
+import { backStopAt } from "../../game/stopStations";
 import { profileS } from "../../map/network";
 import { complexes } from "../../game/complexView";
 import { membersOf } from "../../game/complexes";
@@ -79,7 +80,8 @@ export function TrainStops({ line, dm, board, trip, run, seg, stopS, profile, de
   // a circle's trip ends at its first stop again and carries on round as the next trip
   const last = wrap ? n - 2 : n - 1;
   const names = stationNames(w);
-  const stops = run === 0 ? line.stops : [...line.stops].reverse();
+  // run 1 at its own stations where they differ (game/stopStations.ts)
+  const stops = run === 0 ? line.stops : line.stops.map((s, k) => backStopAt(w, line, k) ?? s).reverse();
   const shares = alightShares(dm, n, run, wrap);
   const load = (t: number) => (t < 0 || t >= n - 1 ? 0 : tripLoad(board, trip, run === 0 ? t : n - 2 - t) ?? 0);
   const net = live.overlay?.renderer.net;

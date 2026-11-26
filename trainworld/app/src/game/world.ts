@@ -19,6 +19,7 @@ import { noteEdit } from "./editCap";
 import { asRun, sendingRun } from "./pending";
 import { checkPatches, freshly, freshNow, sameBuilt, worldDiff } from "./worldDiff";
 import { timed } from "./stepTimes";
+import { backStopAt } from "./stopStations";
 import type { Demand, LineId, LineInput, LineStats, RowFigs, Save, StationInput, WorldView } from "./types";
 import { DEMAND_INDEX, DEMANDS, loopHalves } from "./types";
 
@@ -1117,7 +1118,8 @@ export const linesAtMap = (w: WorldView) => lookup(w, "linesAt", (s) => {
   for (const t of s.lines) {
     const l = t.twinOf ? byId.get(t.twinOf) : t;
     if (!l) continue;
-    for (const st of new Set(t.stops)) {
+    // a stop's return run's own station (game/stopStations.ts) lists it too
+    for (const st of new Set([...t.stops, ...t.stops.flatMap((_, k) => backStopAt(w, t, k) ?? [])])) {
       const v = at.get(st) ?? at.set(st, []).get(st)!;
       if (!v.includes(l)) v.push(l);
     }

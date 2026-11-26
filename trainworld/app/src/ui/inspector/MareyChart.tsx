@@ -17,6 +17,7 @@ import { nearestStation } from "../../game/places";
 import { display, shade as uiShade } from "../../game/ui";
 import { rgb } from "../../game/palette";
 import { linesByNum, stationNames, stationsById, world } from "../../game/world";
+import { stopStations } from "../../game/stopStations";
 import type { LineInput, LineStats } from "../../game/types";
 import { live } from "../../map/live";
 import type { NetworkBuffers } from "../../map/network";
@@ -417,7 +418,7 @@ export function MareyBody({ l, st, links, width, plotH, group, win, view, dir, h
     <div class="marey-chart" style={{ width: width + "px", height: height + "px" }}>
       <svg class="marey-base" width={width} height={height}>
         {labels.map(({ i, y }) => (
-          <text class="marey-stop" x={GUTTER - 8} y={y + 4}>{fit(names.get(l.stops[i]) ?? "")}</text>
+          <text class="marey-stop" x={GUTTER - 8} y={y + 4}>{fit(stopStations(w, l, i).map((s) => names.get(s) ?? "").join(" / "))}</text>
         ))}
         {l.stops.map((_, i) => <line class="marey-grid" x1={GUTTER} x2={GUTTER + PLOT_W} y1={yOf(st.stopS[0][i] ?? 0)} y2={yOf(st.stopS[0][i] ?? 0)} />)}
         {flats.map((f) => <line class="marey-flat" x1={GUTTER} x2={GUTTER + PLOT_W} y1={yOf(f.s)} y2={yOf(f.s)} />)}

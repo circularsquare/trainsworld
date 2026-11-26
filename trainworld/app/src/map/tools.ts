@@ -48,6 +48,7 @@ import { roadTileTemplate } from "./busRoads";
 import { kAtY, toLngLat, toLocal } from "./geo";
 import { laneState } from "./renderer";
 import { planStopsOf, type Level } from "../game/types";
+import { listedFor } from "../game/stopStations";
 import { endHeading } from "./curveCircle";
 import { ahead, asRun, editsSentCount, lastSentSeq, setRunBreak, type Ahead, type Show } from "../game/pending";
 import { ghostTangent, LOCAL_PX, sameLine, warmGhostLocal, type TangentSpec } from "./ghostLocal";
@@ -1641,11 +1642,12 @@ export class Tools {
     const id = lineDraft.peek().line, game = gameStamp.peek();
     if (id === null) return;
     if (!tier) {
-      const line = clickWorld()?.save.lines.find((l) => Number(l.id) === id);
+      const w = clickWorld(), line = w?.save.lines.find((l) => Number(l.id) === id);
       // T-3474: the panel's rows are the stops its trains serve, which a guess matches only while they are the plan
-      // (a shift-click on a stop keeps the row)
-      const on = !!line?.stops.includes(String(station));
-      if (line && !line.planStops && !(oneWay && on)) guessRow(String(station), on, line.num);
+      // (a shift-click on a stop keeps the row); a stop's other half is its row (game/stopStations.ts)
+      const row = line && w ? listedFor(w, line, String(station)) : String(station);
+      const on = !!line?.stops.includes(row);
+      if (line && !line.planStops && !(oneWay && on)) guessRow(row, on, line.num);
     }
     // T-4114: a plain click goes at once (the worker reads the stops it holds then); a loop's or a shift-click waits its turn
     const go = () => this.toggle(station, id, game, tier, oneWay);
@@ -1654,15 +1656,18 @@ export class Tools {
     }).finally(() => {
       if (tier) return;
       this.stops?.settleClick(id, station);
-      const line = clickWorld()?.save.lines.find((l) => Number(l.id) === id);
-      settleRow(String(station), !!line && !line.planStops && line.stops.includes(String(station)), id);
+      const w = clickWorld(), line = w?.save.lines.find((l) => Number(l.id) === id);
+      const row = line && w ? listedFor(w, line, String(station)) : String(station);
+      settleRow(row, !!line && !line.planStops && line.stops.includes(row), id);
     });
   }
 
   async toggle(station: number, id: number, game: number, tier?: StopTier, oneWay = false) {
     if (game !== gameStamp.peek()) return;
-    const line = clickWorld()?.save.lines.find((l) => Number(l.id) === id);
-    if (!line) return;
+    const w = clickWorld(), line = w?.save.lines.find((l) => Number(l.id) === id);
+    if (!w || !line) return;
+    // a stop's other half, its return run's (game/stopStations.ts), stands for the stop: a click there takes it out
+    if (!tier && !oneWay && !line.planStops) station = Number(listedFor(w, line, String(station)));
     const before = planStopsOf(line).map(Number);
     let change: Parameters<typeof edit>[0];
     const n = before.length;

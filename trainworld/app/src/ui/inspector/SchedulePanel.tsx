@@ -23,6 +23,7 @@ import { Chip, Icon, Segmented } from "../widgets";
 import { limitsFrom } from "./LineInspector";
 import { useChartLinks } from "./MareyChart";
 import { TrainTable, useRelated } from "./TrainTable";
+import { backStopAt, stopsAtStation } from "../../game/stopStations";
 import { NO_LIMITS, Schedule, useLinePeriods, vehicleOf, vehiclesText } from "./schedule";
 import { ONLY_TIP, OnlyIcon } from "./stopOnly";
 
@@ -57,6 +58,11 @@ export async function stationDepartures(l: LineInput, st: LineStats, station: st
   const asks: { line: number; node: number }[] = [];
   const node = byId.get(station)?.num;
   if (node !== undefined) asks.push({ line: l.num, node });
+  // a stop whose return run stops at a station of its own (game/stopStations.ts): those trains leave from there
+  for (const k of stopsAtStation(w, l, station)) {
+    const b = backStopAt(w, l, k), bn = b === undefined ? undefined : byId.get(b)?.num;
+    if (bn !== undefined && !asks.some((a) => a.line === l.num && a.node === bn)) asks.push({ line: l.num, node: bn });
+  }
   const twin = st.twin ? linesById(w).get(st.twin) : undefined;
   if (twin) {
     const nodes = new Set(l.stops.flatMap((s, i) => (s === station && twin.stops[i] ? [byId.get(twin.stops[i])?.num] : [])));
@@ -89,6 +95,8 @@ function Board({ l, st }: { l: LineInput; st: LineStats }) {
   const names = stationNames(w);
   // the stations in the line's order, each once; a loop's first stop again at its end left out
   const stops = [...new Set(l.stops)];
+  // a stop whose return run stops at a station of its own names both: its trains leave from each (`stationDepartures`)
+  const stopLabel = (s: string) => [...new Set([s, ...stopsAtStation(w, l, s).flatMap((k) => backStopAt(w, l, k) ?? [])])].map((x) => names.get(x) ?? "").join(" / ");
   const [station, setStation] = useState(stops[0]);
   const at = stops.includes(station) ? station : stops[0];
   // T-4013: trains still leave a getting-off-only stop, so its departures stay, under its mark
@@ -122,7 +130,7 @@ function Board({ l, st }: { l: LineInput; st: LineStats }) {
       <div class="sp-tools">
         <span class="h sp-board-h">{t("schedulePanel.departures")}</span>
         <select aria-label={t("schedulePanel.station")} value={at} onChange={(e) => setStation(e.currentTarget.value)}>
-          {stops.map((s) => <option value={s}>{names.get(s) ?? ""}</option>)}
+          {stops.map((s) => <option value={s}>{stopLabel(s)}</option>)}
         </select>
         {only && <span class="muted sp-only"><OnlyIcon kind={only} />{t(ONLY_TIP[only])}</span>}
       </div>

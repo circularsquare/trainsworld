@@ -579,7 +579,8 @@ impl TrackApi {
                 (7.0, -1.0)
             } else if unturn_at == Some(n) {
                 (8.0, -1.0)
-            } else if stops.contains(&n) {
+            } else if stops.contains(&n) || stops.iter().any(|&s| net.pair_of(s) == Some(n)) {
+                // (the other half of a paired stop is a stop too, its run 1's: a click there drops it)
                 (0.0, -1.0)
             } else if !stops.is_empty() && !reach[n as usize] {
                 (3.0, -1.0)
@@ -702,6 +703,8 @@ impl TrackApi {
         if !ls.one_way {
             // T-3565: a one-way station, which the run on the other track passes
             let mut legs: Vec<u32> = ls.runs.iter().flat_map(|r| r.away.iter().map(|x| x.1)).collect();
+            // a paired stop's two halves (`pair_of`), each served the way its run runs there
+            legs.extend(ls.stops.iter().filter_map(|&s| net.pair_of(s).map(|p| [s, p])).flatten());
             legs.sort_unstable();
             legs.dedup();
             // T-3711: a one-way stop the player set, the way trains arriving by its side run

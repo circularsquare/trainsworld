@@ -1252,7 +1252,12 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   of track, their trains running roughly opposite ways (within 60 degrees), one complex or within `WAY_WALK_M`
   (`pair_refusal`: `PairNotOneWay`, `PairNotOpposite`, `PairTooFar`). Paired, neither is a `leg_stop`: a line lists
   one, run 0 stops at the half on its track and run 1 at the other, its `way_group` being its pair alone (as a
-  one-track station's per-direction stop, above), so no half dot and `line_back_stops` names the other half. Pairing
+  one-track station's per-direction stop, above), and `line_back_stops` names the other half. One stop to the line,
+  two stations on the map: each half has its half dot the way its run's trains run there (`line_stop_ways`) and is a
+  stop to the stop editor (`stop_tiers`, a click on either taking the stop out), and every view that shows where a
+  line stops or which lines stop at a station reads both (`game/stopStations.ts`: the station and complex views,
+  the departures board, the train table and chart, a train's stops, the line's stop rows naming both), each half
+  counting its own run's part of the stop's boardings (`game/stopShare.ts`, from the forecast's boardings by run). Pairing
   is one free undoable edit with the lines it touches (`pair_edit`): one listing both halves keeps the one run 0 stops
   at, one listing only the other half lists run 0's instead, each routed again on the paired track where its path no
   longer does; Unpair puts the other half back in beside the one listed, two stops served once again. A stop list

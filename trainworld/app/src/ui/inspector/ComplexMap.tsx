@@ -18,6 +18,8 @@ import { count, length, scaleBars } from "../../game/format";
 import { segmentGap } from "../../game/complexes";
 import type { LineInput, StationInput } from "../../game/types";
 import { world } from "../../game/world";
+import { runAt, stopStations } from "../../game/stopStations";
+import { stopShare } from "../../game/stopShare";
 import { vehicleOf } from "../../game/vehicle";
 import { waitToward, type ComplexNow } from "../../game/complexLive";
 import { live } from "../../map/live";
@@ -28,7 +30,7 @@ import { STATION_BOX_ZOOM } from "../../map/stationGeometry";
 
 /** Riders on a line's trains at its `k`th stop a day, both directions: in each direction the
  * busier of the arriving and leaving train loads, every period summed. */
-function ridersAt(dm: LineDemand, n: number, k: number): number {
+function ridersAt(dm: LineDemand, n: number, k: number, run: 0 | 1 | null = null): number {
   let sum = 0;
   for (const seg of dm.loads) {
     if (seg.length !== 2 * (n - 1)) continue;
@@ -36,7 +38,8 @@ function ridersAt(dm: LineDemand, n: number, k: number): number {
     // is stop n - 1 - j to n - 2 - j, stored after run 0's
     const in0 = k > 0 ? seg[k - 1] : 0, out0 = k < n - 1 ? seg[k] : 0;
     const in1 = k < n - 1 ? seg[n - 1 + (n - 2 - k)] : 0, out1 = k > 0 ? seg[n - 1 + (n - 1 - k)] : 0;
-    sum += Math.max(in0, out0) + Math.max(in1, out1);
+    // (a stop whose runs stop at stations of their own: the one run's at each, game/stopStations.ts)
+    sum += (run === 1 ? 0 : Math.max(in0, out0)) + (run === 0 ? 0 : Math.max(in1, out1));
   }
   return sum;
 }
@@ -155,13 +158,19 @@ export function ComplexMap({ id, members, stations, lines, now, onOpen }: {
     return () => o.setSnapshot(null);
   }, [ok, W, H, mx, my, zoom]);
 
-  if (st.length < 2) return null;
+  const w = world.value;
+  if (st.length < 2 || !w) return null;
 
   // what stops at each platform
   const at = new Map<string, { line: LineInput; boardings: number; riders: number; known: boolean }[]>(st.map((s) => [s.id, []]));
   for (const l of lines) {
     const dm = lineDemand(l.id);
-    l.stops.forEach((sid, k) => at.get(sid)?.push({ line: l, boardings: dm?.boardings[k] ?? 0, riders: dm ? ridersAt(dm, l.stops.length, k) : 0, known: !!dm }));
+    // a stop whose return run stops at a station of its own: each half its own run's (game/stopStations.ts)
+    l.stops.forEach((_, k) => {
+      for (const sid of stopStations(w, l, k)) {
+        at.get(sid)?.push({ line: l, boardings: (dm?.boardings[k] ?? 0) * stopShare(w, l, k, sid), riders: dm ? ridersAt(dm, l.stops.length, k, runAt(w, l, k, sid)) : 0, known: !!dm });
+      }
+    });
   }
 
   // each line's biggest changes at each platform, both directions, inside the complex only

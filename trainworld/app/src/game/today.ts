@@ -14,6 +14,8 @@ import { linesById, stationsById, world } from "./world";
 import { queryClock } from "../workers/clockClient";
 import { accountVersion, type CrowdedStretch } from "./boarding";
 import { demandView } from "./demand";
+import { stopStations } from "./stopStations";
+import { stopShare } from "./stopShare";
 import { linesPending, type PendingKind } from "./lineFigures";
 import { moneyState } from "./money";
 import { lineRunFactor } from "./regionMoney";
@@ -306,7 +308,8 @@ export const stationsToday = computed(() => {
   if (!w) return out;
   for (const l of w.save.lines) {
     const d = t.get(l.id);
-    if (d) l.stops.forEach((s, k) => out.set(s, (out.get(s) ?? 0) + (d.stops[k] ?? 0)));
+    // a stop whose return run stops at a station of its own: each half its run's part (game/stopStations.ts)
+    if (d) l.stops.forEach((_, k) => { for (const s of stopStations(w, l, k)) out.set(s, (out.get(s) ?? 0) + (d.stops[k] ?? 0) * stopShare(w, l, k, s)); });
   }
   return out;
 });
