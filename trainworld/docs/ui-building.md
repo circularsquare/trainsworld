@@ -1068,8 +1068,10 @@ is the pan and Shift+drag is MapLibre's zoom box, so a box needs a mode.
   `ui/Blueprint.tsx`]: the bar's controls work on a pick of one piece as on many: the levels, track type and count,
   Rebuild for built track (its choices dropped when a click picks other track; one grown or cut by Shift+click keeps
   them), Disable and Enable for blueprint, **Double up** [T-708, T-1680] for double track, the **Speed limit**
-  ([below](#the-select-tool) "Speed limit"), Remove and Clear. On single rail track **Run trains one way**,
-  **Reverse direction** and **Use automatic way** for the pieces pinned against the way their run gives (T-3137,
+  ([below](#the-select-tool) "Speed limit"), Remove and Clear. On rail track but a crossover **Run trains one way**
+  (double pieces too, both their tracks that way, each given the way along the chain the picked pieces make,
+  [track-and-service.md](track-and-service.md) "One-way double track"), **Reverse direction**, and on single track
+  **Use automatic way** for the pieces pinned against the way their run gives (T-3137,
   [track-and-service.md](track-and-service.md) 6.1 "Track settings"), the switch's hover "Set by the track it joins"
   while all of them run one way by themselves; one piece running one way shows its way as an arrow beside the
   switch. A pick of one blueprint piece adds **Add point** [T-2951] (an icon of track with a square on it and a plus,

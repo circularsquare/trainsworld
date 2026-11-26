@@ -249,9 +249,11 @@ void main() {
   // every casing is drawn before any colour, so the bands get one outline round them all. In the
   // Traffic view each band is its riders' width (a_wmul.yz the shifts); through a station's box
   // (u_cap) every view takes the Line view's slots, a line wide each before the cap
-  float bandOn = u_kind == 1 ? u_band : 0.0;
-  bool shared = bandOn > 0.0 && max(a_band.z, a_band.w) > 0.0;
   bool tBand = u_band_traffic == 1 && u_cap <= 0.0;
+  // (a return run's own stroke drawn in its line's slot of a ribbon, network.ts F_RIDE: none in the Traffic view,
+  // whose bands are riders', so it stays on its own track there)
+  float bandOn = u_kind == 1 && !(tBand && (flags & 65536) != 0) ? u_band : 0.0;
+  bool shared = bandOn > 0.0 && max(a_band.z, a_band.w) > 0.0;
   float wmul = shared && u_cap > 0.0 ? 1.0 : a_wmul.x;
   float bandW = tBand ? 1.0 : 1.0 - bandOn * mix(a_band.z, a_band.w, along);
   // (T-3533: bare track is never drawn narrower than its two tracks' outer edges, G + lt, from the first zoom
@@ -1012,11 +1014,13 @@ uniform vec2 u_passing;            // T-2233: px from the centre line to a passi
 uniform float u_keep;              // T-3297: 1 where trains keep right of their travel, -1 left
 uniform int u_level_hide;          // T-3420: the levels not drawn (the strokes' u_level_hide), and per sample its height in levels
 uniform highp sampler2D u_slevel;
+uniform highp sampler2D u_twin;    // R32F per sample: how far over to one-way double track's other track (network.ts \`sampleTwin\`)
 out float v_alpha;
 in vec2 a_load;               // this trip's first load in u_loads or -1, seconds to its last stop
 in vec4 a_stand;              // its stand at the terminal (T-1785): from, until - epoch (s), the next
                               // trip's first load in u_loads or -1, else its riders leaving or -1
 in vec4 a_bay;                // where it stands at its ends (T-2980, terminalBays.ts \`assignBays\`)
+in float a_twin;              // 1: it takes one-way double track's other track (terminalBays.ts \`bayTwin\`)
 ${SEL_GLSL}
 ${POS_GLSL}
 ${LEVEL_SHOWN_GLSL}
@@ -1049,9 +1053,10 @@ float shiftAt(vec4 lb, float side, float across) {
   return mix(base, side * u_passing.x, u_passing.y * (1.0 - smoothstep(0.0, ${PASS_LEAD_M.toFixed(1)}, lb.w)));
 }
 
-// T-2980, set in main: its run and that run's length, m
+// T-2980, set in main: its run and that run's length, m; and the line table row it is drawn along
 int g_run = 0;
 float g_len = 0.0;
+vec4 g_L = vec4(0.0);
 
 /** A place distance of a_bay (terminalBays.ts bayP): below 0 is a through end's, \`-p - 1\` m. */
 float bayP(float v) { return v < 0.0 ? -v - 1.0 : v; }
@@ -1070,7 +1075,7 @@ vec2 lineAtX(vec4 L, float d) {
  * drawn (1 its own, -1 the other, between on a crossover or a siding's lead): crossing the scissors
  * into a dead end's other platform or out of it, leaving a through platform over the crossover
  * behind it, or into a terminal's siding and out to the other platform. */
-float acrossAt(float x, float trainM) {
+float bayAcross(float x, float trainM) {
   float q = g_run == 0 ? g_len - x : x, r = g_run == 0 ? x : g_len - x;
   float sc = a_bay.x < 0.0 ? -1.0 : mod(a_bay.x, 4.0), ec = a_bay.z < 0.0 ? -1.0 : mod(a_bay.z, 4.0);
   if (r < q) {
@@ -1084,6 +1089,19 @@ float acrossAt(float x, float trainM) {
   }
   return 1.0;
 }
+/** How far over to one-way double track's other track the point \`x\` m along run 0 is drawn for a train that takes it
+ * (a_twin), 0-1 (network.ts \`twinAt\`). */
+float twinAt(float x) {
+  if (a_twin < 0.5) return 0.0;
+  float dd = clamp(x, 0.0, g_L.z);
+  float i0 = clamp(floor(dd / g_L.w), 0.0, max(g_L.y - 2.0, 0.0));
+  float f = clamp((dd - i0 * g_L.w) / max(min(g_L.w, g_L.z - i0 * g_L.w), 1e-3), 0.0, 1.0);
+  int si = int(g_L.x + i0);
+  return mix(texelFetch(u_twin, tc(si, ${TEX_W}), 0).x, texelFetch(u_twin, tc(si + (g_L.y > 1.5 ? 1 : 0), ${TEX_W}), 0).x, f);
+}
+/** The two together: where a terminal's places put it (bayAcross), and over to one-way double track's other track (-1
+ * there) for a train that takes it, so trains one after another stop at both its platforms. */
+float acrossAt(float x, float trainM) { return bayAcross(x, trainM) * (1.0 - 2.0 * twinAt(x)); }
 
 void main() {
   vec4 L;
@@ -1115,6 +1133,7 @@ void main() {
   vec4 M = texelFetch(u_meta, tc(prof, ${TEX_W}), 0);
   g_run = g_own ? 0 : (prof / ${PROFILES_PER_RUN}) % 2;
   g_len = M.w;
+  g_L = L;
   // T-3053: at a through end it stands with its middle at the stop, so up to half its length past the line's end
   float cLo = endClear(g_run == 0 ? a_bay.y : a_bay.w, totalM);
   float centre = clamp(d, cLo, max(cLo, L.z - endClear(g_run == 0 ? a_bay.w : a_bay.y, totalM)));

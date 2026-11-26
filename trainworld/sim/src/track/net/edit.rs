@@ -205,7 +205,8 @@ impl Network {
                 self.edge_crossover[i] = d.crossover;
                 self.edge_kind[i] = d.kind;
                 self.edge_sep[i] = d.sep;
-                self.edge_oneway[i] = if d.tracks == 1 { d.oneway } else { 0 };
+                // double track keeps a way only as set one way (`oneway_double`), never on a crossover
+                self.edge_oneway[i] = if d.tracks == 1 { d.oneway } else if !d.crossover && matches!(d.oneway, 1 | 2) { d.oneway } else { 0 };
                 self.edge_join[i] = if d.tracks == 1 { d.join } else { [0; 2] };
                 self.edge_limit[i] = piece_limit(d.limit, d.kind, d.crossover);
                 self.edge_ramp[i] = d.ramp;

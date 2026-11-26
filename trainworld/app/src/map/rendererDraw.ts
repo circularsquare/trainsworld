@@ -347,7 +347,8 @@ function strokesPass(rnd: NetworkRenderer, c: Ctx3) {
   // T-2991: one-way loops' chevrons on the Line view's strokes (the Traffic view's bands move apart)
   if (!opt.byLevel && !opt.bySpeed && !opt.byProfit && !rnd.trafficWidths)
     rnd.oneWay.draw(lc, vp, zoom, dpr, { wLine, band: bandOn, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: mute ? opt.selLine : -1 });
-  rnd.oneWayTrack.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: 0, mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
+  // (one-way double track's chevrons move onto its tracks as they draw apart: `band` their share apart)
+  rnd.oneWayTrack.draw(lc, vp, zoom, dpr, { wLine: wLine * 1.8, band: rnd.laneShiftM / (LANE_M / 2), mPx: pxPerUnitAt(zoom) * kAtY(0) * dpr, sel: -1, rgb: rgbf(shadeColours().mapInk) });
   }
   if (cache) {
     if (redraw) {
@@ -688,6 +689,10 @@ function trainsPass(rnd: NetworkRenderer, c: Ctx3) {
     gl.activeTexture(gl.TEXTURE13);
     gl.bindTexture(gl.TEXTURE_2D, rnd.tex.slevel);
     gl.uniform1i(rnd.trainU.u_slevel, 13);
+    // trains on one-way double track's other track (terminalBays.ts `bayTwin`)
+    gl.activeTexture(gl.TEXTURE14);
+    gl.bindTexture(gl.TEXTURE_2D, rnd.tex.twin);
+    gl.uniform1i(rnd.trainU.u_twin, 14);
     gl.bindVertexArray(rnd.trainVao);
     // every train but the selected; then the selected one's halo, round the whole consist as one
     // pill; then the selected train over it (T-242)

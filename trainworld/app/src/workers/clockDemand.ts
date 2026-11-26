@@ -183,16 +183,19 @@ function tripsPrelude(): boolean {
   timing.bays = 0;
   return true;
 }
-/** `TrackApi.trips` by hour, each asked once (T-2980: the hour before each one's too, for where trains stand at the
- * ends) */
+/** `TrackApi.trips_with_tracks` by hour, each asked once (T-2980: the hour before each one's too, for where trains stand
+ * at the ends): `TrackApi.trips`, then a number per trip (`tripsOf`, `twinsOf`) */
 function rawTrips(): (e: number) => Float32Array {
   const raws = new Map<number, Float32Array>();
   return (e) => {
     let r = raws.get(e);
-    if (!r) raws.set(e, (r = api!.trips(e)));
+    if (!r) raws.set(e, (r = api!.trips_with_tracks(e)));
     return r;
   };
 }
+/** The trips of a `rawTrips` hour, as `TrackApi.trips`, and each one's track on one-way double track (`bayTwin`). */
+const tripsOf = (r: Float32Array) => r.subarray(0, (r.length / 5) * 4);
+const twinsOf = (r: Float32Array) => r.subarray((r.length / 5) * 4);
 function bayTimes() {
   if (!termEnds.size) return null;
   const a = api!, t0 = performance.now();
@@ -212,8 +215,8 @@ function bayTimes() {
 interface TripSlice { e: number; trips: Float32Array; ends: Float32Array; nexts: Float32Array; bays: Float32Array }
 function sliceTrips(e: number, rawAt: (e: number) => Float32Array, times: ReturnType<typeof bayTimes>): TripSlice {
   const tT = performance.now();
-  const raw = rawAt(e), n = raw.length / 4;
-  const bays = assignBays(raw, e, times ? rawAt(e - BAY_LOOKBACK_S) : null, termEnds, (p) => times?.get(p));
+  const all = rawAt(e), raw = tripsOf(all), n = raw.length / 4;
+  const bays = assignBays(raw, e, times ? tripsOf(rawAt(e - BAY_LOOKBACK_S)) : null, termEnds, (p) => times?.get(p), twinsOf(all));
   timing.trips += performance.now() - tT;
   const trips = new Float32Array(n * 2), ends = new Float32Array(n), nexts = new Float32Array(n);
   for (let i = 0; i < n; i++) {

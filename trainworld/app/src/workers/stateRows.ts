@@ -681,7 +681,7 @@ export class StateRows {
   private static edgeOwn(a: TrackApi, id: number, tracks: number): { kind: number; setWay: 0 | 1 | 2 | 3; autoWay: 0 | 1 | 2 } {
     const k = a.edge_kind(id);
     // T-3078: 1 is high speed, which is rail
-    return { kind: k >= 2 ? k : 0, setWay: (tracks === 1 ? a.edge_oneway(id) : 0) as 0 | 1 | 2 | 3, autoWay: (tracks === 1 ? a.edge_infer(id) : 0) as 0 | 1 | 2 };
+    return { kind: k >= 2 ? k : 0, setWay: a.edge_oneway(id) as 0 | 1 | 2 | 3 /* double track: 0 or the way set (one-way double) */, autoWay: (tracks === 1 ? a.edge_infer(id) : 0) as 0 | 1 | 2 };
   }
 
   edges(a: TrackApi): ClockEdge[] {

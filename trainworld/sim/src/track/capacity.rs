@@ -556,6 +556,10 @@ fn build_sections(net: &Network, lines: &[LineSvc], cand: &[u32], in_k: &dyn Fn(
         let end = grouped[g..].partition_point(|x| x.0 == root) + g;
         let first_edge = keys[root as usize] / 2;
         let single = !directed(net, first_edge);
+        let me = members[m..].partition_point(|x| x.0 == root) + m;
+        // one-way double track: both tracks carry the way, so each train holds half a section all on
+        // it; one with plain double track in it is held by that
+        let share = if !single && members[m..me].iter().all(|x| net.oneway_double(x.1 / 2)) { 0.5 } else { 1.0 };
         users.clear();
         joins.clear();
         let mut u = g;
@@ -582,12 +586,11 @@ fn build_sections(net: &Network, lines: &[LineSvc], cand: &[u32], in_k: &dyn Fn(
             let occ_s = if single {
                 profile::time_at(ph, exit) - profile::time_at(ph, entry) + SINGLE_TRACK_MARGIN_S
             } else {
-                net.edge_section_s(path_edge(run.segs[i0])) + profile::v_max(ph, entry, exit) / SIGNAL_BRAKE
+                share * (net.edge_section_s(path_edge(run.segs[i0])) + profile::v_max(ph, entry, exit) / SIGNAL_BRAKE)
             };
             users.push(User { line: l, run: r, owner: true, occ: occ_s, at: entry - hold_back(lines, l as usize), stop: -1 });
             u = ue;
         }
-        let me = members[m..].partition_point(|x| x.0 == root) + m;
         let kf = cap.keys.len() as u32;
         cap.keys.extend(members[m..me].iter().map(|x| x.1));
         m = me;
@@ -679,8 +682,9 @@ fn build_nodes(net: &Network, lines: &[LineSvc], cand: &[u32], in_n: &dyn Fn(u32
                 if net.node_platform[n as usize] > 0 && net.one_side(n).is_none_or(|s| s == side_in) {
                     let track = if active_node_tracks(net, n) == 1 { 0 } else { side_in };
                     // T-2231: passing tracks give each direction two platform tracks, a stop pooled
-                    // over them, and a train that does not stop runs past on its own track
-                    let passing = overtake::passing_at(net, n);
+                    // over them, and a train that does not stop runs past on its own track; as does
+                    // a station on one-way double track, its two platforms both the one way's
+                    let passing = overtake::passing_at(net, n) || net.oneway_double_station(n);
                     let (stop, at, occ) = match run.stop_idx.iter().position(|&s| s as usize == k) {
                         Some(j) => (j as i32, run.stop_s[j], if passing { (dwell + net.node_margin_s(n as u32)) / 2.0 } else { dwell + net.node_margin_s(n as u32) }),
                         None => (-1, run.node_s[k] - hold_back(lines, l), PASSING_S),
@@ -987,7 +991,8 @@ pub(super) fn stretches(net: &Network, lines: &[LineSvc], f: u32, live: &dyn Fn(
             let mut k = 0;
             while k < chains.len() {
                 let (l, r, i0, j0, last) = chains[k];
-                let next = if i < ns && !turn && last + 1 == i {
+                // one-way double track ends a stretch: a faster train passes on its other track
+                let next = if i < ns && !turn && last + 1 == i && !net.oneway_double(path_edge(run.segs[i])) {
                     let j = j0 + (i - i0);
                     let s_run = &lines[l as usize].runs[r as usize];
                     j < s_run.segs.len() && s_run.segs[j] == run.segs[i] && !net.turns_back(s_run.segs[j - 1], s_run.segs[j])
@@ -1026,6 +1031,9 @@ pub(super) fn stretches(net: &Network, lines: &[LineSvc], f: u32, live: &dyn Fn(
             }
             // start chains for the runs on entry i that no chain carries on
             let p = run.segs[i];
+            if net.oneway_double(path_edge(p)) {
+                continue;
+            }
             let a = occ.partition_point(|o| o.0 < p);
             for o in occ[a..].iter().take_while(|o| o.0 == p) {
                 let j = o.3 as usize;

@@ -88,8 +88,8 @@ the render tiles are plain arithmetic, and the globe takes the same coordinates.
   (`checks/t3297-mirror.mjs`).
 - **Switching a game's side** [T-3297; `TrackApi::flip_right_hand`, `TrackWorld::flip_right_hand`], from
   Settings: in place, ids kept. Joins are ground left or right, so they stay; what was set for the other side is
-  turned around: every single-track piece the player set one way on a run meeting double track where a join counts
-  (`Network::flip_reversals`; a flyover's legs then still meet the tracks that run their way, and the leg that
+  turned around: every single-track piece the player set one way on a run meeting two-way double track where a join
+  counts (one-way double track keeps its way, and so does single track that meets only that) (`Network::flip_reversals`; a flyover's legs then still meet the tracks that run their way, and the leg that
   ramps over the main is again the one that crosses it). Every line the switch leaves broken is moved through its
   same stops where it can be; rates are settled again; the undo history is dropped. Reported, each a click from its
   place: pieces turned around and lines moved (fixed), lines left broken, junctions whose moves now cross flat where

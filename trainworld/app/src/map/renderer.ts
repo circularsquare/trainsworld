@@ -119,7 +119,7 @@ export class NetworkRenderer {
   profitTex: WebGLTexture | null = null;
   profitN = 0;
   profitData: Float32Array | null = null;
-  tex: Record<TexName, WebGLTexture | null> = { phases: null, meta: null, samples: null, bendAt: null, bends: null, lines: null, colours: null, fill: null, cars: null, stretch: null, stationLine: null, lane: null, slevel: null };
+  tex: Record<TexName, WebGLTexture | null> = { phases: null, meta: null, samples: null, bendAt: null, bends: null, lines: null, colours: null, fill: null, cars: null, stretch: null, stationLine: null, lane: null, slevel: null, twin: null };
   /** The boarding account's hour the trip buffer holds (T-164), or null before demand has riders. */
   board: BoardHour | null = null;
   crowds = new PlatformCrowds(0);
@@ -563,7 +563,7 @@ export class NetworkRenderer {
     this.selProg = compile(gl, SEL_VS, SEL_FS);
     this.selU = uniforms(gl, this.selProg, ["u_bbox", "u_css", "u_shapes", "u_count", "u_dpr", "u_height", "u_ink", "u_outline", "u_glow"]);
     this.selTex = texture(this, this.selData, "rgba32f", SEL_MAX * SEL_STRIDE, []);
-    this.trainU = uniforms(gl, this.trainProg, [...PROJECT_UNIFORMS, "u_viewport", "u_time", "u_px_per_unit", "u_min_px", "u_phases", "u_meta", "u_samples", "u_bend_at", "u_bends", "u_lines", "u_back_base", "u_line_colours", "u_fill", "u_bad", "u_detail", "u_dpr", "u_cars", "u_loads", "u_stretch", "u_sel_line", "u_sel_n", "u_sel_set", "u_dim", "u_sel_trip", "u_pass", "u_ink", "u_band", "u_psi0", "u_lane_tex", "u_lane", "u_hollow", "u_bands", "u_bands_m", "u_passing", "u_keep", "u_level_hide", "u_slevel"]);
+    this.trainU = uniforms(gl, this.trainProg, [...PROJECT_UNIFORMS, "u_viewport", "u_time", "u_px_per_unit", "u_min_px", "u_phases", "u_meta", "u_samples", "u_bend_at", "u_bends", "u_lines", "u_back_base", "u_line_colours", "u_fill", "u_bad", "u_detail", "u_dpr", "u_cars", "u_loads", "u_stretch", "u_sel_line", "u_sel_n", "u_sel_set", "u_dim", "u_sel_trip", "u_pass", "u_ink", "u_band", "u_psi0", "u_lane_tex", "u_lane", "u_hollow", "u_bands", "u_bands_m", "u_passing", "u_keep", "u_level_hide", "u_slevel", "u_twin"]);
     this.timer = new GpuTimer(gl);
     this.tripBuf = gl.createBuffer();
     this.endBuf = gl.createBuffer();
@@ -847,6 +847,8 @@ export class NetworkRenderer {
     this.passing = false;
     for (let i = 0; i < n.stationCount && !this.passing; i++) this.passing = (n.stations[i * 3 + 2] & ST_PASSING) !== 0;
     this.putLane(n, names?.lane);
+    // per sample, how far over to one-way double track's other track a train that takes it is drawn
+    this.putTrain("twin", n, names?.twin);
     this.trainMs = performance.now() - tt;
     put("colours", "lineColours", () => [this.shownColours(n), "rgba8", LINES_W]);
     this.hiddenFor = null;
@@ -905,13 +907,15 @@ export class NetworkRenderer {
     attrib(this, this.trainProg, "a_load", this.loadBuf!, 2, gl.FLOAT, 1);
     attrib(this, this.trainProg, "a_stand", this.standBuf!, 4, gl.FLOAT, 1);
     attrib(this, this.trainProg, "a_lag", this.lagBuf!, 1, gl.FLOAT, 1);
-    attrib(this, this.trainProg, "a_bay", this.bayBuf!, 4, gl.FLOAT, 1);
+    // (a trip's BAY_STRIDE numbers: its places at its ends, then its track on one-way double track)
+    attrib(this, this.trainProg, "a_bay", this.bayBuf!, 4, gl.FLOAT, 1, false, BAY_STRIDE * 4, 0);
+    attrib(this, this.trainProg, "a_twin", this.bayBuf!, 1, gl.FLOAT, 1, false, BAY_STRIDE * 4, 16);
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     if (!aheadEmpty(this.ahead) || this.aheadDrawn) this.buildAhead();
     if (this.checkPatch && this.keepGl) {
       this.texturesRead = checkTextures(this);
-      this.checkTrains(["samples", "bendAt", "bends", "phases", "stretch", "lane"], n);
+      this.checkTrains(["samples", "bendAt", "bends", "phases", "stretch", "lane", "twin"], n);
       if (!phasesFromFirst(n.meta, phaseRows(n.meta))) console.error("T-4274 check: a line's phases do not start at its first profile's first phase");
     }
     this.netMs = performance.now() - t0;
@@ -1072,6 +1076,7 @@ export class NetworkRenderer {
       }
       case "fill": return ["rg32f", S, { srcs: [this.fillSrc ?? this.blankFill(Math.max(1, n.samples.length / 2))], per: [2] }];
       case "slevel": return ["r32f", S, { srcs: [this.sampleLv ?? undefined], per: [1] }];
+      case "twin": return ["r32f", S, { srcs: [n.sampleTwin?.length ? n.sampleTwin : undefined], per: [1] }];
     }
   }
   /** T-4274: train table `name` written for network `n` through its layout */
@@ -1582,11 +1587,13 @@ function trainNames(was: NetworkBuffers, n: NetworkBuffers, touched: EditTouched
     phases: { keys: namedKeys(touched.phases, false), from: [was.phases] },
     stretch: { keys: namedKeys(patch.stretches, true), from: [was.sampleStretch] },
     lane: { keys: lane, from: [was.sampleLane?.length ? was.sampleLane : undefined, was.sampleBand, was.samplePass] },
+    // (one-way double track's, made again with a run's lanes: `NetPatch.lanes` names them too)
+    twin: { keys: lane, from: [was.sampleTwin?.length ? was.sampleTwin : undefined] },
   };
 }
 
 /** the trains' tables kept in slots (trainSlots.ts) */
-type SlotName = "samples" | "bendAt" | "bends" | "phases" | "stretch" | "lane" | "fill" | "slevel";
+type SlotName = "samples" | "bendAt" | "bends" | "phases" | "stretch" | "lane" | "fill" | "slevel" | "twin";
 
 /** two float arrays bit for bit */
 function sameWords(a: Float32Array, b: Float32Array): boolean {

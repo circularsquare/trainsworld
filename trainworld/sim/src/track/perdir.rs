@@ -15,11 +15,10 @@ const WAY_WALK_M: f64 = 300.0;
 const WAY_COS: f64 = 0.5;
 
 impl Network {
-    /// Station `n`'s platform serves one way only: on one-way single track, or a one-track station
-    /// on double track (T-3332).
+    /// Station `n`'s platform serves one way only: on one-way track (single, or double set one way),
+    /// or a one-track station on double track (T-3332).
     pub fn way_limited(&self, n: u32) -> bool {
-        self.one_side(n).is_some()
-            || self.node_ports[n as usize].ends().iter().any(|&c| self.edge_tracks[(c >> 1) as usize] == 1 && self.edge_way(c >> 1) != 0)
+        self.one_side(n).is_some() || self.node_ports[n as usize].ends().iter().any(|&c| self.edge_way(c >> 1) != 0)
     }
 
     /// Whether trains running through station `m` along its heading (`along`), or against it, can
@@ -78,16 +77,16 @@ impl Network {
         self.way_group(s).into_iter().filter(|&m| self.way_limited(m)).collect()
     }
 
-    /// T-3565: the heading (radians, world frame) trains run through station `s` on one-way single
-    /// track, a one-way station; None for any other node (a one-track station on double track,
-    /// T-3332, is none).
+    /// T-3565: the heading (radians, world frame) trains run through station `s` on one-way track (single,
+    /// or double set one way: its two platforms serve the one way), a one-way station; None for any other
+    /// node (a one-track station on double track, T-3332, is none).
     pub fn leg_heading(&self, s: u32) -> Option<f64> {
         let i = s as usize;
         if !self.node_ok(s) || !self.is_station(s) || self.trackless(s) || self.one_side(s).is_some() {
             return None;
         }
         let p = &self.node_ports[i];
-        if p.n != 2 || p.ends().iter().any(|&c| self.edge_tracks[(c >> 1) as usize] != 1 || self.edge_way(c >> 1) == 0) {
+        if p.n != 2 || p.ends().iter().any(|&c| self.edge_crossover[(c >> 1) as usize] || self.edge_way(c >> 1) == 0) {
             return None;
         }
         // a train leaving by side 1 runs along the heading

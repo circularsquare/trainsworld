@@ -396,6 +396,9 @@ function StationDetails({ s, lines, props }: {
   const here = lines.map((l) => [l, visits(l).reduce((n, k) => n + (t.get(l.id)?.stops[k] ?? 0), 0)] as const);
   const m = moneyState.value;
   const doubleHere = !!world.value?.edges.some((e) => (e.a === s.num || e.b === s.num) && e.tracks === 2);
+  // on one-way double track both platforms are the one way's: there is no track to put one platform on
+  const at = world.value?.edges.filter((e) => e.a === s.num || e.b === s.num) ?? [];
+  const onewayDouble = at.length === 2 && at.every((e) => e.tracks === 2 && !e.crossover && !!e.oneWay);
   return (
     <>
       <Built built={s.built} />
@@ -409,8 +412,8 @@ function StationDetails({ s, lines, props }: {
           }} />
         </li>}
         {/* T-3332: on double track the platform on the left track, both or the right track; on single track
-            a stop with or without a passing loop */}
-        {!s.port && !s.brt && <li>
+            a stop with or without a passing loop; nothing on one-way double track */}
+        {!s.port && !s.brt && !onewayDouble && <li>
           <span class="grow">{tr("stationInspector.platformTracks")}</span>
           {doubleHere
             ? <StationSides s={s} />

@@ -1,4 +1,4 @@
-// One-way single track (T-3094): setting it sends the lines that ran the other way through the same
+// One-way track (T-3094; double track too, both its tracks the one way): setting it sends the lines that ran the other way through the same
 // stops another way, in the same edit. The player confirms the lines it changes first; a line with
 // no other way refuses it.
 

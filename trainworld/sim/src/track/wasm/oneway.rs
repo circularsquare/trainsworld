@@ -89,12 +89,24 @@ impl TrackApi {
                 return Err(Issue::NoSuchEdge { edge });
             }
             let mut d = net.edge_data(edge).ok_or(Issue::NoSuchEdge { edge })?;
-            if dir > 3 || (dir != 0 && (d.tracks != 1 || d.crossover)) {
+            if dir > 3 || (dir != 0 && d.crossover) {
                 return Err(Issue::Tracks { edge });
             }
-            d.oneway = dir;
+            // double track runs one way only as set (`oneway_double`): no run gives it a way to pin
+            if d.tracks == 2 && dir == 3 {
+                d.oneway = 0;
+            } else {
+                d.oneway = dir;
+            }
+            // a one-track station's platform is on the track its way runs on (T-3332), which one-way
+            // double track does not have: no such station on it
+            if d.tracks == 2 && matches!(dir, 1 | 2) {
+                if let Some(node) = [d.a, d.b].into_iter().find(|&n| net.one_track(n)) {
+                    return Err(Issue::OneTrackHere { node });
+                }
+            }
             // the ends joined to a double's track move to the track that carries the set way (T-3137 C4)
-            if dir == 1 || dir == 2 {
+            if d.tracks == 1 && (dir == 1 || dir == 2) {
                 for end in 0..2u32 {
                     if net.join_applies(edge << 1 | end) {
                         let away = (dir == 1) == (end == 0);

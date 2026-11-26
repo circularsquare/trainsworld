@@ -8,6 +8,7 @@
 
 import type { Strokes } from "./network";
 import { kAtY } from "./geo";
+import { LANE_M } from "./rendererParts";
 import { BAND_M_RANGE, BAND_RANGE, BAND_STRIDE } from "./lineBands";
 import { compileOptional, PROJECT_GLSL, PROJECT_UNIFORMS, setCamera, uniforms, type LocalCamera } from "./gl";
 
@@ -86,13 +87,16 @@ export function oneWayTrackChevrons(s: Strokes, way: 1 | 2, stops: readonly (rea
   }
 }
 
-/** One one-way edge of the network, for `oneWayTrackRuns`: its end nodes, `way` 1 running a to b and 2 b to a. */
-export interface OneWayEdge { a: number; b: number; way: 1 | 2; strokes: Pick<Strokes, "seg" | "dist" | "count"> }
+/** One one-way edge of the network, for `oneWayTrackRuns`: its end nodes, `way` 1 running a to b and 2 b to a;
+ * `double`: double track set one way, a chevron on each of its tracks. */
+export interface OneWayEdge { a: number; b: number; way: 1 | 2; strokes: Pick<Strokes, "seg" | "dist" | "count">; double?: boolean }
 
 /** One-way track's chevrons (T-3607) by distance along a run of connected one-way edges, carried across
  * the pieces (a street-snapped run is many short ones): a run goes on through a node where exactly one
- * one-way edge comes in and one leaves, and starts afresh anywhere else. Marks sit in the middle of each
- * step, so no piece forces one of its own. */
+ * one-way edge comes in and one leaves going on from it (not back the way it came: two pairs of one-way
+ * double track, one each way, meet two-way track at one junction, and a run taken on round from one to the
+ * other gave its marks to the other's side), and starts afresh anywhere else. Marks sit in the middle of
+ * each step, so no piece forces one of its own. */
 export function oneWayTrackRuns(edges: readonly OneWayEdge[], stopList: readonly (readonly [number, number])[], out: number[]) {
   const stops = stopGrid(stopList);
   const from = (e: OneWayEdge) => (e.way === 1 ? e.a : e.b), to = (e: OneWayEdge) => (e.way === 1 ? e.b : e.a);
@@ -103,7 +107,9 @@ export function oneWayTrackRuns(edges: readonly OneWayEdge[], stopList: readonly
   }
   const next = (e: OneWayEdge) => {
     const o = outs.get(to(e)), i = ins.get(to(e));
-    return o?.length === 1 && i?.length === 1 && o[0] !== e ? o[0] : undefined;
+    if (!(o?.length === 1 && i?.length === 1 && o[0] !== e)) return undefined;
+    const [ax, ay] = runDir(e, true), [bx, by] = runDir(o[0], false);
+    return ax * bx + ay * by >= 0 ? o[0] : undefined;
   };
   const hasPrev = new Set<OneWayEdge>();
   for (const e of edges) { const n = next(e); if (n) hasPrev.add(n); }
@@ -138,6 +144,16 @@ export function oneWayTrackRuns(edges: readonly OneWayEdge[], stopList: readonly
   for (const e of edges) follow(e);
 }
 
+/** The way edge `e` runs where it leaves its first node (`end` false) or reaches its last (true), a unit
+ * vector; 0, 0 where its piece there has no length. (Its strokes run from a to b.) */
+function runDir(e: OneWayEdge, end: boolean): [number, number] {
+  const s = e.strokes, n = s.count;
+  if (!n) return [0, 0];
+  const k = (end === (e.way === 1) ? n - 1 : 0) * 4, sign = e.way === 1 ? 1 : -1;
+  const dx = s.seg[k + 2] - s.seg[k], dy = s.seg[k + 3] - s.seg[k + 1], len = Math.hypot(dx, dy);
+  return len > 0 ? [(sign * dx) / len, (sign * dy) / len] : [0, 0];
+}
+
 function edgeLength(e: OneWayEdge): number {
   const s = e.strokes, n = s.count;
   if (!n) return 0;
@@ -161,7 +177,9 @@ function edgeMarkAt(e: OneWayEdge, travel: number, m: number, stops: StopGrid, o
   const t = Math.min(1, Math.max(0, (q - s.dist[lo]) / len));
   const x = x0 + t * dx, y = y0 + t * dy;
   const near = stops.nearest(x, y);
-  out.push(x, y, sign * dx / len, sign * dy / len, 0, 0, 0, -1, m, keep ? 1e9 : near / k, 1);
+  // one-way double track: one on each track, each its half gap (LANE_M) off the centre line, which the drawing
+  // opens with the tracks (`band` the lanes' share apart)
+  for (const mid of e.double ? [-LANE_M / 2, LANE_M / 2] : [0]) out.push(x, y, sign * dx / len, sign * dy / len, 0, mid, 0, -1, m, keep ? 1e9 : near / k, 1);
 }
 
 /** The marks on one edge of a run that starts `off` local units before it; returns the edge's length. */

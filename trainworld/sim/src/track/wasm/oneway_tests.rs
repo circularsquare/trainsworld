@@ -55,12 +55,24 @@ fn routing_never_runs_against_one_way_track() {
     let net = &a.w.net;
     assert_eq!(net.find_path(n[1], n[0], None).unwrap().0, vec![e[0] << 1 | 1]);
     assert_eq!(net.find_path(n[0], n[1], None).unwrap().0.len(), 2);
-    // double track has no flag
+    // double track takes it too: both its tracks run the set way (as the rebuild tool does, doubling
+    // clears the way first)
     let mut d = a.w.net.edge_data(e[0]).unwrap();
     d.tracks = 2;
+    d.oneway = 0;
     a.w.apply(Op::Edge { id: e[0], data: Some(d) }).unwrap();
     assert_eq!(a.edge_oneway(e[0]), 0);
-    assert_eq!(a.set_edge_oneway(e[0], 1), 1, "double track refuses");
+    assert_eq!(a.set_edge_oneway(e[0], 1), 0, "{}", a.issues());
+    assert_eq!(a.edge_oneway(e[0]), 1);
+    let net = &a.w.net;
+    assert_eq!(net.find_path(n[0], n[1], None).unwrap().0, vec![e[0] << 1]);
+    assert_eq!(net.find_path(n[1], n[0], None).unwrap().0.len(), 2, "B to A still goes round by C");
+    // a crossover between its tracks refuses it
+    assert_eq!(a.set_edge_oneway(e[0], 0), 0, "{}", a.issues());
+    let mut d = a.w.net.edge_data(e[0]).unwrap();
+    d.crossover = true;
+    a.w.apply(Op::Edge { id: e[0], data: Some(d) }).unwrap();
+    assert_eq!(a.set_edge_oneway(e[0], 1), 1, "a crossover refuses");
 }
 
 #[test]

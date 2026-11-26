@@ -695,7 +695,8 @@ works out in the clock worker, the inside's geometry `game/buildingLayout.ts`; t
   same track share its places. Each arriving train takes the place that frees first (its own track
   on a tie); a place is free 60 s after its train leaves. The pick is worked out in the clock
   worker from the timetable, with the hour before the window, so every window draws the same
-  (`assignBays`, four numbers per trip sent with the trips; `?perfOff=bays` turns it off). Drawn: a
+  (`assignBays`, five numbers per trip sent with the trips, the fifth the trip's track on one-way double track,
+  `bayTwin`; `?perfOff=bays` turns both off). Drawn: a
   train for a dead end's other platform crosses the scissors on the way in, over the 50 m past the
   platform (or past its own length, if longer), and a train leaving from the arrival side's
   platform crosses on the way out; a train ending at a through platform without a terminal leaves

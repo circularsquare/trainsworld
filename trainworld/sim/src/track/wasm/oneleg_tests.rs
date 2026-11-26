@@ -3,38 +3,38 @@
 
 use super::*;
 
-fn api(right_hand: bool) -> TrackApi {
+pub(super) fn api(right_hand: bool) -> TrackApi {
     let mut a = TrackApi::new(-73.985, 40.758, right_hand);
     a.set_cash(1e9);
     a
 }
-fn free(x: f64, y: f64) -> [f64; 5] {
+pub(super) fn free(x: f64, y: f64) -> [f64; 5] {
     [0.0, 0.0, x, y, 0.0]
 }
-fn ends(a: [f64; 5], b: [f64; 5]) -> Vec<f64> {
+pub(super) fn ends(a: [f64; 5], b: [f64; 5]) -> Vec<f64> {
     a.iter().chain(b.iter()).copied().collect()
 }
-fn node_near(a: &TrackApi, x: f64, y: f64) -> u32 {
+pub(super) fn node_near(a: &TrackApi, x: f64, y: f64) -> u32 {
     let n = &a.w.net;
     let d = |k: u32| (n.node_x[k as usize] - x).hypot(n.node_y[k as usize] - y);
     (0..n.node_count() as u32).filter(|&k| n.node_ok(k)).min_by(|&p, &q| d(p).total_cmp(&d(q))).unwrap()
 }
-fn at_node(a: &TrackApi, n: u32) -> [f64; 5] {
+pub(super) fn at_node(a: &TrackApi, n: u32) -> [f64; 5] {
     [1.0, n as f64, a.w.net.node_x[n as usize], a.w.net.node_y[n as usize], 0.0]
 }
-fn station_near(a: &mut TrackApi, x: f64, y: f64) -> u32 {
+pub(super) fn station_near(a: &mut TrackApi, x: f64, y: f64) -> u32 {
     let n = &a.w.net;
     let e = (0..n.edge_count() as u32).filter(|&e| n.edge_ok(e)).min_by(|&p, &q| n.project(p, x, y).1.total_cmp(&n.project(q, x, y).1)).unwrap();
     let (px, py, _) = crate::track::geom::pos_at(n.edge_pieces(e), n.project(e, x, y).0);
     assert_eq!(a.add_station(2, e, px, py, 120, "S".into()), 0, "{}", a.issues());
     node_near(a, px, py)
 }
-fn end_station(a: &mut TrackApi, x: f64, y: f64) -> u32 {
+pub(super) fn end_station(a: &mut TrackApi, x: f64, y: f64) -> u32 {
     let n = node_near(a, x, y);
     assert_eq!(a.add_station(1, n, x, y, 200, "T".into()), 0, "{}", a.issues());
     n
 }
-fn new_line(a: &mut TrackApi, stops: &[u32]) -> u32 {
+pub(super) fn new_line(a: &mut TrackApi, stops: &[u32]) -> u32 {
     let l = a.new_line_id();
     assert_eq!(a.set_line_with_trains(l, stops, 4, 2, 0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     l
