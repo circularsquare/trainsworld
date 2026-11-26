@@ -20,6 +20,7 @@ import type { Map as MlMap } from "maplibre-gl";
 import { planStopsOf, type LineInput, type WorldView } from "../game/types";
 import { lineDraft, loopTap, newLine, stopEditing } from "../game/ui";
 import { world } from "../game/world";
+import { backStopAt } from "../game/stopStations";
 import { halfFill } from "./halfDot";
 import { headingOnScreen } from "./stopHeading";
 import { headingChevron } from "./trackTagRows";
@@ -116,7 +117,8 @@ function tiersFrom(d: Float64Array, w: WorldView, revAt: Map<string, string>): M
 function stopTiers(w: WorldView, line: LineInput): Map<string, StopTier> {
   const out = new Map<string, StopTier>();
   const plan = planStopsOf(line);
-  const stops = new Set(plan);
+  // a stop's other half, its return run's (game/stopStations.ts), is a stop too
+  const stops = new Set([...plan, ...(plan === line.stops ? plan.flatMap((_, k) => backStopAt(w, line, k) ?? []) : [])]);
   const adj = new Map<number, number[]>();
   const routeNodes = new Set<number>();
   for (const e of w.edges) {

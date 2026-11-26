@@ -17,6 +17,7 @@ import { decodeRelated, type RelatedGroup } from "../../game/relatedLines";
 import { display, shade as uiShade } from "../../game/ui";
 import type { LineInput, LineStats } from "../../game/types";
 import { linesById, linesByNum, stationNames, stationsById, world } from "../../game/world";
+import { backStopAt } from "../../game/stopStations";
 import { t } from "../../i18n";
 import { profileRun } from "../../map/profiles";
 import { live } from "../../map/live";
@@ -665,14 +666,26 @@ export function TrainTable({ axis, st, others = [], related = [], links, group, 
 
   const ls = [axis, ...others];
   const rowsNow = lay.rows[dir];
+  // the way back's rows at its own stations where they differ (game/stopStations.ts): the first of the table's
+  // lines whose stop on that row has its way back at the other half of a pair, or on a platform of its own
+  const backOf = (j: number): string | undefined => {
+    if (dir === 0) return undefined;
+    for (let k = 0; k < ls.length; k++) {
+      const i = lay.rowOf[k]?.[1].indexOf(j) ?? -1;
+      const b = i >= 0 ? backStopAt(w, ls[k], i) : undefined;
+      if (b !== undefined) return b;
+    }
+    return undefined;
+  };
   // T-4013: a stop the line's riders only board or only get off at carries its mark (a merged table's, the axis line's)
-  const rowNames = rowsNow.map((r) => {
+  const rowNames = rowsNow.map((r, j) => {
     const l = r.lane >= 0 ? ls[r.lane] : axis;
     if (r.station === null) return <span class="ln band"><Lane l={l} />{l.name !== l.letter && <span class="nm">{l.name}</span>}</span>;
     const only = w.lineStats[l.id]?.stopOnly?.[r.station];
+    const name = names.get(backOf(j) ?? r.station) ?? "";
     const mark = only && <span class="stop-only" data-tip={t(ONLY_TIP[only])}><OnlyIcon kind={only} /></span>;
-    if (!lanes || look !== "c") return <span>{names.get(r.station) ?? ""}{mark}</span>;
-    return <span class="ln"><span class="nm">{r.first ? names.get(r.station) ?? "" : ""}</span>{mark}<Lane l={l} /></span>;
+    if (!lanes || look !== "c") return <span>{name}{mark}</span>;
+    return <span class="ln"><span class="nm">{r.first ? name : ""}</span>{mark}<Lane l={l} /></span>;
   });
   // a rule between bands (b) or stations (c, fainter); a merged table's every 5 rows (its background)
   const rules = lanes ? rowsNow.flatMap((r, j) => (j && r.first ? [{ y: j * ROW - 1, faint: r.station !== null }] : [])) : [];

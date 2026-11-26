@@ -249,6 +249,9 @@ pub struct StationData {
     /// T-3378: a BRT station: on no track, beside a road running on this heading (plane radians, the
     /// platform's axis). Only BRT lines stop there (`bus::reach`). None for every other station.
     pub road: Option<f64>,
+    /// The one-way station the player paired this one with, the other way's half of one stop
+    /// (`Network::pair_of`, which also checks the other names this one back); None for none.
+    pub pair: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -560,6 +563,14 @@ pub enum Issue {
     /// T-3332: a one-track station placed or switched where it cannot go: anywhere but track running
     /// through with the same tracks both sides, or on one-way single track.
     OneTrackHere { node: u32 },
+    /// One-way stations paired as one stop (`Network::pair_of`): `node` is not a one-way station.
+    PairNotOneWay { node: u32 },
+    /// One-way stations paired as one stop that are one station, not of one family of track, or
+    /// whose trains do not run roughly opposite ways.
+    PairNotOpposite { node: u32 },
+    /// One-way stations paired as one stop too far apart to change between on foot: neither one
+    /// complex nor within riders' change walk.
+    PairTooFar { node: u32 },
     LineSchedule { line: u32 },
     /// A split point on a ramp, too near a node, or outside the edge.
     SplitPoint { edge: u32 },
@@ -673,6 +684,8 @@ pub struct Network {
     pub node_fare: Vec<u32>,
     /// `StationData::own` (T-3759).
     pub node_own: Vec<String>,
+    /// `StationData::pair`.
+    pub node_pair: Vec<Option<u32>>,
     /// A port's berth (`StationData::berth`, T-2193); None for every other node.
     pub node_berth: Vec<Option<[f64; 2]>>,
     /// A BRT station's road heading (`StationData::road`, T-3378); None for every other node.

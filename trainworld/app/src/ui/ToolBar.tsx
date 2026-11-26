@@ -7,6 +7,7 @@ import { useState } from "preact/hooks";
 import type { ComponentChildren, JSX } from "preact";
 import { distUnit, kmhFromShown, kmhToShown, levelLabel, levelName, millions, speed } from "../game/format";
 import { linking } from "../game/links";
+import { pairing } from "../game/pairs";
 import { moneyState } from "../game/money";
 import { CLICK_MODE_COLOURS, inkOn, LEVEL_COLOURS, legibleOn, MODE_ICON_COLOURS, TRACK_TYPE_COLOURS } from "../game/palette";
 import { buildMode } from "../game/buildMode";
@@ -24,8 +25,9 @@ import { mobileDevice } from "../workers/deviceMemory";
 import { FareBar } from "./FareZoneParts";
 
 export type ClickMode = keyof typeof CLICK_MODE_COLOURS | "select";
-/** What a click on the map does now: the tool, or picking a passage's other station (T-197). */
-export const clickMode = computed<ClickMode>(() => (linking.value !== null ? "passage" : tool.value));
+/** What a click on the map does now: the tool, or picking a passage's other station (T-197) or a one-way
+ * station's other half (game/pairs.ts). */
+export const clickMode = computed<ClickMode>(() => (linking.value !== null ? "passage" : pairing.value !== null ? "pair" : tool.value));
 
 /** T-2687: the colour the click mode shows (the aura, the descriptor's square): the line's own while its
  * stops are edited, kept legible on the shade (`legibleOn`); the mode's fixed colour otherwise. */

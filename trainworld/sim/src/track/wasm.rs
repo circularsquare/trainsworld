@@ -1035,6 +1035,7 @@ mod onetrack;
 mod legs;
 mod touched;
 mod kept;
+mod pairs;
 
 /// What buying the cars the running lines need beyond `fleet` costs, US$M.
 fn trains_to_buy(w: &TrackWorld, fleet: [u32; FLEETS]) -> f64 {
@@ -2480,7 +2481,7 @@ impl TrackApi {
         self.run(Op::Edge { id, data: Some(EdgeData { a, b, tracks, pis: pis_from(pis), built: false, off: false, thru: vec![], crossover: false, kind: TrackKind::Regular, sep: false, day: 0, oneway: 0, join: [0; 2], limit: 0, ramp: 0 }) })
     }
     pub fn set_station(&mut self, node: u32, platform: u16, name: String) -> u32 {
-        self.run(Op::Station { node, data: Some(StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None }) })
+        self.run(Op::Station { node, data: Some(StationData { platform, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None, pair: None }) })
     }
     /// What constructing these would cost now, US$M (junctions and crossings they complete
     /// included).
@@ -2644,6 +2645,8 @@ mod tram_tests;
 mod perdir_tests;
 #[cfg(test)]
 mod oneleg_tests;
+#[cfg(test)]
+mod pair_tests;
 #[cfg(test)]
 mod gap_tests;
 /// T-2414: close crossings, ends near water and islands.

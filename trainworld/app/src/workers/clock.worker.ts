@@ -1257,6 +1257,8 @@ async function handleMessage(msg: ToClock) {
       : q.what === "flyover" ? new Float64Array([api.flyover_cost(q.node)])
       : q.what === "upgradeCosts" ? new Float64Array(q.nodes.map((n) => api!.station_upgrade_cost(n, q.bit)))
       : q.what === "tracksCost" ? new Float64Array([api.station_tracks_cost(q.node)])
+      // the station the node is paired with (-1 none), then those it can be paired with
+      : q.what === "stationPair" ? new Float64Array([api.station_pair(q.node), ...api.station_pair_candidates(q.node)])
       : q.what === "upgradeCost" ?new Float64Array(UPGRADE_BITS.map((b) => api!.station_upgrade_cost(q.node, b)))
       : q.what === "platformCost" ? new Float64Array([api.platform_cost(new Uint32Array(q.nodes), q.platform)])
       : q.what === "doubleUp" ? doubleUpAnswer(q.edge)

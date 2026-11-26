@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { ask, lineDraft, loopTap, selection, tool } from "../game/ui";
 import { linesByNum, notice, stationsById, world } from "../game/world";
 import { cancelLink, linking } from "../game/links";
+import { cancelPair, pairing } from "../game/pairs";
 import { live } from "../map/live";
 import { clickColour, clickMode, type ClickMode } from "./ToolBar";
 import { busDraft } from "../map/busDraw";
@@ -112,8 +113,9 @@ function Notice() {
   const building = tl === "building" ? buildingDraft.value : null;
   // T-2284: what a click does now, first, by the mode's colour; the simple modes' words and a cross to leave
   const mode = clickMode.value;
-  const linkFrom = linking.value;
-  const simple = mode === "passage" ? t("toolNotes.passage", { name: (linkFrom !== null && world.value && stationsById(world.value).get(linkFrom)?.name) || t("toolNotes.aStation") }) : SIMPLE.has(mode) ? t("toolNotes.simple", { mode }) : mode === "fares" ? t("toolNotes.fareZones") : undefined;
+  const linkFrom = linking.value, pairFrom = pairing.value;
+  const nameOf = (id: string | null) => (id !== null && world.value && stationsById(world.value).get(id)?.name) || t("toolNotes.aStation");
+  const simple = mode === "passage" ? t("toolNotes.passage", { name: nameOf(linkFrom) }) : mode === "pair" ? t("toolNotes.pair", { name: nameOf(pairFrom) }) : SIMPLE.has(mode) ? t("toolNotes.simple", { mode }) : mode === "fares" ? t("toolNotes.fareZones") : undefined;
   if (!show && !hint && !bus && !ferry && !building && !simple) return null;
   // stop editing (T-233): which line, how many stops, and the way out
   const editing = tl === "line" && draft.line !== null && world.value ? linesByNum(world.value).get(draft.line) : undefined;
@@ -127,7 +129,7 @@ function Notice() {
       {simple && (
         <p class="stop-edit-head mode-desc">
           <span>{sq}{simple}</span>
-          <button class="btn icon mini mode-stop" data-tip={t("toolNotes.stopTip")} aria-label={t("toolNotes.stop")} onClick={() => (mode === "passage" ? cancelLink() : live.tools?.exit())}><Icon.cross /></button>
+          <button class="btn icon mini mode-stop" data-tip={t("toolNotes.stopTip")} aria-label={t("toolNotes.stop")} onClick={() => (mode === "passage" ? cancelLink() : mode === "pair" ? cancelPair() : live.tools?.exit())}><Icon.cross /></button>
         </p>
       )}
       {bus && (

@@ -92,7 +92,7 @@ type ClockQ = Extract<ToClock, { kind: "query" }>["q"];
  * for it (at most POLL_REST_MAX_MS), so they take at most a third of the worker. A question the page has never had
  * answered (a panel just opened) goes at once. */
 const POLL_READS = new Set<ClockQ["what"]>(["today", "linesPeriods", "linePeriods", "lineAccount", "lineHeld", "lineDelays", "lineWaits", "lineMarks",
-  "lineTrips", "stationDeps", "lineRelated", "linePairs", "passingSpots", "upgradeCosts", "upgradeCost", "tracksCost", "platformCost", "junction",
+  "lineTrips", "stationDeps", "lineRelated", "linePairs", "passingSpots", "upgradeCosts", "upgradeCost", "tracksCost", "stationPair", "platformCost", "junction",
   "flyover", "blueprintQuote", "blueprintPieces", "lineCost"]);
 const POLL_REST = 2;
 const POLL_REST_MAX_MS = 3000;

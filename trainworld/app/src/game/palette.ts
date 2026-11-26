@@ -308,6 +308,8 @@ export const CLICK_MODE_COLOURS = {
   trip: "#268769",
   building: "#a15b7b",
   passage: "#b0866a",
+  // picking a one-way station's other half (game/pairs.ts): the passage's, the same kind of pick
+  pair: "#b0866a",
   fares: "#e06a4e",
 } as const;
 

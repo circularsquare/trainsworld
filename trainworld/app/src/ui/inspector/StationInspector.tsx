@@ -42,6 +42,9 @@ import { PurposeSplit } from "./PurposeSplit";
 import { StationUpgrades, TerminalButton } from "./StationUpgrades";
 import { PlatformTracks } from "../ToolBar";
 import { StationSides } from "./StationSides";
+import { StationPair } from "./StationPair";
+import { stopStations, stopsAtStation } from "../../game/stopStations";
+import { stopShare } from "../../game/stopShare";
 import { FareZoneRow } from "../FareZoneParts";
 import { fareAreas } from "../../game/fareZonePaint";
 
@@ -77,16 +80,18 @@ function complexRows(members: string[], lines: LineInput[], byId: Map<string, St
     if (!station) continue;
     const byName = new Map<string, { l: LineInput; n: number }>();
     let boardings = 0, todayB: number | null = null;
+    const w = world.peek();
     for (const l of lines) {
       const t = today.get(l.id);
-      l.stops.forEach((st, k) => {
-        if (st !== m) return;
-        const n = lineDemand(l.id)?.boardings[k] ?? 0;
+      // (a pair's or a beside platform's half: its own run's part, game/stopStations.ts)
+      for (const k of w ? stopsAtStation(w, l, m) : []) {
+        const part = stopShare(w!, l, k, m);
+        const n = (lineDemand(l.id)?.boardings[k] ?? 0) * part;
         boardings += n;
-        if (t) todayB = (todayB ?? 0) + (t.stops[k] ?? 0);
+        if (t) todayB = (todayB ?? 0) + (t.stops[k] ?? 0) * part;
         const have = byName.get(l.name);
         byName.set(l.name, { l: have?.l ?? l, n: (have?.n ?? 0) + n });
-      });
+      }
     }
     const own = [...byName.values()].sort((a, b) => b.n - a.n);
     const first = own[0] && world.peek()?.lineStats[own[0].l.id];
@@ -137,14 +142,17 @@ function ComplexSummary({ id, members }: { id: string; members: string[] }) {
   const w = world.value;
   if (!w) return null;
   const inside = new Set(members);
-  const lines = w.save.lines.filter((l) => l.stops.some((st) => inside.has(st)));
+  // (either half of a stop whose runs stop at stations of their own, game/stopStations.ts)
+  const inStop = (l: LineInput, k: number) => stopStations(w, l, k).filter((st) => inside.has(st));
+  const lines = w.save.lines.filter((l) => l.stops.some((_, k) => inStop(l, k).length > 0));
   const byId = stationsById(w);
   const now = useComplexNow(members);
   return (
     <>
       <ComplexStations id={id} members={members} lines={lines} byId={byId} now={now} />
       <ComplexMap id={id} members={members} stations={byId} lines={lines} now={now} onOpen={openStation} />
-      {lines.length > 0 && <BoardingsToday lines={lines} at={(l) => l.stops.flatMap((st, k) => (inside.has(st) ? [k] : []))} />}
+      {lines.length > 0 && <BoardingsToday lines={lines} at={(l) => l.stops.flatMap((_, k) => (inStop(l, k).length ? [k] : []))}
+        part={(l, k) => inStop(l, k).reduce((a, st) => a + stopShare(w, l, k, st), 0)} />}
     </>
   );
 }
@@ -182,10 +190,14 @@ function ComplexStations({ id, members, lines, byId, now }: { id: string; member
 
 /** A station's or complex's boardings in the past 24 hours (T-446), with the purpose
  * shares; `at`: the stops of each line counted. Its own component, re-rendered as counts move. */
-export function BoardingsToday({ lines, at }: { lines: LineInput[]; at: (l: LineInput) => number[] }) {
+export function BoardingsToday({ lines, at, part }: {
+  lines: LineInput[]; at: (l: LineInput) => number[];
+  /** the part of a stop's boardings counted here (`stopShare`); all of them when absent */
+  part?: (l: LineInput, k: number) => number;
+}) {
   const t = today.value;
   const known = lines.some((l) => t.has(l.id));
-  const total = lines.reduce((a, l) => a + at(l).reduce((b, k) => b + (t.get(l.id)?.stops[k] ?? 0), 0), 0);
+  const total = lines.reduce((a, l) => a + at(l).reduce((b, k) => b + (t.get(l.id)?.stops[k] ?? 0) * (part ? part(l, k) : 1), 0), 0);
   return (
       <ul class="rows pick">
         <Row label={tr("stationInspector.boardingsToday")} bold>
@@ -391,9 +403,12 @@ function StationDetails({ s, lines, props }: {
 }) {
   // T-446: each line's boardings here in the past 24 hours (re-rendered as they move: a small part of the panel)
   const t = today.value;
-  // a line may stop here twice (T-797: on both sides of a reversal): both visits count
-  const visits = (l: LineInput) => l.stops.flatMap((x, k) => (x === s.id ? [k] : []));
-  const here = lines.map((l) => [l, visits(l).reduce((n, k) => n + (t.get(l.id)?.stops[k] ?? 0), 0)] as const);
+  // a line may stop here twice (T-797: on both sides of a reversal): both visits count; here as one half of a
+  // stop, its own run's part (game/stopStations.ts)
+  const w = world.value;
+  const visits = (l: LineInput) => (w ? stopsAtStation(w, l, s.id) : []);
+  const part = (l: LineInput, k: number) => (w ? stopShare(w, l, k, s.id) : 1);
+  const here = lines.map((l) => [l, visits(l).reduce((n, k) => n + (t.get(l.id)?.stops[k] ?? 0) * part(l, k), 0)] as const);
   const m = moneyState.value;
   const doubleHere = !!world.value?.edges.some((e) => (e.a === s.num || e.b === s.num) && e.tracks === 2);
   return (
@@ -417,6 +432,7 @@ function StationDetails({ s, lines, props }: {
             : <PlatformTracks one={!!s.one} oneTip={tr("stationInspector.noLoop")} bothTip={tr("stationInspector.loop")}
                 onPick={(one) => void edit({ op: "stationTracks", node: s.num, one })} />}
         </li>}
+        {!s.port && <StationPair s={s} />}
         <FareZoneRow members={[s]} />
         {s.built && m && (
           <Row label={tr("trackInspector.upkeep")}>
@@ -442,7 +458,7 @@ function StationDetails({ s, lines, props }: {
           </li>
         ))}
       </ul>
-      {lines.length > 0 && <BoardingsToday lines={lines} at={visits} />}
+      {lines.length > 0 && <BoardingsToday lines={lines} at={visits} part={part} />}
       <Waiting node={s.num} lines={lines} />
     </>
   );

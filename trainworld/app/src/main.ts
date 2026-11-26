@@ -25,6 +25,7 @@ import { groupHover, lineGroups } from "./game/lineGroups";
 import { complexOf, dotGroups, inComplexView, openAlone, singleStation } from "./game/complexView";
 import { hot, onHot } from "./map/hovered";
 import { cancelLink, linkPicked, linking } from "./game/links";
+import { cancelPair, pairPicked, pairing } from "./game/pairs";
 import { ACTION_KEYS, DEMAND_KEY, levelOfKeyCode, pickTool, TAB_KEYS, TOOL_KEYS, TRIP_KEY } from "./ui/toolKeys";
 import { addAllPassedSelected, constructBlueprints, newLineKey, toggleEditStopsSelected } from "./game/lineActions";
 import { hideUiKey } from "./ui/hideUi";
@@ -498,9 +499,11 @@ const buildAbove = (x: number, y: number) => isBuildTool(tool.peek()) && (tools.
 // picked over a demand bubble drawn above it, for clicks and hovers alike; a bubble keeps its wider
 // reach (MIN_PICK_PX, bubblePad) only where none of those is near
 const NET_FIRST = new Set(["line", "station", "train", "busStop"]);
+/** A click mode picking a station: a passage's other end (T-197) or a one-way station's other half. */
+const picking = () => linking.peek() !== null || pairing.peek() !== null;
 let netFirstAt = { x: NaN, y: NaN, t: 0, hit: false };
 const netFirst = (x: number, y: number) => {
-  if (tool.peek() !== "select" || linking.peek() !== null) return false;
+  if (tool.peek() !== "select" || picking()) return false;
   // T-1550: with the zone bubbles drawn (zoom 8.5 and below, `OVERVIEW_ZOOM`) the lines are a few pixels across them and a bubble is the target
   if (cityOverview.peek()) return false;
   // a pointer move asks this several times (the tag, the cursor, the track tag): one pick serves them
@@ -643,7 +646,7 @@ map.on("click", (e) => {
 });
 // T-3361: a double click on a train follows it with the camera (and a finger's double tap does not zoom there)
 map.on("dblclick", (e) => {
-  if (tool.peek() !== "select" || linking.peek() !== null) return;
+  if (tool.peek() !== "select" || picking()) return;
   const { x, y } = e.point, cur = selection.peek();
   const hit = pick(overlay, x, y, display.peek().trains && !onMark(x, y), cur);
   if (hit?.kind !== "train") return;
@@ -655,6 +658,8 @@ map.on("dblclick", (e) => {
 function selectAt(x: number, y: number, add: boolean) {
   // linking a station into a complex (T-197): the station clicked is the other end
   if (linking.peek() !== null) void linkPicked(pick(overlay, x, y, false, selection.peek()));
+  // pairing one-way stations as one stop (game/pairs.ts): the station clicked is the other half
+  else if (pairing.peek() !== null) void pairPicked(pick(overlay, x, y, false, selection.peek()));
   // T-3746: Shift with track picked adds to the pick by the Select tool's rule (the track between, a line on it
   // or not); one piece left opens its panel, more none. A Shift+click that misses keeps the pick, as in the tool.
   else if (add && hasPick()) {
@@ -692,12 +697,16 @@ const hasPick = () => bpPicked.peek().edges.length + bpPicked.peek().stations.le
 // MapLibre's zoom box (which would swallow the click); elsewhere Shift+drag zooms as before
 map.on("mousedown", (e) => {
   const o = e.originalEvent;
-  if (o.shiftKey && o.button === 0 && tool.peek() === "select" && linking.peek() === null && hasPick() && blueprintBox.hitAt(e.point.x, e.point.y)) e.preventDefault();
+  if (o.shiftKey && o.button === 0 && tool.peek() === "select" && !picking() && hasPick() && blueprintBox.hitAt(e.point.x, e.point.y)) e.preventDefault();
 });
-// Linking stops when its station is no longer the selection or a tool is picked.
+// Linking stops when its station is no longer the selection or a tool is picked; pairing too.
 effect(() => {
   const s = selection.value, from = linking.value;
   if (from !== null && (tool.value !== "select" || s?.kind !== "station" || s.station !== from)) linking.value = null;
+});
+effect(() => {
+  const s = selection.value, from = pairing.value;
+  if (from !== null && (tool.value !== "select" || s?.kind !== "station" || s.station !== from)) pairing.value = null;
 });
 if (!SYNTH && !perfOff("hover")) // ?perfOff=hover: T-045 measurement only
   map.on("mousemove", (e) => {
@@ -724,7 +733,7 @@ if (!SYNTH && !perfOff("hover")) // ?perfOff=hover: T-045 measurement only
     }
     if (tool.peek() !== "select") return tools.move(e);
     // a blueprint point drags even over a demand bubble (T-474), so its grab cursor comes first
-    const cur = linking.peek() !== null ? (pick(overlay, e.point.x, e.point.y, false)?.kind === "station" ? "pointer" : "crosshair") : nodeDrag.hit(e.point.x, e.point.y)?.movable ? "grab" : demandHover?.(e.point.x, e.point.y) ? "pointer" : pick(overlay, e.point.x, e.point.y, display.peek().trains) ? "pointer" : "";
+    const cur = picking() ? (pick(overlay, e.point.x, e.point.y, false)?.kind === "station" ? "pointer" : "crosshair") : nodeDrag.hit(e.point.x, e.point.y)?.movable ? "grab" : demandHover?.(e.point.x, e.point.y) ? "pointer" : pick(overlay, e.point.x, e.point.y, display.peek().trains) ? "pointer" : "";
     // (written only when it changes: a style write each mouse move costs a restyle)
     if (map.getCanvas().style.cursor !== cur) map.getCanvas().style.cursor = cur;
   });
@@ -752,7 +761,7 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     return;
   }
-  if (e.key === "Escape" && (nodeDrag.cancel() || edgeEditor.cancel() || cancelLink() || blueprintBox.cancel() || fareZoneTool.cancel())) {
+  if (e.key === "Escape" && (nodeDrag.cancel() || edgeEditor.cancel() || cancelLink() || cancelPair() || blueprintBox.cancel() || fareZoneTool.cancel())) {
     e.preventDefault();
     return;
   }

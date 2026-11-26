@@ -6,7 +6,7 @@
 
 use std::f64::consts::PI;
 
-use super::net::{match_stops, path_dir, path_edge, Network};
+use super::net::{match_stops, path_dir, path_edge, Issue, Network};
 
 /// Riders change on foot between stations up to this far apart (demand `Params::xfer_walk_m`),
 /// ground m: how far a run's own platform may be from the stop's when the two are no complex.
@@ -41,16 +41,24 @@ impl Network {
     /// The stations a stop at `s` may use on a run its own platform does not serve, nearest first:
     /// the other stations of its complex, then any within `WAY_WALK_M`; of its family of track, no
     /// port. T-3605 (Anita 2026-11-17): none for a one-way station (`leg_heading`), nor is one in any
-    /// group: it is a stop of its own, served one way, so the stop list says where trains stop.
+    /// group: it is a stop of its own, served one way, so the stop list says where trains stop. The
+    /// one exception is the player's: a one-way station paired with the other way's (`pair_of`) has
+    /// that one as its group, and nothing else.
     fn way_group(&self, s: u32) -> Vec<u32> {
         if self.leg_heading(s).is_some() {
-            return vec![];
+            return self.pair_of(s).into_iter().collect();
         }
+        self.near_stations(s, |m| self.leg_heading(m).is_none())
+    }
+
+    /// The other stations of `s`'s complex, then any within `WAY_WALK_M`, nearest first: of its
+    /// family of track, no port, each one `ok` takes.
+    fn near_stations(&self, s: u32, ok: impl Fn(u32) -> bool) -> Vec<u32> {
         let i = s as usize;
         let family = self.node_kind(s).spec().family;
         let dist = |m: u32| (self.node_x[m as usize] - self.node_x[i]).hypot(self.node_y[m as usize] - self.node_y[i]);
         let reach = WAY_WALK_M * self.k_at(self.node_y[i]);
-        let ok = |m: u32| m != s && self.is_station(m) && !self.trackless(m) && self.node_kind(m).spec().family == family && self.leg_heading(m).is_none();
+        let ok = |m: u32| m != s && self.is_station(m) && !self.trackless(m) && self.node_kind(m).spec().family == family && ok(m);
         let mut out: Vec<u32> = self.complex_of(s).into_iter().filter(|&m| ok(m)).collect();
         out.sort_by(|&a, &b| dist(a).total_cmp(&dist(b)));
         let mut walk: Vec<u32> = (0..self.node_count() as u32).filter(|&m| ok(m) && !out.contains(&m) && dist(m) <= reach).collect();
@@ -96,9 +104,72 @@ impl Network {
     }
 
     /// T-3565: whether station `s` is a one-way station (`leg_heading`): a stop of its own, served
-    /// once a round trip by the run along its track, never paired with one on the other leg (T-3605).
+    /// once a round trip by the run along its track, never paired with one on the other leg by
+    /// itself (T-3605). One the player paired (`pair_of`) is not: with its pair it is one stop,
+    /// each run stopping at the half on its own track (`way_stops`).
     pub fn leg_stop(&self, s: u32) -> bool {
-        self.leg_heading(s).is_some()
+        self.leg_heading(s).is_some() && self.pair_of(s).is_none()
+    }
+
+    /// The one-way station (`leg_heading`) the player paired `s` with (`StationData::pair`), as the
+    /// other way's half of one stop: when the two name each other, are both one-way stations of one
+    /// family of track and their trains run roughly opposite ways (within 60 degrees), so each run of a
+    /// line stops at one of them. None otherwise, a pair the track no longer allows included.
+    pub fn pair_of(&self, s: u32) -> Option<u32> {
+        let p = *self.node_pair.get(s as usize)?.as_ref()?;
+        if p == s || !self.node_ok(p) || self.node_pair.get(p as usize).copied().flatten() != Some(s) {
+            return None;
+        }
+        let (a, b) = (self.leg_heading(s)?, self.leg_heading(p)?);
+        (self.node_kind(s).spec().family == self.node_kind(p).spec().family && (a - b).cos() <= -WAY_COS).then_some(p)
+    }
+
+    /// Why `a` and `b` cannot be paired (`pair_of`), or None when they can: both one-way stations,
+    /// not the same, of one family of track, their trains running roughly opposite ways, and near
+    /// enough to change between on foot (one complex, or within `WAY_WALK_M`), as one stop's are.
+    pub fn pair_refusal(&self, a: u32, b: u32) -> Option<Issue> {
+        let (Some(x), Some(y)) = (self.leg_heading(a), self.leg_heading(b)) else {
+            return Some(Issue::PairNotOneWay { node: if self.leg_heading(a).is_none() { a } else { b } });
+        };
+        if a == b || self.node_kind(a).spec().family != self.node_kind(b).spec().family || (x - y).cos() > -WAY_COS {
+            return Some(Issue::PairNotOpposite { node: b });
+        }
+        if !self.near_stations(a, |m| m == b).contains(&b) {
+            return Some(Issue::PairTooFar { node: b });
+        }
+        None
+    }
+
+    /// `stops` with each paired one-way station between the ends (`pair_of`) that run 0 reaches only
+    /// by turning back more often (or not at all) given as its pair, which run 0 passes: in a stop list
+    /// given whole, typed or kept in its order (T-2895), either half names that stop, as a click on
+    /// either does (`way_others`).
+    pub fn pair_halves(&self, stops: &[u32], ones: &[(u32, u8)]) -> Vec<u32> {
+        let mut out = stops.to_vec();
+        let n = out.len();
+        if n < 3 || out[0] == out[n - 1] {
+            return out;
+        }
+        let turns = |s: &[u32]| self.route(s, ones).map(|path| self.turn_count(s, &path));
+        for j in 1..n - 1 {
+            let Some(p) = self.pair_of(out[j]).filter(|p| !out.contains(p)) else { continue };
+            let mut alt = out.clone();
+            alt[j] = p;
+            match (turns(&out), turns(&alt)) {
+                (None, Some(_)) => out = alt,
+                (Some(a), Some(b)) if b < a => out = alt,
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The stations `s` can be paired with (`pair_refusal` none), nearest first.
+    pub fn pair_candidates(&self, s: u32) -> Vec<u32> {
+        if self.leg_heading(s).is_none() {
+            return vec![];
+        }
+        self.near_stations(s, |m| self.leg_heading(m).is_some()).into_iter().filter(|&m| self.pair_refusal(s, m).is_none()).collect()
     }
 
     /// T-3711: the side of station `s` (its port side) trains arrive by where a line's one-way stop
@@ -111,10 +182,11 @@ impl Network {
     }
 
     /// T-3711: station `s` can be made a one-way stop: a plain station through which track runs
-    /// (two port sides), serving both ways (no one-way station, no platform on one track only).
+    /// (two port sides), serving both ways (no one-way station, paired or not, no platform on one
+    /// track only).
     pub fn can_one_stop(&self, s: u32) -> bool {
         let i = s as usize;
-        self.node_ok(s) && self.is_station(s) && !self.trackless(s) && self.one_side(s).is_none() && self.node_ports[i].n == 2 && !self.leg_stop(s)
+        self.node_ok(s) && self.is_station(s) && !self.trackless(s) && self.one_side(s).is_none() && self.node_ports[i].n == 2 && self.leg_heading(s).is_none()
     }
 
     /// The port side of the node a path's entry `p` arrives at, by which it arrives.

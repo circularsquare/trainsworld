@@ -27,6 +27,7 @@ import { runsAgainstOneWay } from "../../game/oneWay";
 import { gameStamp } from "../../workers/clockClient";
 import { shown as pendingShown } from "../../game/pending";
 import { noteHeadwayLimits, edit, linesAt, say, stationNames, stationsById, stationsByNum, stepLineCars, pendingCars, world, linesById, linesByNum, pairStats, queueStopEdit, rowCount, fleetOf, lineIndicesAt } from "../../game/world";
+import { stopStations } from "../../game/stopStations";
 import { CUTS_DEFAULT, periodAt, rowAt } from "../../game/periods";
 import { live } from "../../map/live";
 import { setListHot } from "../../map/hovered";
@@ -952,7 +953,7 @@ function RailLineInspector({ id }: { id: string }) {
     const only = st.stopOnly?.[s];
     return (
       <li class={(xfer ? "xfer" : "") + (tall ? " tall" : "") + (drag?.from === i ? " dragged" : "") + (!row && loopEnds && (i === 0 || i === nStops - 1) ? " pinned" : "") + (st.oneWayAt?.[s] !== undefined ? " oneway" : "") + dropClass(i)} data-r={drawn ? true : undefined}
-        data-stop={i} data-station={s} onPointerDown={(e) => rowDown(e, i)} onMouseEnter={() => setListHot({ stations: complexOf(s) })} onMouseLeave={() => setListHot(null)}>
+        data-stop={i} data-station={s} onPointerDown={(e) => rowDown(e, i)} onMouseEnter={() => setListHot({ stations: [...new Set(stopStations(w, l, i).flatMap(complexOf))] })} onMouseLeave={() => setListHot(null)}>
         {row?.arc && <i class={"arc " + row.arc} aria-hidden="true" />}
         {row?.arc === "end" && <i class="dir" aria-hidden="true" />}
         {looks && !drawn && above >= 0 && looks[above] && <StretchHalf s={looks[above]} down={false} />}
@@ -960,7 +961,8 @@ function RailLineInspector({ id }: { id: string }) {
         {dot && <span class="stop-hit" data-tip={dot.tip} onClick={dot.click} />}
         <span class="grow">
           <span class="stop-name" onClick={() => { if (!draggedRow.current) selection.value = { kind: "station", station: s }; }}>
-            {name.get(s)}
+            {/* a stop whose return run stops at a station of its own: both (game/stopStations.ts) */}
+            {stopStations(w, l, i).map((x) => name.get(x) ?? "").join(" / ")}
           </span>
           {t !== undefined && <span class="t muted num" data-tip={stretchTip(st.stretches[above], st.tram)}>{duration(t)}</span>}
           {revTph !== undefined && (

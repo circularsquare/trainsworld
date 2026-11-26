@@ -223,6 +223,10 @@ function applyInner(op: EditOp): Applied {
       return { r: a.set_station_way(op.node, op.heading) };
     case "reverseStation":
       return { r: a.reverse_station(op.node) };
+    case "pairStations":
+      return { r: a.pair_stations(op.a, op.b) };
+    case "unpairStation":
+      return { r: a.unpair_station(op.node) };
     case "stationProps": {
       // the name a station shows is not always its stored one (T-3288, T-3759): sent back as shown, it is
       // no rename; another name with the platform as it is renames as the station panel does
