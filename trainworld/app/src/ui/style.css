@@ -694,6 +694,8 @@ body.resizing, body.resizing * { user-select: none; }
 .badge-edit { display: inline-flex; padding: 0; border: 0; background: transparent; cursor: pointer; flex: none; font: inherit; }
 .badge-edit:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .line-list-actions, .line-stop-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+/* the name filter under the Lines and Stations lists' buttons (ui/listParts.tsx `ListFind`) */
+.list-find { display: block; margin-bottom: 8px; }
 .line-identity input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--rule); }
 .line-stop-actions { justify-content: flex-start; margin-top: 12px; }
 .top-speed .val .btn { margin-left: 8px; }

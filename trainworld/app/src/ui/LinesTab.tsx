@@ -30,7 +30,8 @@ import { useClockQuery } from "./useClockQuery";
 import { Chip, Icon, SortHead } from "./widgets";
 import { lineMoneyTip, Money } from "./MoneyText";
 import { locateLine } from "./locate";
-import { byNear, natural, Near, ScopeToggle } from "./listParts";
+import { byNear, linesFind, ListFind, nameHas, natural, Near, ScopeToggle } from "./listParts";
+import { normalise } from "../game/nameMatch";
 import { pendingLabel, type PendingKind } from "../game/lineFigures";
 import { hiddenLines, setLinesHidden, showAllLines, visToggles } from "../game/lineVisibility";
 import { vehicleOf } from "../game/vehicle";
@@ -266,8 +267,19 @@ export function LinesTab() {
     return !offCities.size || !cs.size || [...cs].some((c) => !offCities.has(c));
   };
   const leftOut = offModes.size || offCities.size ? listed.filter((l) => !passes(l)).length : 0;
+  const groups = lineGroups(listed), tree = groupTree(listed);
+  // the name filter: a line of that name, and every line in a group of that name (the group's row then shows them all)
+  const q = normalise(linesFind.value);
+  const named = new Set<string>();
+  if (q) {
+    for (const l of listed) if (nameHas(l.name, q)) named.add(l.id);
+    for (const [g, n] of tree) {
+      const ls = groups.get(g) ?? n.lines;
+      if (nameHas(groupName(ls, g), q)) for (const l of ls) named.add(l.id);
+    }
+  }
   /** the selected line stays listed, as the scope keeps it */
-  const shows = (l: LineInput) => passes(l) || isSel(l.id);
+  const shows = (l: LineInput) => (passes(l) && (!q || named.has(l.id))) || isSel(l.id);
   // T-670: on the whole world, a city column once lines start in two or more cities (a line's city is where its first stop is)
   const cityOf = new Map<string, string>();
   if (sc.zone === null && col("city")) {
@@ -280,8 +292,7 @@ export function LinesTab() {
   // T-1791: a group is one row, sorted by its lines' figures added up; it shows, with all its
   // lines, when any of them is in the viewed place. T-3423: a group's members are lines and groups,
   // to any depth; `ls` is every line in it. T-3816: a group shows if any line in it passes the gear's filters, and
-  // inside it only those that pass; its figures are still every line's.
-  const groups = lineGroups(listed), tree = groupTree(listed);
+  // inside it only those that pass; its figures are still every line's. The name filter goes the same way.
   const parentOf = (g: number) => { const p = tree.get(g)?.parent ?? 0; return tree.has(p) ? p : 0; };
   /** the group a line sits straight in, 0 for none */
   const homeOf = (l: LineInput) => (l.group && tree.has(l.group) ? l.group : 0);
@@ -551,7 +562,8 @@ export function LinesTab() {
           <LinesGear modes={modeChoices} cities={cityChoices} leftOut={leftOut} />
         </span>
       </div>
-      {items.length === 0 && <p class="muted">{listedLines(w).length === 0 ? t("linesTab.none") : t("linesTab.noneHere")}</p>}
+      {listedLines(w).length > 0 && <ListFind text={linesFind} />}
+      {items.length === 0 && <p class="muted">{listedLines(w).length === 0 ? t("linesTab.none") : q && sorted.some((it) => it.ls.some((l) => shownIds.has(l.id) && passes(l))) ? t("linesTab.noMatch") : t("linesTab.noneHere")}</p>}
       <div ref={boxRef} class={"lines-box" + (showCity ? " with-city" : "") + (key === "near" ? " near-on" : "") + (eyes ? " vis-on" : "")}>
       {listedLines(w).length > 0 && <SortHead sort={lineSort} hand={hand.length ? () => setHandOrder("lines", []) : undefined} cols={[
         { key: "name", label: t("linesTab.colName"), tip: t("linesTab.sortName"), first: 1 },

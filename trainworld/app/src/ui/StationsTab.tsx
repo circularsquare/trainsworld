@@ -17,9 +17,10 @@ import { accountVersion } from "../game/boarding";
 import { stationsToday, todayLoaded, useToday } from "../game/today";
 import { Chip, Icon, SortHead } from "./widgets";
 import { locateStation } from "./locate";
-import { byNear, natural, Near, ScopeToggle } from "./listParts";
+import { byNear, ListFind, nameHas, natural, Near, ScopeToggle, stationsFind } from "./listParts";
 import { byHand, handOrder, setHandOrder } from "../game/handOrder";
 import { t } from "../i18n";
+import { normalise } from "../game/nameMatch";
 
 /** how far a row is dragged before it counts as a drag, not a click (px) */
 const DRAG_PX = 6;
@@ -204,7 +205,13 @@ export function StationsTab() {
       : key === "near" ? byNear(a.dist, b.dist, dir) : 0)
     || natural(a.name, b.name) * (key === "name" ? dir : 1);
   const inOrder = (rows: StationRow[]) => (hand.length ? byHand(rows.sort(order), (r) => r.members, hand) : rows.sort(order));
-  const st = inOrder(stationRows(sc.stations, w.save.stations, listedLines(w), sc.stationDist, apart.value));
+  const scoped = stationRows(sc.stations, w.save.stations, listedLines(w), sc.stationDist, apart.value);
+  // the name filter: a row holding a station of that name (a complex's row too, under the complex's name), and the
+  // selected one, as the scope keeps it
+  const q = normalise(stationsFind.value);
+  const nameOf = q ? new Map(w.save.stations.map((s) => [s.id, s.name])) : null;
+  const named = (r: StationRow) => nameHas(r.name, q) || r.members.some((id) => nameHas(nameOf!.get(id) ?? "", q)) || (sel?.kind === "station" && r.members.includes(sel.station));
+  const st = inOrder(q ? scoped.filter(named) : scoped);
   // T-1813: a row dragged into the gap above or below another goes there; the order then covers
   // every station, the viewed place's or not
   const dropRow = (d: Drag) => {
@@ -254,7 +261,8 @@ export function StationsTab() {
       <div class="line-list-actions"><ScopeToggle />
         <button class={"btn icon" + (apart.value ? " on" : "")} aria-pressed={apart.value} aria-label={t("stationsTab.apart")} data-tip={t("stationsTab.apart")} onClick={() => (apart.value = !apart.value)}><Icon.interchange /></button>
       </div>
-      {st.length === 0 && <p class="muted">{w.save.stations.length === 0 ? t("stationsTab.none") : t("stationsTab.noneHere")}</p>}
+      {w.save.stations.length > 0 && <ListFind text={stationsFind} />}
+      {st.length === 0 && <p class="muted">{w.save.stations.length === 0 ? t("stationsTab.none") : scoped.length ? t("stationsTab.noMatch") : t("stationsTab.noneHere")}</p>}
       {st.length > 0 && <SortHead sort={stationSort} hand={hand.length ? () => setHandOrder("stations", []) : undefined} cols={[
         { key: "name", label: t("stationsTab.name"), tip: t("stationsTab.sortName"), first: 1 },
         { key: "riders", label: t("stationsTab.riders"), tip: t("stationsTab.sortRiders", { what: ridersWhat }), first: -1, cls: "w-num" },
