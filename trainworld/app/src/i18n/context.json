@@ -3245,7 +3245,7 @@
   "community.search": "Placeholder and label of the search box at the top right of Community: searches shared networks by their title and the sharer's display name",
   "community.noMatch": "Shown in Community in place of the cards when nothing shared in the chosen place matches the search",
   "vehicle.noun": "A line's vehicle as a singular noun, lower case: train, tram, bus or boat. Used to spot a line name that starts with its own mode's word (\"Bus 53\") so a title can say \"53 bus\"; never shown. Give the word a player would put at the start of a line name.",
-  "trackInspector.oneWay": "Checkbox label in the track inspector of a single-track piece: trains then run through it one way only.",
+  "trackInspector.oneWay": "Checkbox label in the track inspector of a track piece (single track, or double track whose two tracks then both run that way): trains then run through it one way only.",
   "trackInspector.oneWayAutoTip": "Hover on the one way switch in the track inspector, when the track runs one way only because of the double track it joins, with nothing set by the player.",
   "trackInspector.autoWay": "Button in the track inspector, shown when the player has set a way that differs from the one the track would take by itself: drops the setting.",
   "trackInspector.reverse": "Button in the track inspector, shown while the track runs one way: turns the way trains run around.",

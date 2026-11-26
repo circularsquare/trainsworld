@@ -120,6 +120,10 @@ impl TrackApi {
     pub(super) fn one_fits(&self, node: u32) -> bool {
         let net = &self.w.net;
         let p = &net.node_ports[node as usize];
+        // one-way double track carries its way on both tracks: no track for one platform to be on
+        if p.ends().iter().any(|&c| net.oneway_double(c >> 1)) {
+            return false;
+        }
         // the end of single track is a one-platform stop too (T-3411)
         if p.n == 1 {
             return net.edge_tracks[(p.end[0] >> 1) as usize] == 1;

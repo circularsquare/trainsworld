@@ -7,7 +7,10 @@
 //! the flat-junction badge, junction capacity and the map's train guard all read the table and the
 //! positions, so they agree by construction. A path entry stays `(edge, direction)`: on double
 //! track the direction names the lane, single track has one, running the way its run takes from
-//! the tracks of double track its ends join (`derive_ways`) unless the player set one.
+//! the tracks of double track its ends join (`derive_ways`) unless the player set one. Double track
+//! the player set one way carries that way on both its tracks (`lanes`): a train keeps to the track
+//! the running side gives it (`lane_of`), and the other counts as capacity, a place to overtake and a
+//! second platform (`oneway_double`).
 
 use super::net::{path_dir, path_edge, Network, Ports, MAX_PORTS};
 use super::params::{LANE_HALF_M, PORT_PITCH_M};
@@ -77,8 +80,8 @@ pub fn ends_in(mask: u8) -> impl Iterator<Item = usize> {
 
 impl Network {
     /// The piece's lanes. Double track keeps to the running side: with right-hand running the
-    /// right lane (looking from a to b) carries a to b. Single track's one lane runs its way
-    /// (`edge_way`).
+    /// right lane (looking from a to b) carries a to b; double track set one way carries that way on
+    /// both. Single track's one lane runs its way (`edge_way`).
     pub fn lanes(&self, e: u32) -> Lanes {
         let i = e as usize;
         if self.edge_tracks[i] == 1 {
@@ -90,14 +93,40 @@ impl Network {
             let lane = Lane { off: 0.0, ways };
             return Lanes { n: 1, lane: [lane; 2] };
         }
-        let (right, left) = if self.right_hand { (WAY_AB, WAY_BA) } else { (WAY_BA, WAY_AB) };
+        let (right, left) = match self.edge_way(e) {
+            1 => (WAY_AB, WAY_AB),
+            2 => (WAY_BA, WAY_BA),
+            _ if self.right_hand => (WAY_AB, WAY_BA),
+            _ => (WAY_BA, WAY_AB),
+        };
         Lanes { n: 2, lane: [Lane { off: -LANE_HALF_M, ways: right }, Lane { off: LANE_HALF_M, ways: left }] }
+    }
+
+    /// Double track the player set one way (`EdgeData::oneway`): both its tracks carry that way.
+    pub fn oneway_double(&self, e: u32) -> bool {
+        let i = e as usize;
+        self.edge_tracks[i] == 2 && !self.edge_crossover[i] && matches!(self.edge_oneway[i], 1 | 2)
+    }
+
+    /// A station on one-way double track (`oneway_double`, every piece through it): its two platforms
+    /// serve the one way, pooled as a passing station's are, and a train that does not stop runs past
+    /// on the other track.
+    pub fn oneway_double_station(&self, n: u32) -> bool {
+        let p = &self.node_ports[n as usize];
+        self.node_platform[n as usize] > 0 && p.n == 2 && p.ends().iter().all(|&c| self.oneway_double(c >> 1))
     }
 
     /// The lane a path entry runs on; None where no lane of its piece runs its way.
     pub fn lane_of(&self, p: u32) -> Option<Lane> {
         let way = if path_dir(p) == 0 { WAY_AB } else { WAY_BA };
-        self.lanes(path_edge(p)).all().iter().copied().find(|l| l.ways & way != 0)
+        let lanes = self.lanes(path_edge(p));
+        let all = lanes.all();
+        // on one-way double track both run it: the one the running side gives that way, as on two-way
+        if all.len() == 2 && all[0].ways == all[1].ways {
+            let right = (way == WAY_AB) == self.right_hand;
+            return (all[0].ways & way != 0).then_some(all[if right { 0 } else { 1 }]);
+        }
+        all.iter().copied().find(|l| l.ways & way != 0)
     }
 
     /// Node `n`'s move table from its ports (`derive_node`, after the sides and ranks).
@@ -128,7 +157,7 @@ impl Network {
         self.node_moves[n as usize] = m;
     }
 
-    /// T-3164: one-way single track at node `n` that no train can use, from its move table. Bit
+    /// T-3164: one-way track at node `n` that no train can use, from its move table. Bit
     /// `UNUSABLE_IN`: an end whose track brings trains in with no move on (one-way pieces pointing
     /// into each other); bit `UNUSABLE_OUT`: an end whose track takes trains out that no move
     /// reaches (pointing away from each other). A bare end (a stub still being drawn) and a station
@@ -145,7 +174,7 @@ impl Network {
         let mut out = 0;
         for j in 0..k {
             let (c, e) = (p.end[j], (p.end[j] >> 1) as usize);
-            if self.edge_tracks[e] != 1 || self.edge_crossover[e] || self.edge_way(e as u32) == 0 {
+            if self.edge_crossover[e] || self.edge_way(e as u32) == 0 {
                 continue;
             }
             if self.lane_of(c ^ 1).is_some() && m.to[j] == 0 {
@@ -185,9 +214,14 @@ impl Network {
     // ---- the way single track runs (T-3137, notes/T-3135.md "Direction")
 
     /// Single track's way: the player's `oneway` where set (3 pins both ways), else the way its run
-    /// takes by itself (`derive_ways`). 0 both, 1 a to b, 2 b to a.
+    /// takes by itself (`derive_ways`). 0 both, 1 a to b, 2 b to a. Double track runs one way only as
+    /// the player set it (`oneway_double`): no run takes a way for it, nor keeps one from when it was
+    /// single.
     pub fn edge_way(&self, e: u32) -> u8 {
         let i = e as usize;
+        if self.edge_tracks[i] != 1 {
+            return if self.oneway_double(e) { self.edge_oneway[i] } else { 0 };
+        }
         match self.edge_oneway[i] {
             w @ 1..=2 => w,
             3 => 0,
@@ -201,12 +235,41 @@ impl Network {
     /// right, looking out along the piece, carries trains away from the node with right-hand running.
     pub fn join_away(&self, c: u32) -> Option<bool> {
         let join = self.edge_join[(c >> 1) as usize][(c & 1) as usize];
-        (join != 0 && self.join_applies(c)).then_some((join == 2) == self.right_hand)
+        if join == 0 || !self.join_applies(c) {
+            return None;
+        }
+        Some(self.oneway_double_away(c).unwrap_or((join == 2) == self.right_hand))
+    }
+
+    /// Where every double track on edge end `c`'s other side runs one way (`oneway_double`) and all of
+    /// them the same way through the node, whether trains come into the node by them, and so run away
+    /// from it along the single track joined there; None where any double runs both ways, or they
+    /// disagree (the join's track then says, as on two-way double).
+    fn oneway_double_away(&self, c: u32) -> Option<bool> {
+        let p = &self.node_ports[self.end_node(c >> 1, c & 1) as usize];
+        let i = p.find(c >> 1, c & 1)?;
+        let mut way = None;
+        for k in (0..p.n as usize).filter(|&k| p.side[k] != p.side[i]) {
+            let e = p.end[k] >> 1;
+            if self.edge_tracks[e as usize] != 2 || self.edge_crossover[e as usize] {
+                continue;
+            }
+            if !self.oneway_double(e) {
+                return None;
+            }
+            let arrives = self.lane_of(p.end[k] ^ 1).is_some();
+            if way.is_some_and(|w| w != arrives) {
+                return None;
+            }
+            way = Some(arrives);
+        }
+        way
     }
 
     /// T-3297: the single track to reverse when the running side changes: every piece the player set
     /// one way (1 or 2) on a run (single, non-crossover pieces through 2-end nodes of two such pieces)
-    /// that meets double track where a join counts (`join_applies`) at any of its ends. Joins are
+    /// that meets two-way double track where a join counts (`join_applies`) at any of its ends; one-way
+    /// double track keeps its way, so a run that meets only that keeps its own (`oneway_double_away`). Joins are
     /// ground left or right and stay; on the other side their tracks carry the other way, so such a
     /// run's set way must turn round with them: a flyover's legs then still meet the tracks that run
     /// their way, and the leg that crosses the main is again the one that ramps over it.
@@ -233,8 +296,9 @@ impl Network {
             }
         }
         let mut meets = vec![false; ne];
+        let flips = |c: u32| self.join_applies(c) && self.oneway_double_away(c).is_none();
         for e in 0..ne as u32 {
-            if single(e) && (self.join_applies(e << 1) || self.join_applies(e << 1 | 1)) {
+            if single(e) && (flips(e << 1) || flips(e << 1 | 1)) {
                 let r = root(&mut parent, e);
                 meets[r as usize] = true;
             }

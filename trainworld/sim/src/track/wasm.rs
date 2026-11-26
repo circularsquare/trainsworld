@@ -2645,6 +2645,8 @@ mod perdir_tests;
 #[cfg(test)]
 mod oneleg_tests;
 #[cfg(test)]
+mod oneway_double_tests;
+#[cfg(test)]
 mod gap_tests;
 /// T-2414: close crossings, ends near water and islands.
 #[cfg(test)]

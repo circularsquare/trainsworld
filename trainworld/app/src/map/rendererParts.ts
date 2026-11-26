@@ -196,7 +196,7 @@ export interface StrokeVao {
   res?: { del: () => void }[];
 }
 
-export type TexName = "phases" | "meta" | "samples" | "bendAt" | "bends" | "lines" | "colours" | "fill" | "cars" | "stretch" | "stationLine" | "lane" | "slevel";
+export type TexName = "phases" | "meta" | "samples" | "bendAt" | "bends" | "lines" | "colours" | "fill" | "cars" | "stretch" | "stationLine" | "lane" | "slevel" | "twin";
 
 /** `a_wmul` for `n` plain segments: width 1, no Traffic view band shift (T-1799) */
 export function plainWmul(n: number): Float32Array {

@@ -558,7 +558,8 @@ pub enum Issue {
     /// ends there arriving on the other track.
     OneTrackStop { line: u32, node: u32 },
     /// T-3332: a one-track station placed or switched where it cannot go: anywhere but track running
-    /// through with the same tracks both sides, or on one-way single track.
+    /// through with the same tracks both sides, or on one-way track (single, or double set one way); and
+    /// a way refused on double track through one.
     OneTrackHere { node: u32 },
     LineSchedule { line: u32 },
     /// A split point on a ramp, too near a node, or outside the edge.

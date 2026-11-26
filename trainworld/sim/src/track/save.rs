@@ -19,7 +19,7 @@ use super::bus::keep::{KeepLink, KeptStop};
 /// Optional trailing blocks follow the lines: `LUI1` (line numbers and symbols) and, when the
 /// player linked stations, `LNK1` (T-197: count, then node pairs in the dense ids). A save without
 /// them loads with none. An edge's flags `| 32` mark a crossover's diagonal (T-338), `| 64`
-/// high-speed track (T-817); older saves have none; bits 11-12 give one-way single track (T-3094: 0 not set, 1 a to b, 2 b to a, 3 both ways, T-3137), bits 13-14 and 15-16 the joins of its ends a and b (T-3137, `EdgeData::join`). A trailing `LHS1` block (T-817) lists the
+/// high-speed track (T-817); older saves have none; bits 11-12 give one-way single track (T-3094: 0 not set, 1 a to b, 2 b to a, 3 both ways, T-3137), and from level 42 one-way double track (1 or 2, `Network::oneway_double`), bits 13-14 and 15-16 the joins of its ends a and b (T-3137, `EdgeData::join`). A trailing `LHS1` block (T-817) lists the
 /// lines running high-speed trains; without it all are ordinary. A trailing `LBS2` block (T-1465;
 /// `LBS1`, T-1464, is the same without a kind per point) gives the bus lines their routes; without
 /// it there are none. A trailing `LRT1` block (T-1787) carries the settled rates of the lines with
@@ -130,7 +130,7 @@ pub const BLOCKS: [&[u8; 4]; 44] = [b"LUI1", b"LNK1", b"LAU1", b"LHS1", b"LBS1",
 /// as unknown on its own) and every new meaning of existing bytes, so an older build knows a newer
 /// save even when it has nothing left over, and refuses to open it (T-4014). Saves from before it have none, read
 /// as 0. The app keeps a copy (`SAVE_LEVEL`, app/src/workers/saveFile.ts; `the_app_knows_this_level`).
-pub const LEVEL: u32 = 41;
+pub const LEVEL: u32 = 42;
 /// T-3759: the last level from before stations could be unbound from their complex's name; a typed
 /// station there showed its own name, so loading one makes such a station unbound (the app's pass).
 pub const OLD_BOUND_NAMES: u32 = 26;
@@ -264,7 +264,7 @@ pub fn encode(net: &Network) -> Vec<u8> {
         w.i(a - prev_a);
         w.i(node_id[d.b as usize] as i64 - a);
         prev_a = a;
-        w.u(d.tracks as u64 | (d.built as u64) << 2 | (!d.thru.is_empty() as u64) << 3 | ((d.off && !d.built) as u64) << 4 | (d.crossover as u64) << 5 | (d.kind.is_hsr() as u64) << 6 | (d.sep as u64) << 7 | edge_kind_bits(d.kind) | (if d.tracks == 1 { d.oneway as u64 | (d.join[0] as u64) << 2 | (d.join[1] as u64) << 4 } else { 0 }) << 11);
+        w.u(d.tracks as u64 | (d.built as u64) << 2 | (!d.thru.is_empty() as u64) << 3 | ((d.off && !d.built) as u64) << 4 | (d.crossover as u64) << 5 | (d.kind.is_hsr() as u64) << 6 | (d.sep as u64) << 7 | edge_kind_bits(d.kind) | (if d.tracks == 1 { d.oneway as u64 | (d.join[0] as u64) << 2 | (d.join[1] as u64) << 4 } else if matches!(d.oneway, 1 | 2) { d.oneway as u64 } else { 0 }) << 11);
         w.u(d.pis.len() as u64);
         let (mut px, mut py) = (net.node_x[d.a as usize], net.node_y[d.a as usize]);
         for p in &d.pis {
@@ -1916,7 +1916,7 @@ mod tests {
         for tag in &written {
             assert!(BLOCKS.iter().any(|b| &b[..] == tag.as_bytes()), "block {tag} is written but not in BLOCKS");
         }
-        assert_eq!((LEVEL, BLOCKS.len()), (41, 44), "a new block raises LEVEL: raise it, then update this pin");
+        assert_eq!((LEVEL, BLOCKS.len()), (42, 44), "a new block raises LEVEL: raise it, then update this pin");
     }
 
     /// T-4048 (level 41): the separated pairs' block follows the kept stops' (T-4080, level 40). A level 40 save

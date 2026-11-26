@@ -109,15 +109,16 @@ impl TrackApi {
     /// departure its train takes next from that terminal, relative to `epoch` (the other run's
     /// trip drawn from then; NaN when it leaves service there, T-245). Running lines only.
     pub fn trips(&self, epoch: f64) -> Vec<f32> {
-        self.w
-            .svc
-            .trips(&self.w.net, epoch, epoch + 3600.0)
-            .iter()
-            .flat_map(|t| {
-                let next = t.next.map_or(f32::NAN, |n| (n - epoch) as f32);
-                [profile_index(t) as f32, (t.draw - epoch) as f32, (t.end - epoch) as f32, next]
-            })
-            .collect()
+        trip_rows(&self.w.svc.trips(&self.w.net, epoch, epoch + 3600.0), epoch)
+    }
+    /// `trips`, then one number per trip in the same order: which of one-way double track's two
+    /// tracks its train takes (`Trip::twin_track`), so the renderer draws trains one after another
+    /// on its two tracks in turn.
+    pub fn trips_with_tracks(&self, epoch: f64) -> Vec<f32> {
+        let trips = self.w.svc.trips(&self.w.net, epoch, epoch + 3600.0);
+        let mut out = trip_rows(&trips, epoch);
+        out.extend(trips.iter().map(|t| t.twin_track() as f32));
+        out
     }
     /// T-2603: line `line`'s trips drawn in `[t0, t1)`, game seconds, in absolute time: per trip the
     /// profile index, departure, end and next departure as `trips` gives them (NaN for none).
@@ -671,6 +672,17 @@ impl TrackApi {
             }
         }
     }
+}
+
+/// `TrackApi::trips`'s four numbers per trip, relative to `epoch`.
+fn trip_rows(trips: &[crate::track::service::Trip], epoch: f64) -> Vec<f32> {
+    trips
+        .iter()
+        .flat_map(|t| {
+            let next = t.next.map_or(f32::NAN, |n| (n - epoch) as f32);
+            [profile_index(t) as f32, (t.draw - epoch) as f32, (t.end - epoch) as f32, next]
+        })
+        .collect()
 }
 
 /// A trip's place in `profile_meta` (T-3346 stage 2: its variant's).

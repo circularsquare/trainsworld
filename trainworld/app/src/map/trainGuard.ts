@@ -28,15 +28,21 @@
 // until that one has reached its own. The timetable already charges the stretch's wait as delay; this
 // only draws where it is spent. The two meet at a station, drawn there as on two tracks
 // (terminalBays.ts `singleSplitEnds`, its track split there, T-3212, and `terminalEnds` for a line's ends). `?perfOff=singleWait` turns it off.
+//
+// One-way double track carries its way on both its tracks, and every other train takes the other one (`bayTwin`): there
+// a train holds only those on its own track, so the two pass each other as they stop at its two platforms in turn.
 
 import { PASS_OUTER, PASS_STRIDE, TRAM_MARK, arriveS, carsOf, profileS, trainFrame, type NetworkBuffers } from "./network";
-import { BAY_STRIDE, TURNBACK_M, bayP } from "./terminalBays";
+import { BAY_STRIDE, TURNBACK_M, bayP, bayTwin } from "./terminalBays";
 
 /** T-2980: the place a trip leaving a dead end starts from, as arriving trains number them (its own
  * code counts from its own run, whose other track is theirs), -1 none. */
 const leftFrom = (v: number) => (v < 4 ? -1 : v - (v % 4) + 1 - (v % 4));
 import { perfOff } from "../perfFlags";
 import { META_PER_LINE, profileLine, profileRun } from "./profiles";
+
+/** Added to a track key (a path entry) for one-way double track's other track (`bayTwin`). */
+const TWIN_KEY = 2 ** 30;
 
 /** Room left between a held train's front and the back of the train ahead, m. */
 export const GUARD_GAP_M = 30;
@@ -172,6 +178,8 @@ export class TrainGuard {
    * on the running track at, running through or stopping beside a slower line (T-2248), each with its
    * offset along run 0 */
   private passStops = new Map<number, number[]>();
+  /** the one-way double track pieces (`NetworkBuffers.twinEdges`) */
+  private twinEdge = new Set<number>();
   private passThrough = new Map<number, Map<number, number>>();
   /** since the last `resetCounts`: train pairs found beside each other at a passing station, summed
    * over frames (checks) */
@@ -198,6 +206,7 @@ export class TrainGuard {
     this.net = n;
     this.passStops.clear();
     this.passThrough.clear();
+    this.twinEdge = new Set(n.twinEdges ?? []);
     const P = n.passing;
     if (P) for (let k = 0; k + PASS_STRIDE <= P.length; k += PASS_STRIDE) {
       const line = P[k];
@@ -514,6 +523,7 @@ export class TrainGuard {
       // and a train due at its place waits for it below
       if (f.bays && f.bays[i * BAY_STRIDE + 2] >= 0 && tauOf[c] >= arriveS(n, p)) continue;
       const L = meta[p * 4 + 3], first = T[geo * 2], count = T[geo * 2 + 1];
+      const twin = !!f.bays && this.twinEdge.size > 0 && bayTwin(f.bays, i * BAY_STRIDE);
       const was = prevS[i];
       const a = Math.min(cs[c], Number.isNaN(was) ? cs[c] : was) - half[c], b = cs[c] + half[c] + gapM + 10;
       // the entries in run 0's offsets [d0, d1]
@@ -523,7 +533,7 @@ export class TrainGuard {
       for (; k < first + count && PF[k] <= d1; k++) {
         const len = PL[k];
         if (PF[k] + len < d0) continue;
-        const key = run === 0 ? E[k] : E[k] ^ 1;
+        const key = (run === 0 ? E[k] : E[k] ^ 1) + (twin && this.twinEdge.has(E[k] >> 1) ? TWIN_KEY : 0);
         // where the entry starts along this run
         const start = run === 0 ? PF[k] : L - PF[k] - len;
         push(regs, key, c, -start, len);

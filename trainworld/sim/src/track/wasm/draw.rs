@@ -1299,9 +1299,12 @@ impl TrackApi {
 
     /// `StationData::one` for a one-track station at chainage `s` of edge `e` (`e` MAX: on node `s`)
     /// whose platform is on the track nearer `pt`; None where one cannot go: anywhere but track
-    /// running through with the same tracks both sides.
+    /// running through with the same tracks both sides, or on one-way double track (`one_fits`).
     fn one_at(&self, e: u32, s: f64, pt: [f64; 2]) -> Option<u8> {
         let net = &self.w.net;
+        if e != u32::MAX && net.oneway_double(e) {
+            return None;
+        }
         let (x, y, th, tracks) = if e == u32::MAX {
             let n = s as u32;
             if !self.one_fits(n) {

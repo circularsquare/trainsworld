@@ -276,6 +276,11 @@ impl TrackApi {
         if !rail(re) || !rail(fwd) || !rail(back) {
             return None;
         }
+        // a main set one way (`oneway_double`) runs every train one way: the move to the branch crosses no
+        // other's track, and a leg for the way back would run into the main against its way
+        if net.oneway_double(fwd) || net.oneway_double(back) {
+            return None;
+        }
         // T-3027: a flyover's ramps are 200 m a level, as `RAMP_ROOM` has them
         Some(geom::with_ramps(geom::Ramps::exact(RAMP_PER_LEVEL), || self.lay_flyover(j, re, fwd, rside, route_edges)))
     }

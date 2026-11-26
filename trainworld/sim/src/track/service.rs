@@ -273,6 +273,20 @@ pub struct Trip {
     pub var: u8,
 }
 
+impl Trip {
+    /// Which of one-way double track's two tracks its train takes (0 the one on the side trains keep
+    /// to, 1 the other): every other departure of its run's pattern, so trains one after another stop
+    /// at its stations' two platforms in turn. A pure function of the departure, the same from any
+    /// window. (Departures fall on whole and half headways from the pattern's start, so the count is
+    /// taken an odd share of a headway past them, never on its rounding edge.)
+    pub fn twin_track(&self) -> u8 {
+        if !(self.hw > 0.0) {
+            return 0;
+        }
+        ((self.dep / self.hw + 0.377).floor() as i64).rem_euclid(2) as u8
+    }
+}
+
 /// A train running when an edit is applied: where it is on its profile (T-206).
 #[derive(Clone, Copy, Debug)]
 pub struct InFlight {

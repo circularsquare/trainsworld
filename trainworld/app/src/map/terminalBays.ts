@@ -207,8 +207,14 @@ export const bayP = (v: number) => (v < 0 ? -v - 1 : v);
 export const endClear = (v: number, trainM: number) => (v < 0 ? Math.max(0, trainM / 2 + v + 1) : trainM / 2);
 /** Floats per trip in `assignBays`'s result: where it starts (code + 4 x (group + 1), -1 for no
  * place), the metres from its first stop to where it crosses over, where it ends (the same), and
- * the metres from its last stop to the crossing (each of the two distances `bayThru` at a through end). */
-export const BAY_STRIDE = 4;
+ * the metres from its last stop to the crossing (each of the two distances `bayThru` at a through end);
+ * then which of one-way double track's two tracks it takes (`bayTwin`). The train shader reads the first
+ * four as `a_bay` and the last as `a_twin`. */
+export const BAY_STRIDE = 5;
+/** Whether the trip with places `bay` (BAY_STRIDE numbers from `o`) takes the other of one-way double
+ * track's two tracks, not the one the running side gives it (the sim's `Trip::twin_track`, every other
+ * departure of its run), so trains one after another stop at both its stations' platforms. */
+export const bayTwin = (bay: ArrayLike<number>, o: number) => bay[o + 4] === 1;
 /** A place is free once the train leaving it is this far past the platform's end, m (its own length,
  * a long train's, and the crossover), or, where its next trip is not known, this long after it
  * leaves, s. */
@@ -334,12 +340,16 @@ interface Trip { profile: number; draw: number; end: number; next: number; i: nu
  * Each trip's place at its start and its end (`BAY_STRIDE` per trip of `cur`, the trips of the hour
  * from `epoch`: profile, departure, end and next departure relative to the epoch, as `TrackApi.trips`).
  * `prev` is the hour before's, from `epoch - BAY_LOOKBACK_S`, so the pick is the same from any window.
- * `times(profile)`: when it reaches its last stop and where it is when (`profileTimes`).
+ * `times(profile)`: when it reaches its last stop and where it is when (`profileTimes`). `twins`: per trip of
+ * `cur`, its track on one-way double track (`TrackApi.trips_with_tracks`, `bayTwin`).
  */
-export function assignBays(cur: Float32Array, epoch: number, prev: Float32Array | null, ends: Map<number, [TerminalEnd | null, TerminalEnd | null]>, times: (profile: number) => ProfileTimes | undefined): Float32Array {
+export function assignBays(cur: Float32Array, epoch: number, prev: Float32Array | null, ends: Map<number, [TerminalEnd | null, TerminalEnd | null]>, times: (profile: number) => ProfileTimes | undefined, twins?: ArrayLike<number>): Float32Array {
   const n = cur.length / 4;
   const out = new Float32Array(n * BAY_STRIDE).fill(-1);
-  for (let i = 0; i < n; i++) out[i * BAY_STRIDE + 1] = out[i * BAY_STRIDE + 3] = 0;
+  for (let i = 0; i < n; i++) {
+    out[i * BAY_STRIDE + 1] = out[i * BAY_STRIDE + 3] = 0;
+    out[i * BAY_STRIDE + 4] = twins?.[i] === 1 ? 1 : 0;
+  }
   if (!ends.size) return out;
   // (keyed by number, a map per profile and per line and run: a string per trip took 50-250 ms an hour's turn on a
   // 2,647-station game, T-3804)

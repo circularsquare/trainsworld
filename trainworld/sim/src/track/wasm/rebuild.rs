@@ -475,7 +475,10 @@ fn edge_op(net: &Network, w: Want, e: u32) -> Option<Op> {
     }
     if to_double || to_single {
         d.tracks = if to_double { 2 } else { 1 };
-        d.oneway = 0;
+        // one-way double track made single keeps its way, as one-way single track
+        if !(to_single && matches!(d.oneway, 1 | 2)) {
+            d.oneway = 0;
+        }
         d.join = [0; 2];
         changed = true;
     }
@@ -1003,7 +1006,10 @@ impl TrackApi {
             match self.w.trial_light(Op::Batch(ops.clone()), |tw| tw.net.edge_data(mid)) {
                 Ok((_, Some(mut d))) => {
                     d.tracks = 1;
-                    d.oneway = 0;
+                    // one-way double track keeps its way, as `edge_op` keeps it
+                    if !matches!(d.oneway, 1 | 2) {
+                        d.oneway = 0;
+                    }
                     d.join = [0; 2];
                     ops.push(Op::Edge { id: mid, data: Some(d) });
                     cuts.push(Cut { edge: e, ops });

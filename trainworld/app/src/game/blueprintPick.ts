@@ -218,10 +218,11 @@ export async function doubleUpPicked(pieces: number[]) {
   else if (done < pieces.length) say(t("blueprintPick.doubleSome", { done, total: pieces.length, why }).trim());
 }
 
-/** T-3101: the picked single-track pieces (no crossover), the ones the track panel's one-way switch applies to. */
+/** T-3101: the picked pieces (no crossover), the ones the track panel's one-way switch applies to: single track,
+ * and double track, whose two tracks then both run the one way. */
 export function oneWayPieces(p: BpPicked): TrackEdge[] {
   const picked = new Set(p.edges);
-  return (world.peek()?.edges ?? []).filter((e) => picked.has(e.id) && e.tracks === 1 && !e.crossover);
+  return (world.peek()?.edges ?? []).filter((e) => picked.has(e.id) && !e.crossover);
 }
 
 /** T-3525: the picked pieces a speed limit can go on (no crossover). */
@@ -230,11 +231,54 @@ export function limitPieces(p: BpPicked): TrackEdge[] {
   return (world.peek()?.edges ?? []).filter((e) => picked.has(e.id) && !e.crossover);
 }
 
-/** T-3101: the track panel's switch for every picked single-track piece: all one way gives them back both ways
- * (or the way their run takes), else those not yet one way run one way. One confirmation, one undo. */
+/** The way double track picked for the one-way switch takes, which no run gives it: the way along the chain the picked
+ * pieces make through nodes where just two of them meet, from a piece of it already one way (else a single piece's run,
+ * else the chain's first piece a to b), so a stretch picked whole runs one way end to end however its pieces were drawn. */
+function chainWays(pieces: readonly TrackEdge[]): Map<number, 1 | 2> {
+  const at = new Map<number, TrackEdge[]>();
+  for (const e of pieces) for (const n of [e.a, e.b]) at.set(n, [...(at.get(n) ?? []), e]);
+  const other = (n: number, e: TrackEdge) => {
+    const here = at.get(n)!;
+    return here.length === 2 ? (here[0].id === e.id ? here[1] : here[0]) : undefined;
+  };
+  const way = new Map<number, 1 | 2>(), seen = new Set<number>();
+  for (const start of pieces) {
+    if (seen.has(start.id)) continue;
+    const chain: TrackEdge[] = [], stack = [start];
+    seen.add(start.id);
+    while (stack.length) {
+      const e = stack.pop()!;
+      chain.push(e);
+      for (const n of [e.a, e.b]) {
+        const o = other(n, e);
+        if (o && !seen.has(o.id)) { seen.add(o.id); stack.push(o); }
+      }
+    }
+    const seed = chain.find((e) => e.oneWay) ?? chain.find((e) => e.autoWay) ?? start;
+    way.set(seed.id, (seed.oneWay || seed.autoWay || 1) as 1 | 2);
+    const todo = [seed];
+    while (todo.length) {
+      const e = todo.pop()!;
+      const [from, to] = way.get(e.id) === 1 ? [e.a, e.b] : [e.b, e.a];
+      // on from `to` along the next piece; into `from` along the one before
+      for (const [n, leaves] of [[to, true], [from, false]] as const) {
+        const o = other(n, e);
+        if (!o || way.has(o.id)) continue;
+        way.set(o.id, (o.a === n) === leaves ? 1 : 2);
+        todo.push(o);
+      }
+    }
+  }
+  return way;
+}
+
+/** T-3101: the track panel's switch for every picked piece: all one way gives them back both ways
+ * (or the way their run takes), else those not yet one way run one way: single track its run's way, double track
+ * the way along the picked chain (`chainWays`). One confirmation, one undo. */
 export function oneWayPicked(pieces: readonly TrackEdge[]) {
   if (pieces.every((e) => e.oneWay)) return setOneWays(pieces.map((e) => ({ edge: e.id, dir: e.autoWay ? 3 : 0 })), false, true);
-  return setOneWays(pieces.filter((e) => !e.oneWay).map((e) => ({ edge: e.id, dir: e.autoWay ?? 1 })));
+  const chain = chainWays(pieces);
+  return setOneWays(pieces.filter((e) => !e.oneWay).map((e) => ({ edge: e.id, dir: e.tracks === 1 ? e.autoWay ?? 1 : chain.get(e.id) ?? 1 })));
 }
 
 /** T-3101: the track panel's Reverse for every picked piece that runs one way, each turned around. */

@@ -124,14 +124,14 @@ export function buffer(rnd: NetworkRenderer, data: ArrayBufferView, list = rnd.r
   return b;
 }
 
-export function attrib(rnd: NetworkRenderer, prog: WebGLProgram, name: string, buf: WebGLBuffer, size: number, type: number, divisor: number, integer = false) {
+export function attrib(rnd: NetworkRenderer, prog: WebGLProgram, name: string, buf: WebGLBuffer, size: number, type: number, divisor: number, integer = false, stride = 0, offset = 0) {
   const gl = rnd.gl;
   const loc = gl.getAttribLocation(prog, name);
   if (loc < 0) return;
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.enableVertexAttribArray(loc);
-  if (integer) gl.vertexAttribIPointer(loc, size, type, 0, 0);
-  else gl.vertexAttribPointer(loc, size, type, false, 0, 0);
+  if (integer) gl.vertexAttribIPointer(loc, size, type, stride, offset);
+  else gl.vertexAttribPointer(loc, size, type, false, stride, offset);
   gl.vertexAttribDivisor(loc, divisor);
 }
 

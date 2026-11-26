@@ -273,8 +273,8 @@ Full design, numbers and sources: `notes/T-008.md`.
 - **The way single track runs** (T-3094, T-3137): every single-track piece runs both ways or one way
   (`Network::edge_way`: 0, 1 a to b, 2 b to a). The player's `EdgeData.oneway` decides where set (1 a to
   b, 2 b to a, 3 both ways; saves hold it in edge flag bits 11-12, older saves read 0 = not set; never
-  set on double track, a crossover, and cleared when the piece stops being
-  single). Otherwise the piece takes the way of its **run** (`lanes.rs` `derive_ways`, again on every
+  set on a crossover, cleared when the rebuild tool turns the piece double and kept as it turns one-way
+  double track single; double track takes 1 or 2 only, below). Otherwise the piece takes the way of its **run** (`lanes.rs` `derive_ways`, again on every
   edit for each run it touches, and on load): the single-track pieces through nodes where only two of
   them meet. Each run end votes: a join gives the way trains keep to on that track (the right track
   looking out along the piece carries trains away from the node with right-hand running), a bare track
@@ -318,8 +318,42 @@ Full design, numbers and sources: `notes/T-008.md`.
   Splitting a piece keeps the flag on both halves; pieces join only with the same way along the joined
   piece. Capacity: single track that runs one way, set or by its run, is a directed track like double
   (section = `edge_section_s` + v / `SIGNAL_BRAKE`, per direction, `capacity::directed`), not shared.
-  Platforms and stations on it are unchanged. The map draws chevrons along it (`oneWayTrackRuns`, one every 300 m of distance along a connected run),
+  Platforms and stations on it are unchanged. The map draws chevrons along it (`oneWayTrackRuns`, one every 300 m of distance along a connected run, which goes on through a node only onward: not back onto the other way's track where both ways meet one junction),
   the hover says "One way".
+- **One-way double track**: double track (no crossover) takes the same switch, `EdgeData.oneway` 1 or 2 (3 is
+  stored as 0: double track runs both ways by itself and no run gives it a way; saves keep it from level 42, in the
+  same flag bits). Both its tracks then carry that way (`Network::oneway_double`, `lanes`), and a train keeps to the
+  one the running side gives it (`lane_of`: the right track, looking along the way, with right-hand running), so the
+  move table, the flat-junction badge and the train guard read it as they read two-way double track: two-way double
+  splitting into a one-way double each way crosses nothing where each leg leaves on its own side, and has a flat
+  junction where they leave on the wrong sides. Routing, `check_line`, a line's own way back and the reroutes an
+  edit makes are those of one-way single track. A single-track run joined to one track of it takes its way: the
+  join votes the way the double runs through the node, whichever track it names (`join_away`, where every double on
+  the far side runs one way and all agree). Capacity: a section runs on through it from two-way double where the
+  same trains do, as through a station's passing tracks, so a piece of it adds no queue of its own at each end; a
+  section all on it holds each train half as long (the section's occupancy times 0.5), and no following stretch
+  runs onto it: a faster train passes on the other track. Drawn, every other departure of a run takes the other
+  track (`Trip::twin_track`, `trips_with_tracks`; map/terminalBays.ts `bayTwin`), crossing to it over 80 m in from
+  where the double starts and back before it ends (`twinRamp`, `sampleTwin`), so trains one after another stop at
+  both platforms of a station on it; the train guard holds a train only behind those on its own track there
+  (`twinEdges`). Where it meets two-way double track and goes on in no other one-way double, its two tracks are
+  drawn coming together onto the one its way takes there (`twinMerges`, `twinRunPoints`: its end drawn onto that
+  track as its tracks narrow to one over 80 m, the way's own track running on straight), so it reads joined to that
+  track alone; a train on the other track crosses over with it (`twinOpen`: `sampleTwin` no further over than the
+  tracks are drawn apart). Where the other way's one-way double comes together at the same junction beside it, on
+  the side away from its track (as the sim ranks the two, `derive_node`), the two pairs open no faster than keeps
+  their inner tracks 4 m apart until they are quad track's 8 m apart (let go by 300 m), so the four read as quad
+  track fanning out of the junction, not one pair laid on the other; on the side of its track the two ways cross
+  there, and are drawn so. Too short to come apart, the narrowing goes on into the pieces beyond through plain nodes
+  (none at a station), or the pair is apart by where it ends. A station on it (every piece through it one way)
+  is a one-way station (`leg_heading`), its two platforms both the one way's, pooled as a passing station's
+  (`oneway_double_station`). A one-track station (T-3332) on it, or the way on double track through one, is
+  refused (`OneTrackHere`). A route drawn off it with ramps on gets no flyover (T-3092's legs are
+  for a main that runs both ways: here the move to the branch crosses no other's, and a leg for the way back would
+  run into the main against its way); the junction panel's flyover (a flying junction) takes away the flat junction
+  of legs leaving on the wrong sides. The selection bar's switch and Reverse take double pieces as single ones;
+  the map draws its chevrons as single track's, one on each of its tracks, moving onto them as the tracks draw
+  apart (`OneWayEdge.double`, the chevrons' `band` the lanes' share apart).
 - **Quad track** (T-255): the other setting. The stroke draws the double track as usual and an
   express double track beside it, 8 m to the left of the drawn direction (centre to centre, so
   4 m between every pair of neighbouring tracks), from the same start node to the same end node:
@@ -1227,8 +1261,8 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   to its own station. The map draws the return run's station as a stop of the line, and a station a run stops
   at this way can be taken out only with the line's stop (`StationInUse`, as a listed stop).
 - **One-way stations** (T-3565, notes/T-3565.md; `track/perdir.rs` `leg_stop`, `track/wasm/legs.rs`): a station on
-  one-way single track (both its pieces single and one way; a one-track station on double track is none) is a
-  one-way station. A line stopping at one is served there once a round trip, by the run whose track passes it, where
+  one-way single track (both its pieces single and one way; a one-track station on double track is none), or on
+  one-way double track (every piece through it), is a one-way station. A line stopping at one is served there once a round trip, by the run whose track passes it, where
   that run passes it; the other run goes by on its own track, neither turning back nor looping to reach it. Routing
   skips the one-way stations on the other run's track (`route_legs`, first in `route_hops`). One that neither run's
   quickest route through the other stops passes (faster track beside its leg, as passing tracks between two side
@@ -1826,7 +1860,7 @@ money: it pays, and the cash may go below zero (the cash is not shown; docs/ui-p
   (`set_edges_tracks` 2) is free and one undoable edit; built is final as every rebuild is.
   **Double track as single** (T-3321, Anita 2026-11-12: "maybe that direction can be free"; `double_ok`,
   `single_refusal` in `rebuild.rs`, `tracks` 1): the same pick makes every double piece of regular rail single in
-  place, both ways (no stored way, no joins), free: built track costs nothing and nothing is refunded, so the quote is
+  place, both ways (no stored way, no joins; one-way double track keeps its way, as one-way single track), free: built track costs nothing and nothing is refunded, so the quote is
   0 (`rebuild_plan`'s `priced` leaves out a piece whose only change is its count); with a level or type change too,
   that change is paid as usual at the single track's price. Stations on it become single-track stations, uncharged
   (a station keeps a double-track platform while any of its track stays double, `node_tracks`). Lines keep running

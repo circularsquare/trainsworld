@@ -252,14 +252,15 @@ function WayArrow({ e }: { e: TrackEdge }) {
   return <span class="way-arrow" aria-hidden="true" style={{ transform: `rotate(${deg}deg)` }}><Icon.arrowUp /></span>;
 }
 
-/** T-3101: the one-way switch and Reverse for the picked single-track pieces; T-3746: for one piece too, with
+/** T-3101: the one-way switch and Reverse for the picked pieces, single or double track; T-3746: for one piece too, with
  * its way as an arrow, and Use automatic way (T-3137) for the pieces pinned against the way their run gives. */
 function PickOneWay() {
   const p = bpPicked.value, w = world.value;
   const pieces = withShown(useMemo(() => oneWayPieces(p), [p, w]));
   if (!pieces.length) return null;
   const all = pieces.every((e) => e.oneWay), some = pieces.some((e) => e.oneWay);
-  const pinned = pieces.filter((e) => !!e.setWay && (e.setWay === 3 ? 0 : e.setWay) !== (e.autoWay ?? 0));
+  // (double track has no automatic way: its switch alone turns it back)
+  const pinned = pieces.filter((e) => e.tracks === 1 && !!e.setWay && (e.setWay === 3 ? 0 : e.setWay) !== (e.autoWay ?? 0));
   const auto = all && pieces.every((e) => !e.setWay);
   return (
     <div class="group">
