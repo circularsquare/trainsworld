@@ -194,6 +194,13 @@ purpose filter the purpose drawn is ringed in the bar.
   every line's. While the filters keep any line in the game off the list, the gear has a dot and its hover says
   how many ("3 lines not listed"). A sort on a column turned off goes to Name. Kept per browser (localStorage
   `trainworld-lines-view`, what is turned off), never in the save.
+- **Name filter** [`ListFind`, `ui/listParts.tsx`]: a box with a magnifying glass under the row with New line,
+  the eye, the scope toggle and the gear keeps the lines whose name holds what is typed, read as the search box
+  reads names (`normalise`: case, accents and punctuation aside, spaces optional, so "alcala" finds Alcalá), and
+  every line of a group whose name holds it. It applies on top of the scope and the gear as they do on each other:
+  a group is listed when any line in it passes, and open shows only those; the selected line always passes. With
+  lines in the scope but none matching, the list says "No lines match." The clear button or Esc empties it; it is
+  kept while the game runs, never in the save. The Stations tab has the same box.
 - **Line groups and dragging** [T-1791, T-1813, `game/lineGroups.ts`, `game/handOrder.ts`; the model in [track-and-service.md](track-and-service.md) 6.3]:
   a row is dragged with the mouse or a pen once the pointer has moved 6 px (touch scrolls the list
   as before). **Groups nest** to any depth [T-3423]: a group's members are lines and groups, and a
@@ -815,7 +822,8 @@ order, kept and dropped as the Lines tab's is [T-1813]. Riders follows the rider
   [T-905]: under Origins or Transfers it is the map circle's own figure (riders starting a rail trip,
   or changing lines, a day from the demand solve shown, `game/stationUse.ts`); under None or Total it
   is boardings in the past 24 hours. Its hovers, header and footer say which. The scope
-  toggle and distance column are the Lines tab's (above); the footer reads "N of M stations" when
+  toggle, distance column and name filter are the Lines tab's (above), a row kept when its complex's name or a
+  member's holds what is typed ("No stations match." when none does); the footer reads "N of M stations" when
   only the viewed place is listed. The first 80 rows are drawn when the tab opens, and 160 more each
   time the list's end comes within 400 px of view as it scrolls [T-1200]. A row is a station complex [T-530] (the button "Show stations separately" beside the place toggle, off at each load, gives each station its own row, T-2788): the name of its member with
   the most lines, every line stopping at any member, riders summed over the members, and a
