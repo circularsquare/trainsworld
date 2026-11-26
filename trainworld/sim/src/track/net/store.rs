@@ -60,6 +60,7 @@ impl Network {
             node_one: vec![],
             node_fare: vec![],
             node_own: vec![],
+            node_pair: vec![],
             node_berth: vec![],
             node_road: vec![],
             node_ports: vec![],
@@ -429,6 +430,7 @@ impl Network {
         self.node_one.push(0);
         self.node_fare.push(0);
         self.node_own.push(String::new());
+        self.node_pair.push(None);
         self.node_berth.push(None);
         self.node_road.push(None);
         self.node_ports.push(Ports::default());

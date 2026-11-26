@@ -42,6 +42,7 @@ import { PurposeSplit } from "./PurposeSplit";
 import { StationUpgrades, TerminalButton } from "./StationUpgrades";
 import { PlatformTracks } from "../ToolBar";
 import { StationSides } from "./StationSides";
+import { StationPair } from "./StationPair";
 import { FareZoneRow } from "../FareZoneParts";
 import { fareAreas } from "../../game/fareZonePaint";
 
@@ -417,6 +418,7 @@ function StationDetails({ s, lines, props }: {
             : <PlatformTracks one={!!s.one} oneTip={tr("stationInspector.noLoop")} bothTip={tr("stationInspector.loop")}
                 onPick={(one) => void edit({ op: "stationTracks", node: s.num, one })} />}
         </li>}
+        {!s.port && <StationPair s={s} />}
         <FareZoneRow members={[s]} />
         {s.built && m && (
           <Row label={tr("trackInspector.upkeep")}>

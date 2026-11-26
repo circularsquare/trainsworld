@@ -1245,6 +1245,21 @@ line panel's round-trip split, waiting at busy track among it: [ui-inspectors.md
   other leg, however close (T-3605, Anita 2026-11-17): it is a stop of its own (no way_group), so the stop list and
   its half dot say where trains stop, and taking one of two side by side out leaves the other served one way. Any
   number may sit on a leg, none on the other included. Half dots and the departures board show each one way.
+- **One-way stations the player pairs** (`StationData::pair`, `Network::pair_of`, `track/wasm/pairs.rs`,
+  `game/pairs.ts`): the one exception to T-3605, which only the player makes, since only the player knows which
+  platforms of a big station go together (two each way, each with its partner, each pair a line's). From the station
+  view, Pair and a click on the other station make two one-way stations one stop: both one-way stations, of one family
+  of track, their trains running roughly opposite ways (within 60 degrees), one complex or within `WAY_WALK_M`
+  (`pair_refusal`: `PairNotOneWay`, `PairNotOpposite`, `PairTooFar`). Paired, neither is a `leg_stop`: a line lists
+  one, run 0 stops at the half on its track and run 1 at the other, its `way_group` being its pair alone (as a
+  one-track station's per-direction stop, above), so no half dot and `line_back_stops` names the other half. Pairing
+  is one free undoable edit with the lines it touches (`pair_edit`): one listing both halves keeps the one run 0 stops
+  at, one listing only the other half lists run 0's instead, each routed again on the paired track where its path no
+  longer does; Unpair puts the other half back in beside the one listed, two stops served once again. A stop list
+  given whole with the half run 0 reaches only by turning back gets its pair (`pair_halves` in `edited_stops`), as a
+  click on either half gets run 0's (`way_others`). Each station holds its pair as set; it counts while the two still
+  name each other and the track allows it (a leg made two-way sets it aside until it is one-way again). The station
+  run 1 stops at cannot be removed under a line (`StationInUse`).
 - **One-way stops the player sets** (T-3711, Anita 2026-11-18; `LineData::ones`, `Network::one_stop_side`,
   `settle_ones` in `track/wasm/lines.rs`): a shift-click in the line tool makes a stop of an open rail line served one
   way only, at any plain station through which track runs both ways (not a one-way station, which is one already,
@@ -2580,6 +2595,8 @@ demand level), trips, the boarding account and the fare curve; a bus is one 12 m
   level 35) lists the BRT stations and their road headings; without it none is. A trailing `LBQ1` block (T-3944,
   level 36) lists the constructed lines whose BRT lanes are in the blueprint; without it a constructed line on BRT
   has its lanes built.
+  A trailing `LPA1` block (save level 42, after `LAP1`) lists the one-way stations the player paired as one stop,
+  each pair once, as set; without it none is.
 
 ### 6.8 Ferry routes
 

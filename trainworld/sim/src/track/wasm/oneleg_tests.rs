@@ -34,7 +34,7 @@ fn end_station(a: &mut TrackApi, x: f64, y: f64) -> u32 {
     assert_eq!(a.add_station(1, n, x, y, 200, "T".into()), 0, "{}", a.issues());
     n
 }
-fn new_line(a: &mut TrackApi, stops: &[u32]) -> u32 {
+pub(super) fn new_line(a: &mut TrackApi, stops: &[u32]) -> u32 {
     let l = a.new_line_id();
     assert_eq!(a.set_line_with_trains(l, stops, 4, 2, 0, 30.0, 180.0, 0, 0, "L".into()), 0, "{}", a.issues());
     l
@@ -65,7 +65,7 @@ fn pair_track(right_hand: bool, gap: f64) -> TrackApi {
 
 /// `pair_track` with end stations P (0, 0) and Q (6000, 0) and a station on each leg's middle.
 /// Returns (P, Q, the north leg's station, the south leg's).
-fn pair(right_hand: bool, gap: f64) -> (TrackApi, [u32; 4]) {
+pub(super) fn pair(right_hand: bool, gap: f64) -> (TrackApi, [u32; 4]) {
     let mut a = pair_track(right_hand, gap);
     let (p, q) = (end_station(&mut a, 0.0, 0.0), end_station(&mut a, 6000.0, 0.0));
     let (n, s) = (station_near(&mut a, 3000.0, gap), station_near(&mut a, 3000.0, -gap));
@@ -76,7 +76,7 @@ fn pair(right_hand: bool, gap: f64) -> (TrackApi, [u32; 4]) {
 /// The checker's case (notes/T-3565-check.md): `pair_track` with stations on the doubles at 300,
 /// 1200, 4800 and 5700 m (AR, LO, E12, UN; bare track ends past the outer two, as past her
 /// Arismendi), on the north leg at x offsets `xn` from its middle and on the south leg at `xs`.
-fn pair_wide(right_hand: bool, gap: f64, xn: &[f64], xs: &[f64]) -> (TrackApi, [u32; 4], Vec<u32>, Vec<u32>) {
+pub(super) fn pair_wide(right_hand: bool, gap: f64, xn: &[f64], xs: &[f64]) -> (TrackApi, [u32; 4], Vec<u32>, Vec<u32>) {
     let mut a = pair_track(right_hand, gap);
     let ends = [300.0, 1200.0, 4800.0, 5700.0].map(|x| station_near(&mut a, x, 0.0));
     let ns: Vec<u32> = xn.iter().map(|&dx| station_near(&mut a, 3000.0 + dx, gap)).collect();

@@ -1235,8 +1235,9 @@ fn distinct_stops(stops: &[u32]) -> Vec<u32> {
 /// turns back takes a straighter order of the same stops where one exists (T-1899, `straighten`),
 /// unless the player set its order by hand (`hand`, T-2895). A loop stops at every pass of a station
 /// it stops at (T-3122, `every_pass`).
-fn edited_stops(net: &Network, stops: &[u32], hand: bool, ones: &[(u32, u8)]) -> Option<(Vec<u32>, Vec<u32>)> {
-    let stops = distinct_stops(stops);
+pub(super) fn edited_stops(net: &Network, stops: &[u32], hand: bool, ones: &[(u32, u8)]) -> Option<(Vec<u32>, Vec<u32>)> {
+    // a paired one-way station's half its run 0 passes (`pair_halves`)
+    let stops = net.pair_halves(&distinct_stops(stops), ones);
     // T-3565: one-way stations where the track puts them
     if !hand {
         if let Some(r) = super::legs::ordered(net, &stops, &mut HopMemo::new(), ones) {
@@ -1266,7 +1267,7 @@ fn edited_stops(net: &Network, stops: &[u32], hand: bool, ones: &[(u32, u8)]) ->
 /// other leg goes the other way once that station is a stop. The line is routed with each so; where
 /// it has no route yet a new one waits. Stops no longer on the line drop out. False when neither
 /// way has a route.
-fn settle_ones(net: &Network, d: &mut LineData) -> bool {
+pub(super) fn settle_ones(net: &Network, d: &mut LineData) -> bool {
     let stops = d.stops.clone();
     d.ones.retain(|x| stops.contains(&x.0));
     for k in 0..d.ones.len() {

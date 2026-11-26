@@ -112,6 +112,9 @@ use super::bus::keep::{KeepLink, KeptStop};
 /// A trailing `LBO1` block (T-4013, level 38) gives the lines with boarding-only or getting-off-only stops
 /// (`LineData::only`): count, then per line its index, its count and per stop its place in the line's stops and
 /// its kind (1 boarding only, 2 getting off only); without it every stop lets riders on and off.
+/// A trailing `LPA1` block (level 42, the last block, after `LAP1`) gives the one-way stations the player
+/// paired as one stop (`StationData::pair`): count, then node pairs in the dense ids, each once; without it none
+/// is.
 const MAGIC: &[u8; 4] = b"TWT4";
 /// TWT5 (T-125) is TWT4 byte for byte except that the metres are in the Lambert conformal world
 /// frame (`frame.rs`). TWT4 and older are always the legacy equirectangular frame, and a network
@@ -124,13 +127,13 @@ const MAGIC_TWT6: &[u8; 4] = b"TWT6";
 
 /// T-1826: the trailing blocks this build reads, in the order they are written. A block it does not
 /// know stops the decoder, which then reports the bytes left over (`decode_read`).
-pub const BLOCKS: [&[u8; 4]; 44] = [b"LUI1", b"LNK1", b"LAU1", b"LHS1", b"LBS1", b"LBS2", b"LRT1", b"LGR1", b"LGL1", b"LOR1", b"LPH1", b"LSP1", b"LFR1", b"LFR2", b"LFR3", b"BLD1", b"LBD1", b"LBP1", b"LHO1", b"LMN1", b"LBH1", b"LOW1", b"LSL1", b"LPC1", b"LTW1", b"LPS1", b"LWE1", b"LOS1", b"LPD1", b"LHR1", b"LFZ1", b"LSN1", b"LFD1", b"LGN1", b"LRA1", b"LWP1", b"LFB1", b"LBR1", b"LBT1", b"LBQ1", b"LBO1", b"LBE1", b"LBK1", b"LAP1"];
+pub const BLOCKS: [&[u8; 4]; 45] = [b"LUI1", b"LNK1", b"LAU1", b"LHS1", b"LBS1", b"LBS2", b"LRT1", b"LGR1", b"LGL1", b"LOR1", b"LPH1", b"LSP1", b"LFR1", b"LFR2", b"LFR3", b"BLD1", b"LBD1", b"LBP1", b"LHO1", b"LMN1", b"LBH1", b"LOW1", b"LSL1", b"LPC1", b"LTW1", b"LPS1", b"LWE1", b"LOS1", b"LPD1", b"LHR1", b"LFZ1", b"LSN1", b"LFD1", b"LGN1", b"LRA1", b"LWP1", b"LFB1", b"LBR1", b"LBT1", b"LBQ1", b"LBO1", b"LBE1", b"LBK1", b"LAP1", b"LPA1"];
 /// T-1826: the save level this build writes into the game header (`level`) and reads up to. Raised
 /// with every new block, every new field inside a header field (a new top-level header field is seen
 /// as unknown on its own) and every new meaning of existing bytes, so an older build knows a newer
 /// save even when it has nothing left over, and refuses to open it (T-4014). Saves from before it have none, read
 /// as 0. The app keeps a copy (`SAVE_LEVEL`, app/src/workers/saveFile.ts; `the_app_knows_this_level`).
-pub const LEVEL: u32 = 41;
+pub const LEVEL: u32 = 42;
 /// T-3759: the last level from before stations could be unbound from their complex's name; a typed
 /// station there showed its own name, so loading one makes such a station unbound (the app's pass).
 pub const OLD_BOUND_NAMES: u32 = 26;
@@ -907,6 +910,17 @@ pub fn encode(net: &Network) -> Vec<u8> {
             w.u(node_id[b as usize] as u64);
         }
     }
+    // last, after LAP1, only where the player paired one-way stations: count, then node pairs in the dense
+    // ids, each once; a pair as set, whether or not the track allows it now (it holds again once it does)
+    let pairs: Vec<[u32; 2]> = nodes.iter().filter_map(|&a| net.node_pair[a as usize].filter(|&b| a < b && net.is_station(a) && net.is_station(b) && net.node_pair[b as usize] == Some(a)).map(|b| [a, b])).collect();
+    if !pairs.is_empty() {
+        w.0.extend_from_slice(b"LPA1");
+        w.u(pairs.len() as u64);
+        for [a, b] in pairs {
+            w.u(node_id[a as usize] as u64);
+            w.u(node_id[b as usize] as u64);
+        }
+    }
     w.0
 }
 
@@ -1055,7 +1069,7 @@ fn decode_read_at(bytes: &[u8], level: u32) -> Result<(Network, usize), String> 
         if flags & 2 != 0 {
             let platform = r.u()? as u16;
             let name = r.s()?;
-            net.set_station(id, Some(StationData { platform, name, named: flags >> 8 & 1 != 0, built: flags & 4 != 0, off: flags & 8 != 0, upgrades: (flags >> 4) as u8, berth: None, day: 0, one: (flags >> 9 & 3) as u8, fare: 0, own: String::new(), road: None })).map_err(|e| format!("{e:?}"))?;
+            net.set_station(id, Some(StationData { platform, name, named: flags >> 8 & 1 != 0, built: flags & 4 != 0, off: flags & 8 != 0, upgrades: (flags >> 4) as u8, berth: None, day: 0, one: (flags >> 9 & 3) as u8, fare: 0, own: String::new(), road: None, pair: None })).map_err(|e| format!("{e:?}"))?;
         }
     }
     let n_edges = r.u()? as usize;
@@ -1658,6 +1672,8 @@ fn decode_read_at(bytes: &[u8], level: u32) -> Result<(Network, usize), String> 
             }
         }
     }
+    // LPA1, last (level 42)
+    read_lpa1(&mut r, &mut net)?;
     for l in manual {
         fold_manual(&mut net, l);
     }
@@ -1676,6 +1692,23 @@ fn bump_tram_dwell(net: &mut Network) {
             net.line_dwell[l] = now.dwell_s;
         }
     }
+}
+
+/// An `LPA1` block (`encode`), if it is next: the one-way stations the player paired as one stop; a pair naming no
+/// station is dropped rather than refusing the whole save.
+fn read_lpa1(r: &mut R, net: &mut Network) -> Result<(), String> {
+    if r.0.get(r.1..r.1 + 4) != Some(b"LPA1") {
+        return Ok(());
+    }
+    r.1 += 4;
+    for _ in 0..r.u()? {
+        let (a, b) = (r.u()? as u32, r.u()? as u32);
+        if a != b && net.station_data(a).is_some() && net.station_data(b).is_some() {
+            net.node_pair[a as usize] = Some(b);
+            net.node_pair[b as usize] = Some(a);
+        }
+    }
+    Ok(())
 }
 
 /// T-3542: an `LPD1` block (`encode`): the rows, the midday and afternoon rows, then the slots they
@@ -1773,7 +1806,7 @@ mod tests {
         for x in [0.0f64, 1000.0] {
             let n = net.alloc_node();
             net.set_node(n, Some(NodeData { x, y: 0.0, level: 0, flying: false })).unwrap();
-            net.set_station(n, Some(StationData { platform: 2, name: format!("S{x}"), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None })).unwrap();
+            net.set_station(n, Some(StationData { platform: 2, name: format!("S{x}"), named: false, built: true, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare: 0, own: String::new(), road: None, pair: None })).unwrap();
         }
         let e = net.alloc_edge();
         net.set_edge(e, Some(EdgeData { a: 0, b: 1, tracks: 2, pis: vec![], built: true, off: false, thru: vec![], crossover: false, kind: TrackKind::Regular, sep: false, day: 0, oneway: 0, join: [0; 2], limit: 0, ramp: 0 })).unwrap();
@@ -1916,7 +1949,7 @@ mod tests {
         for tag in &written {
             assert!(BLOCKS.iter().any(|b| &b[..] == tag.as_bytes()), "block {tag} is written but not in BLOCKS");
         }
-        assert_eq!((LEVEL, BLOCKS.len()), (41, 44), "a new block raises LEVEL: raise it, then update this pin");
+        assert_eq!((LEVEL, BLOCKS.len()), (42, 45), "a new block raises LEVEL: raise it, then update this pin");
     }
 
     /// T-4048 (level 41): the separated pairs' block follows the kept stops' (T-4080, level 40). A level 40 save
@@ -2115,5 +2148,31 @@ mod tests {
         assert_eq!(unread, 0);
         assert_eq!(net.line_only(l), &[(a, BOARD_ONLY)]);
         assert_eq!(net.station_data(st).unwrap().road, Some(0.5f32 as f64));
+    }
+
+    /// The pairs (`LPA1`, level 42) come last, after the level 40 and 41 blocks (a kept bus stop, a separated pair),
+    /// and read back as set; a save with none paired has no block.
+    #[test]
+    fn paired_stations_load_back() {
+        let pos = |b: &[u8], tag: &[u8]| b.windows(4).position(|x| x == tag);
+        let mut net = decode(&sample()).unwrap();
+        // a third station, off the line, to be separated from the first
+        let n = net.alloc_node();
+        net.set_node(n, Some(NodeData { x: 2000.0, y: 0.0, level: 0, flying: false })).unwrap();
+        net.set_station(n, Some(net.station_data(0).unwrap())).unwrap();
+        let st: Vec<u32> = (0..net.node_count() as u32).filter(|&n| net.is_station(n)).collect();
+        assert_eq!(st.len(), 3);
+        assert!(pos(&encode(&net), b"LPA1").is_none(), "none paired, no block");
+        net.node_pair[st[0] as usize] = Some(st[1]);
+        net.node_pair[st[1] as usize] = Some(st[0]);
+        net.set_keep(0, Some(KeptStop { x: 10.0, y: 20.0, name: "Elm St".into(), links: vec![KeepLink::Station(st[0])] })).unwrap();
+        net.set_pair(true, [st[2], st[0]], true);
+        let bytes = encode(&net);
+        assert!(pos(&bytes, b"LBK1").unwrap() < pos(&bytes, b"LAP1").unwrap() && pos(&bytes, b"LAP1").unwrap() < pos(&bytes, b"LPA1").unwrap(), "LPA1 last");
+        let (back, unread) = decode_read(&bytes).unwrap();
+        assert_eq!(unread, 0);
+        assert_eq!((back.node_pair[st[0] as usize], back.node_pair[st[1] as usize]), (Some(st[1]), Some(st[0])));
+        assert!(back.is_apart(st[0], st[2]) && back.keep(0).is_some_and(|k| k.name == "Elm St"));
+        assert_eq!(encode(&back), bytes);
     }
 }

@@ -292,7 +292,7 @@ impl TrackApi {
     pub fn add_brt_station(&mut self, x: f64, y: f64, heading: f64, name: String) -> u32 {
         let node = self.w.net.alloc_node();
         let fare = self.neighbour_fare(x, y);
-        let st = StationData { platform: BRT_STATION_PLATFORM, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare, own: String::new(), road: Some(heading as f32 as f64) };
+        let st = StationData { platform: BRT_STATION_PLATFORM, name, named: false, built: false, off: false, upgrades: 0, berth: None, day: 0, one: 0, fare, own: String::new(), road: Some(heading as f32 as f64), pair: None };
         let op = Op::Batch(vec![Op::Node { id: node, data: Some(NodeData { x: quant(x), y: quant(y), level: 0, flying: false }) }, Op::Station { node, data: Some(st) }]);
         let r = self.run(op);
         if r == 0 {

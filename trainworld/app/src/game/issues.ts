@@ -69,6 +69,10 @@ const TEXT: Record<string, () => string> = {
   NoWayBack: () => t("issues.noWayBack"),
   OneTrackStop: () => t("issues.oneTrackStop"),
   OneTrackHere: () => t("issues.oneTrackHere"),
+  // one-way stations paired as one stop (game/pairs.ts)
+  PairNotOneWay: () => t("issues.pairNotOneWay"),
+  PairNotOpposite: () => t("issues.pairNotOpposite"),
+  PairTooFar: () => t("issues.pairTooFar"),
   TramTrack: () => t("issues.tramTrack"), // T-3889
   PortStop: () => t("issues.portStop"), // T-3911
   StationFamily: () => t("issues.stationFamily"),
