@@ -5,6 +5,7 @@
 "lal": {"aliases": ["Magdalena", "Chascomús", "Chascomus"]},
 "per": {"aliases": ["Rockingham", "Mandurah", "Kwinana"]},
 "ist": {"aliases": ["Arnavutköy", "Arnavutkoy"]},
+"ank": {"aliases": ["Sincan"]},
 "osa": {"name": "Kansai", "aliases": ["Osaka", "Keihanshin", "Kyoto-Osaka-Kobe", "関西", "京阪神"]},
 "spk": {"name": "Sapporo", "aliases": ["Dochuo", "Ishikari", "Shiribeshi", "Sorachi", "Iburi", "Hidaka", "道央"]},
 "kmk": {"name": "Asahikawa", "aliases": ["Dohoku", "Kamikawa", "Rumoi", "Soya", "道北"]},

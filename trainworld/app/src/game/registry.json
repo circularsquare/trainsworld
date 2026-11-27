@@ -99478,31 +99478,6 @@
       "realm": "turkey"
     },
     {
-      "id": "sic",
-      "name": "Sincan",
-      "origin": {
-        "lon": 32.6179,
-        "lat": 39.9472
-      },
-      "center": [
-        32.6179,
-        39.9472
-      ],
-      "zoom": 11.2,
-      "utcOffset": 3,
-      "market": -1,
-      "box": [
-        31.925,
-        39.6,
-        32.898,
-        40.391
-      ],
-      "place": 5427,
-      "country": "TR",
-      "localTrips": 3241516.0,
-      "realm": "turkey"
-    },
-    {
       "id": "ipe",
       "name": "İpekyolu",
       "kind": "zone",
