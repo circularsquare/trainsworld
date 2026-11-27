@@ -243,7 +243,8 @@ def wikidata_boardings(iata):
 
 # T-2896 (1): passenger counts a national authority publishes for each of its airports
 # (pipeline/airport_passengers.csv: country, OurAirports ident, IATA, ICAO, the source's name,
-# passengers both ways, year, source). China: CAAC's 2025 bulletin.
+# passengers both ways, year, source). China: CAAC's 2025 bulletin. Turkey: DHMI's 2025
+# year-end workbook (tools/country/turkey_airports.py).
 PUBLISHED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "airport_passengers.csv")
 _published = None
 
