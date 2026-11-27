@@ -16,6 +16,7 @@ import { transitParts, type TransitShares } from "../game/transitModes";
 import type { Signal } from "@preact/signals";
 import { t, type MessageKey } from "../i18n";
 import { mobileDevice } from "../workers/deviceMemory";
+import { composing } from "./keys";
 
 /** the snap switches' magnet, its two pole tips apart from its body (T-3069) */
 const SNAP_MAGNET = "M1.75 1.5v1.2M6.75 1.5v1.2M1.75 4.2v1.3a2.5 2.5 0 005 0V4.2";
@@ -338,6 +339,7 @@ export function TypedValue(p: { label: string; type: { text: string; set: (v: nu
     <input class="v typing" ref={open} value={draft} inputMode="decimal" aria-label={p.label}
       onInput={(e) => setDraft(e.currentTarget.value)} onBlur={commit}
       onKeyDown={(e) => {
+        if (composing(e)) return;
         if (e.key === "Enter") commit();
         if (e.key === "Escape") { done.current = true; setDraft(null); }
       }} />

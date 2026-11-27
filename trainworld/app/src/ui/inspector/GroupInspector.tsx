@@ -36,6 +36,7 @@ import { TwoRows } from "./LineInspector";
 import { GroupChartButton } from "./SchedulePanel";
 import { t, tSeries } from "../../i18n";
 import { mobileDevice } from "../../workers/deviceMemory";
+import { composing } from "../keys";
 
 /** A stop pill's height in a named row with no crossing bars, a tick's height, px. */
 const PILL = 9, TICK = 3;
@@ -210,7 +211,7 @@ export function GroupInspector({ group }: { group: number }) {
       {editing && (
         <div class="line-identity" data-group-edit>
           <label>{t("groupInspector.bullet")} <input aria-label={t("groupInspector.bulletLabel")} value={symbol ?? look.symbol} placeholder={groupLabel(name)}
-            onInput={(e) => setSymbol(e.currentTarget.value)} onBlur={commitSymbol} onKeyDown={(e) => { if (e.key === "Enter") commitSymbol(); }} />
+            onInput={(e) => setSymbol(e.currentTarget.value)} onBlur={commitSymbol} onKeyDown={(e) => { if (!composing(e) && e.key === "Enter") commitSymbol(); }} />
             {look.colour && <button class="btn icon mini" data-tip={t("groupInspector.backToColour")} aria-label={t("groupInspector.backToColour")} onClick={(e) => { e.preventDefault(); setLook({ colour: null }); }}><Icon.cycle /></button>}
           </label>
           <ColourPicker value={preview ?? groupBullet(byNum, group, (id) => today.value.get(id)?.riders ?? 0).colour} presets={LINE_PALETTE} onPreview={setPreview} onCommit={(hex) => { setPreview(hex); setLook({ colour: hex }); }} />
