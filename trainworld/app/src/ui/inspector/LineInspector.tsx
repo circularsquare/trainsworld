@@ -1129,7 +1129,7 @@ function RailLineInspector({ id }: { id: string }) {
       {st.status !== "broken" && l.stops.length >= 2 && <LineImprovements l={l} version={w.version} vehicle={vehicleOf(st)} />}
       {st.status !== "broken" && l.stops.length >= 2 && <LineProfile l={l} version={w.version} />}
       {st.status !== "broken" && <LineFare l={l} />}
-      {st.status === "running" && <LineMoney num={l.num} />}
+      {st.status === "running" && <LineMoney num={l.num} vehicle={vehicleOf(st)} />}
     </>
   );
 }
