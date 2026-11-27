@@ -216,10 +216,11 @@ ZONE_RULES = {"CHN": {"floor": 1_000_000, "cap": 2_500_000, "min_density": 0.0, 
               # Turkey's ilce with a density floor of 10 a km2: at the default 20, 232 of 973 were dead space and the
               # interior's provincial towns (Erzincan, Cankiri, Kirsehir, Sivas) were zones of 0.1-0.5M in a hole (T-2294);
               # people scaled to the 2022 register by ilce with the Syrians under temporary protection (T-2079);
+              # `turkey` keeps that hook and adds the Eurostat work-from-home share;
               # `plan_units` keeps the state's geoBoundaries ilce, which the metro rows were planned on (read afresh, the
               # units are NUTS-3 provinces: Turkey is in NUTS 2024); `fua_whole` 0.5M keeps the cities of 0.5-1M whole
               # (at FUA_WHOLE's 1M the zones cut Diyarbakir in two, Kayseri in two and Sanliurfa in three)
-              "TUR": {"min_density": 10.0, "plan_units": True, "fua_whole": 500_000, "module": "admin_totals",
+              "TUR": {"min_density": 10.0, "plan_units": True, "fua_whole": 500_000, "module": "turkey",
                       "task": "T-2294"},
               # Russia's cities and the corridors between on Canada's rule (Anita 2026-11-04); the state's
               # geoBoundaries ADM2 units, which its metro rows were planned on; `beyond_europe` zones the units east of
@@ -448,7 +449,7 @@ ARCHETYPE = {"GBR": ("A", "england"), "FRA": ("A", "france"), "DEU": ("A", "germ
              "NGA": ("D", "nigeria"), "USA": ("A", "usa"), "PRI": ("C", "usa"), "AUS": ("C", "australia"),
              "IDN": ("C", "admin_totals"), "PHL": ("C", "admin_totals"), "KHM": ("C", "admin_totals"),
              "LAO": ("C", "admin_totals"), "NZL": ("C", "admin_totals"), "IRN": ("C", "admin_totals"),
-             "TUR": ("C", "admin_totals"), "MEX": ("C", "mexico"), "COL": ("C", "admin_totals"),
+             "TUR": ("C", "turkey"), "MEX": ("C", "mexico"), "COL": ("C", "admin_totals"),
              "EGY": ("C", "admin_totals"), "ISR": ("C", "admin_totals"), "PSE": ("C", "admin_totals"),
              "PAK": ("C", "admin_totals"), "AZE": ("C", "admin_totals")}
 NE_FIX = {"KOS": "XKX", "SOL": "SOM", "CYN": "CYP", "SAH": "ESH"}
