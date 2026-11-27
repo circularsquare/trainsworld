@@ -20,6 +20,7 @@ import { locateStation } from "./locate";
 import { byNear, natural, Near, ScopeToggle } from "./listParts";
 import { byHand, handOrder, setHandOrder } from "../game/handOrder";
 import { t } from "../i18n";
+import { composing } from "./keys";
 
 /** how far a row is dragged before it counts as a drag, not a click (px) */
 const DRAG_PX = 6;
@@ -268,7 +269,7 @@ export function StationsTab() {
               <input class="name-edit grow" value={r.name} aria-label={t("stationsTab.stationName")} ref={(el) => { if (el && document.activeElement !== el) { el.focus(); el.select(); } }}
                 onClick={(e) => e.stopPropagation()} onDblClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
                 onBlur={(e) => { const n = e.currentTarget.value.trim(); setRenamingStation(null); if (n && n !== r.name) void edit(rowName(r, n)); }}
-                onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenamingStation(null); }} />
+                onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenamingStation(null); }} />
             ) : (
               // T-2786: a triple click renames (a double click snaps the camera)
               <span class={"grow" + (r.built ? "" : " muted")}><span onClick={(e) => { if (e.detail === 3) { e.stopPropagation(); setRenamingStation(r.lead.id); } }}>{r.name}</span></span>

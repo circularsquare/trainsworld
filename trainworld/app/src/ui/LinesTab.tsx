@@ -37,6 +37,7 @@ import { vehicleOf } from "../game/vehicle";
 import { stationCity } from "../game/money";
 import { linesView, type LineCol } from "../game/linesView";
 import { LinesGear, TYPE_ICONS, typeName } from "./LinesGear";
+import { composing } from "./keys";
 
 /** the word for a line that is not running; nothing for a running one */
 const statusText = (s: string) => (s === "planned" ? t("linesTab.planned") : s === "broken" ? t("linesTab.broken") : "");
@@ -482,7 +483,7 @@ export function LinesTab() {
         {renamingLine === l.id ? (
           <input class="name-edit grow" value={l.name} aria-label={t("linesTab.lineName")} ref={(el) => { if (el && document.activeElement !== el) { el.focus(); el.select(); } }}
             onClick={(e) => e.stopPropagation()} onDblClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
-            onBlur={(e) => { setRenamingLine(null); renameLine(l.id, e.currentTarget.value); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenamingLine(null); }} />
+            onBlur={(e) => { setRenamingLine(null); renameLine(l.id, e.currentTarget.value); }} onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenamingLine(null); }} />
         ) : (
           // T-2786: a triple click renames (a double click snaps the camera)
           <span class="grow line-name" onClick={(e) => { if (e.detail === 3) { e.stopPropagation(); setRenamingLine(l.id); } }}>{l.name}</span>
@@ -517,7 +518,7 @@ export function LinesTab() {
           {renaming === it.g ? (
             <input class="name-edit grow" value={it.name} aria-label={t("linesTab.groupName")} ref={(el) => { if (el && document.activeElement !== el) { el.focus(); el.select(); } }}
               onClick={(e) => e.stopPropagation()} onDblClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
-              onBlur={(e) => renameGroup(it, e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }} />
+              onBlur={(e) => renameGroup(it, e.currentTarget.value)} onKeyDown={(e) => { if (composing(e)) return; if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setRenaming(null); }} />
           ) : (
             <span class="grow line-name" onDblClick={(e) => { e.stopPropagation(); setRenaming(it.g); }}>{it.name}</span>
           )}
